@@ -1,0 +1,92 @@
+name: Desktop
+
+# rd Desktop (clients/desktop): the Windows build. Portable exe + per-user NSIS installer as
+# workflow artifacts; a desktop-v* tag also publishes them as a GitHub Release.
+# (Path filters do not apply to tag pushes, so every desktop-v* tag builds.)
+on:
+  push:
+    branches: [main]
+    tags: ["desktop-v*"]
+    paths:
+      - "clients/desktop/**"
+      - "crates/rd-proto/**"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows (exe + NSIS installer)
+    runs-on: windows-latest
+    permissions:
+      contents: write # gh release create (tags only)
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/desktop/src-tauri -> target
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Version
+        id: version
+        run: |
+          v="$(sed -n 's/^version = "\(.*\)"$/\1/p' clients/desktop/src-tauri/Cargo.toml | head -n1)"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* && "${GITHUB_REF_NAME#desktop-v}" != "$v" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match clients/desktop/src-tauri/Cargo.toml version $v"
+            exit 1
+          fi
+
+      - name: Tauri CLI (version pinned in clients/desktop/package.json)
+        working-directory: clients/desktop
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        working-directory: clients/desktop
+        run: bun run tauri build --ci --bundles nsis -- --locked
+
+      - name: Test
+        working-directory: clients/desktop/src-tauri
+        # Same profile and features as the build, so nothing is compiled twice.
+        run: cargo test --locked --release --features tauri/custom-protocol
+
+      - name: Clippy
+        working-directory: clients/desktop/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Collect
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          src=clients/desktop/src-tauri/target/release
+          mkdir -p out
+          cp "$src/rd-desktop.exe" "out/rd-desktop-$v-x64-portable.exe"
+          cp "$src"/bundle/nsis/*-setup.exe "out/rd-desktop-$v-x64-setup.exe"
+          (cd out && sha256sum *.exe > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rd-desktop-${{ steps.version.outputs.version }}-windows-x64
+          path: out/*
+          if-no-files-found: error
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --verify-tag \
+            --title "rd Desktop ${{ steps.version.outputs.version }}" \
+            --notes "Windows 10/11, x64. Unsigned: SmartScreen asks once (More info -> Run anyway). See clients/desktop/README.md.
+
+          - rd-desktop-${{ steps.version.outputs.version }}-x64-setup.exe: per-user installer (no admin rights)
+          - rd-desktop-${{ steps.version.outputs.version }}-x64-portable.exe: single exe, no install"

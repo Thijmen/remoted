@@ -26,6 +26,7 @@ Guacamole: see [docs/recovery.md](docs/recovery.md).
 | [docs/gateway.md](docs/gateway.md) | gateway configuration and operation |
 | [docs/setup-mac.md](docs/setup-mac.md) | installing the Mac agent, local development |
 | [docs/recovery.md](docs/recovery.md) | recovery path (Screen Sharing / SSH via Guacamole) |
+| [docs/desktop-client.md](docs/desktop-client.md) | rd Desktop: Windows app that also grabs Alt+Tab, the Windows key, … ([install, build](clients/desktop/README.md)) |
 
 ## Layout
 
@@ -37,6 +38,7 @@ crates/rd-platform-macos   ScreenCaptureKit, VideoToolbox, CGEvent, IOKit, Keych
 crates/rd-agent            the agent binary (run | setup | install | uninstall | status | selftest)
 crates/rd-gateway          relay, portal, network probe; embeds viewer/dist
 viewer/                    TypeScript viewer (Vite + Bun)
+clients/desktop            rd Desktop (Tauri): the viewer in a window + Windows keyboard grab; own Cargo.lock
 tools/gen-keymap           Chromium key table -> Rust/TS keymaps
 packaging/macos            app bundle, signing, LaunchAgent
 deploy/Dockerfile          gateway image (linux/arm64)

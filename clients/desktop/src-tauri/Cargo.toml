@@ -1,0 +1,34 @@
+[package]
+name = "rd-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+description = "rd Desktop: the rd web viewer in a window, with a keyboard grab on Windows"
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.1", features = [] }
+tauri-plugin-log = "2.10.0"
+log = "0.4"
+open = { version = "5.4", features = ["shellexecute-on-windows"] }
+serde_json = "1"
+rd-proto = { path = "../../../crates/rd-proto" }
+
+[target.'cfg(windows)'.dependencies]
+# Same major as tauri's own (tauri 2.12 -> windows 0.62), so `WebviewWindow::hwnd()` types match.
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_UI_Accessibility",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "symbols"

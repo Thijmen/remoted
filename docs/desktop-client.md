@@ -13,6 +13,8 @@ viewer changes.
 Target: Windows 10/11 (WebView2, preinstalled). Per-user, no admin rights. A macOS build works
 as a plain wrapper (no keyboard grab yet).
 
+The app: [clients/desktop](../clients/desktop/README.md) (install, options, build, release).
+
 ## Bridge contract, version 1
 
 The page and the app talk through two small channels. Nothing else crosses the boundary.
@@ -74,3 +76,22 @@ grab, so you can never get stuck.
   logs keys.
 - The gateway CSP allows the Tauri IPC endpoints (`ipc:` and `http://ipc.localhost`) in
   `connect-src`; normal browsers have no such endpoints.
+
+## Implementation notes (rd Desktop)
+
+How the app behaves within the contract above:
+
+- `rd_set_grab({ active: true })` resolves only once the hook is installed. It is rejected when
+  the window is not the foreground window, when the hook cannot be installed, and always on
+  macOS/Linux (`keyboard grab not supported on this platform`); the page then keeps its DOM key
+  listeners. `active: false` removes the hook and resolves; it never triggers `release()`.
+- The app calls `release()` only when it stops grabbing on its own: the window lost the
+  foreground, the input desktop switched (lock screen, UAC, Ctrl+Alt+Del), a new page loads in
+  the window, or the window closes. It never re-installs the hook unasked; the page asks again.
+- Every key is swallowed while grabbing, Caps Lock included. Injected input (`SendInput` from
+  other programs) passes through. Keys that were already down when the hook went on pass
+  through until released, so Windows never keeps them stuck; their release is still forwarded.
+- AltGr: Windows' fake left Ctrl (scan code `0x21D`) is dropped, so the page sees `AltRight`
+  only. Fake shifts (`E0 2A` / `E0 36`) are dropped too.
+- Calls are `window.rdNative && window.rdNative.key(...)` (guarded; `rdNative` exists only on
+  session pages), one `eval` per event, in order.

@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "gateway",
+  "description": "The rd gateway page may report the grab state (bridge contract v1, docs/desktop-client.md). Nothing else is exposed. A --url / RD_URL override gets the same capability at runtime.",
+  "local": false,
+  "remote": {
+    "urls": ["https://rd.example.com"]
+  },
+  "windows": ["main"],
+  "permissions": ["allow-rd-set-grab"]
+}

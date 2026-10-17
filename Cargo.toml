@@ -8,6 +8,8 @@ members = [
   "crates/rd-agent",
   "crates/rd-gateway",
 ]
+# Tauri desktop client: its own Cargo.lock, so the workspace (and Linux CI) needs no WebView deps.
+exclude = ["clients/desktop"]
 
 [workspace.package]
 version = "0.1.0"
