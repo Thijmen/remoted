@@ -2,7 +2,9 @@
 # One-time setup: creates a self-signed code-signing certificate (10 years, codeSigning EKU)
 # named "RD Local Code Signing" (override with RD_SIGN_IDENTITY) and imports it with its key
 # into the login keychain, usable by /usr/bin/codesign. Signing every build with it keeps the
-# app's designated requirement stable, so TCC grants and Keychain access survive rebuilds.
+# app's designated requirement stable, so TCC grants survive rebuilds. (Keychain item access
+# does not: a self-signed certificate has no Team ID, so the agent keeps its token in its
+# config file instead.)
 set -euo pipefail
 
 NAME="${RD_SIGN_IDENTITY:-RD Local Code Signing}"

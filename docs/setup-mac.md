@@ -101,8 +101,7 @@ permission belongs to the app.
 
 ```sh
 packaging/macos/uninstall.sh            # unload + remove the LaunchAgent and the app
-packaging/macos/uninstall.sh --purge    # also logs, the Keychain token and the privacy grants
-rm -rf ~/Library/Application\ Support/dev.thijmen.rd.agent   # the config file and its token
+packaging/macos/uninstall.sh --purge    # also logs, the config file (with the token) and the privacy grants
 ```
 
 See [recovery.md](recovery.md) for the locked-screen / reboot path.

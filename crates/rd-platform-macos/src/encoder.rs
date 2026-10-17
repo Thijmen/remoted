@@ -6,15 +6,21 @@
 //! which copies the AVCC payload, detects keyframes and parameter-set changes and hands an
 //! [`EncodedFrame`] to the runtime's [`FrameSink`]. Frames that produce no output are released
 //! with [`FrameGate::cancel`]; encoded frames that cannot be delivered with
-//! [`FrameGate::post_encode_drop`].
+//! [`FrameGate::post_encode_drop`], after which deltas still inside VideoToolbox are cancelled
+//! too until the forced IDR (they reference the lost frame).
+//!
+//! A session that keeps failing (VideoToolbox reports it invalid or malfunctioning, several
+//! frames fail in a row, or a frame gets no output for [`STUCK_AFTER`]) is rebuilt by
+//! [`H264Encoder::maintain`], with backoff; one that cannot be brought back is reported by
+//! [`H264Encoder::fatal`].
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::panic::AssertUnwindSafe;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 use bytes::Bytes;
@@ -46,8 +52,8 @@ use objc2_video_toolbox::{
     kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
     kVTCompressionPropertyKey_YCbCrMatrix, kVTEncodeFrameOptionKey_ForceKeyFrame,
     kVTInvalidSessionErr, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel,
-    kVTProfileLevel_H264_High_AutoLevel, kVTPropertyNotSupportedErr,
-    kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
+    kVTProfileLevel_H264_High_AutoLevel, kVTPropertyNotSupportedErr, kVTVideoEncoderMalfunctionErr,
+    kVTVideoEncoderNotAvailableNowErr, kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
 use rd_agent_core::h264::codec_string_from_avcc;
@@ -58,6 +64,33 @@ use crate::{cf, vui};
 
 /// "No limit" for the key-frame interval: IDRs only on demand.
 const MAX_KEY_FRAME_INTERVAL: i32 = i32::MAX;
+
+/// Rebuild the session after this many frames in a row failed (any non-zero status).
+const FAILURES_BEFORE_REBUILD: u32 = 3;
+/// Rebuild the session when VideoToolbox has held a frame this long without any output.
+pub const STUCK_AFTER: Duration = Duration::from_secs(2);
+/// Rebuilds are at least this far apart; the gap doubles after each one up to the maximum,
+/// and resets once the session delivers [`HEALTHY_AFTER_FRAMES`].
+const REBUILD_BACKOFF_MIN: Duration = Duration::from_secs(1);
+const REBUILD_BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// Rebuild attempts in a row (without a healthy session in between) before the encoder is
+/// reported as failed.
+const REBUILDS_BEFORE_FATAL: u32 = 3;
+/// Delivered frames after which a (re)built session counts as healthy.
+const HEALTHY_AFTER_FRAMES: u64 = 10;
+
+/// True for the `n`th occurrence of something worth a log line: 1, 2, 4, 8, ...
+fn log_nth(n: u64) -> bool {
+    n.is_power_of_two()
+}
+
+/// VideoToolbox statuses after which the session is rebuilt right away (WebRTC's
+/// RTCVideoEncoderH264 resets on the first two as well).
+fn needs_new_session(status: i32) -> bool {
+    status == kVTInvalidSessionErr
+        || status == kVTVideoEncoderMalfunctionErr
+        || status == kVTVideoEncoderNotAvailableNowErr
+}
 
 /// Environment override for the default [`RateControl`]: `low-latency` or `standard`.
 pub const RATE_CONTROL_ENV: &str = "RD_VT_RATE_CONTROL";
@@ -143,6 +176,8 @@ pub struct H264Encoder {
     force_key_props: CFRetained<CFDictionary<CFString, CFType>>,
     next_token: u64,
     last_pts_us: Option<u64>,
+    /// Rebuild bookkeeping; carried over to the replacement session.
+    recovery: Recovery,
 }
 
 // SAFETY: a VTCompressionSession and an immutable CFDictionary may be used from any thread;
@@ -209,7 +244,64 @@ impl H264Encoder {
             force_key_props,
             next_token: 1,
             last_pts_us: None,
+            recovery: Recovery::default(),
         })
+    }
+
+    /// The bitrate the session was last configured with (bits/s, 0 = encoder default).
+    pub fn applied_bitrate(&self) -> u32 {
+        self.applied_bitrate
+    }
+
+    /// A forced keyframe produced no output, so the next frame will be forced instead. On a
+    /// static screen there may be no next frame: the pipeline then re-submits its last one.
+    pub fn keyframe_pending(&self) -> bool {
+        self.ctx().force_next.load(Ordering::Relaxed)
+    }
+
+    /// Why the encoder is considered dead (rebuilding keeps failing), if it is.
+    pub fn fatal(&self) -> Option<&str> {
+        self.recovery.fatal.as_deref()
+    }
+
+    /// Rebuilds the session if it has failed persistently: VideoToolbox reported it invalid
+    /// or malfunctioning, [`FAILURES_BEFORE_REBUILD`] frames failed in a row, or a frame has
+    /// had no output for [`STUCK_AFTER`]. Rebuilds back off (1 s doubling to 30 s). The new
+    /// session starts with an IDR and a new `CodecConfig` (a new epoch).
+    ///
+    /// Called before every frame, also ones the gate refuses (a stuck session keeps the
+    /// window full, so then nothing would be admitted).
+    pub fn maintain(&mut self, now: Instant) {
+        let Some(reason) = self.ctx().unhealthy(now) else {
+            // Only a working session counts: after a failed rebuild the old (broken) one may
+            // have delivered plenty before it broke.
+            if self.ctx().stats.delivered.load(Ordering::Relaxed) >= HEALTHY_AFTER_FRAMES {
+                self.recovery.healthy();
+            }
+            return;
+        };
+        if !self.recovery.may_attempt(now) {
+            return;
+        }
+        let attempt = self.recovery.attempts + 1;
+        warn!(%reason, attempt, "rebuilding the VideoToolbox session");
+        let (gate, sink) = (self.ctx().gate.clone(), self.ctx().sink.clone());
+        // The old session is flushed and released when it is replaced; its pending frames are
+        // cancelled in the gate.
+        match H264Encoder::new(self.cfg, gate, sink, self.bitrate.clone()) {
+            Ok(fresh) => {
+                let recovery = std::mem::take(&mut self.recovery);
+                *self = fresh;
+                self.recovery = recovery;
+            }
+            Err(e) => error!(attempt, "rebuilding the VideoToolbox session failed: {e:#}"),
+        }
+        self.recovery.attempted(now, &reason);
+        if let Some(fatal) = &self.recovery.fatal
+            && self.recovery.attempts == REBUILDS_BEFORE_FATAL
+        {
+            error!("{fatal}");
+        }
     }
 
     /// True if `image` has the size this session encodes.
@@ -220,7 +312,8 @@ impl H264Encoder {
 
     /// Queues `image` for encoding. Returns once VideoToolbox has accepted the frame; the
     /// result arrives on the [`FrameSink`]. On failure `seq` has already been cancelled in the
-    /// gate. An invalidated session (e.g. after a GPU reset) is rebuilt for the next frame.
+    /// gate. A failing session (e.g. invalidated after a GPU reset) is rebuilt by
+    /// [`H264Encoder::maintain`], which runs first.
     pub fn encode(
         &mut self,
         image: &CVPixelBuffer,
@@ -229,6 +322,7 @@ impl H264Encoder {
         capture_us: u64,
         force_key: bool,
     ) -> anyhow::Result<()> {
+        self.maintain(Instant::now());
         self.apply_bitrate();
         // VideoToolbox requires strictly increasing presentation timestamps.
         let pts_us = match self.last_pts_us {
@@ -277,11 +371,7 @@ impl H264Encoder {
         if let Some(frame) = ctx.take_pending(token) {
             ctx.release_unencoded(&frame);
         }
-        if status == kVTInvalidSessionErr {
-            warn!("VideoToolbox session invalidated; recreating it");
-            let (gate, sink) = (ctx.gate.clone(), ctx.sink.clone());
-            *self = H264Encoder::new(self.cfg, gate, sink, self.bitrate.clone())?;
-        }
+        ctx.failed(status, seq, "VTCompressionSessionEncodeFrame failed");
         bail!("VTCompressionSessionEncodeFrame failed: {status}")
     }
 
@@ -319,7 +409,9 @@ impl Drop for H264Encoder {
         debug!(
             delivered = stats.delivered.load(Ordering::Relaxed),
             cancelled = stats.cancelled.load(Ordering::Relaxed),
+            failed = stats.failed.load(Ordering::Relaxed),
             post_encode_drops = stats.post_encode_drops.load(Ordering::Relaxed),
+            chain_drops = stats.chain_drops.load(Ordering::Relaxed),
             "VideoToolbox session closed"
         );
     }
@@ -518,6 +610,15 @@ struct OutputCtx {
     format: parking_lot::Mutex<FormatState>,
     /// A forced keyframe produced no output: force the next frame instead.
     force_next: AtomicBool,
+    /// An encoded frame was lost after encoding, so the deltas behind it reference a frame the
+    /// viewer never gets. They are cancelled until a keyframe has been delivered.
+    chain_broken: AtomicBool,
+    /// VideoToolbox reported a status after which the session must be rebuilt (0 = none).
+    rebuild_status: AtomicI32,
+    /// Frames in a row that failed with a non-zero status; reset by any successful output.
+    consecutive_failures: AtomicU32,
+    /// Status of the most recent failure.
+    last_failure: AtomicI32,
     stats: OutputStats,
 }
 
@@ -525,7 +626,52 @@ struct OutputCtx {
 struct OutputStats {
     delivered: AtomicU64,
     cancelled: AtomicU64,
+    /// Frames that failed with a non-zero status (synchronously or in the callback).
+    failed: AtomicU64,
     post_encode_drops: AtomicU64,
+    /// Deltas cancelled because they followed a post-encode drop.
+    chain_drops: AtomicU64,
+    package_errors: AtomicU64,
+}
+
+/// Rebuild bookkeeping that outlives a single session.
+#[derive(Debug, Default)]
+struct Recovery {
+    /// Rebuild attempts since the session was last healthy.
+    attempts: u32,
+    /// No further attempt before this.
+    not_before: Option<Instant>,
+    backoff: Duration,
+    fatal: Option<String>,
+}
+
+impl Recovery {
+    fn may_attempt(&self, now: Instant) -> bool {
+        self.not_before.is_none_or(|t| now >= t)
+    }
+
+    /// A rebuild was attempted (whether or not it succeeded).
+    fn attempted(&mut self, now: Instant, reason: &str) {
+        self.attempts += 1;
+        self.backoff = (self.backoff * 2).clamp(REBUILD_BACKOFF_MIN, REBUILD_BACKOFF_MAX);
+        self.not_before = Some(now + self.backoff);
+        if self.attempts >= REBUILDS_BEFORE_FATAL && self.fatal.is_none() {
+            self.fatal = Some(format!(
+                "the H.264 encoder keeps failing ({} rebuilds; last problem: {reason})",
+                self.attempts
+            ));
+        }
+    }
+
+    fn healthy(&mut self) {
+        if self.attempts > 0 || self.fatal.is_some() {
+            info!(
+                rebuilds = self.attempts,
+                "VideoToolbox session healthy again"
+            );
+        }
+        *self = Recovery::default();
+    }
 }
 
 impl OutputCtx {
@@ -536,7 +682,42 @@ impl OutputCtx {
             pending: parking_lot::Mutex::new(VecDeque::with_capacity(16)),
             format: parking_lot::Mutex::new(FormatState::default()),
             force_next: AtomicBool::new(false),
+            chain_broken: AtomicBool::new(false),
+            rebuild_status: AtomicI32::new(0),
+            consecutive_failures: AtomicU32::new(0),
+            last_failure: AtomicI32::new(0),
             stats: OutputStats::default(),
+        }
+    }
+
+    /// Why the session should be rebuilt, if it should.
+    fn unhealthy(&self, now: Instant) -> Option<String> {
+        let status = self.rebuild_status.load(Ordering::Relaxed);
+        if status != 0 {
+            return Some(format!("VideoToolbox error {status}"));
+        }
+        let failures = self.consecutive_failures.load(Ordering::Relaxed);
+        if failures >= FAILURES_BEFORE_REBUILD {
+            let last = self.last_failure.load(Ordering::Relaxed);
+            return Some(format!(
+                "{failures} frames failed in a row (last status {last})"
+            ));
+        }
+        let oldest = self.pending.lock().front().map(|f| f.submitted)?;
+        let waited = now.saturating_duration_since(oldest);
+        (waited >= STUCK_AFTER).then(|| format!("no output for {} ms", waited.as_millis()))
+    }
+
+    /// A frame failed with `status` (synchronously or in the callback).
+    fn failed(&self, status: i32, seq: u32, what: &str) {
+        self.last_failure.store(status, Ordering::Relaxed);
+        self.consecutive_failures.fetch_add(1, Ordering::Relaxed);
+        if needs_new_session(status) {
+            self.rebuild_status.store(status, Ordering::Relaxed);
+        }
+        let n = self.stats.failed.fetch_add(1, Ordering::Relaxed) + 1;
+        if log_nth(n) {
+            warn!(status, seq, total = n, "{what}");
         }
     }
 
@@ -555,10 +736,12 @@ impl OutputCtx {
         self.gate.cancel(frame.seq);
     }
 
-    /// An encoded frame was lost: the reference chain is broken.
+    /// An encoded frame was lost: the reference chain is broken until the next IDR, which
+    /// the gate now forces.
     fn release_encoded(&self, seq: u32) {
+        self.chain_broken.store(true, Ordering::Relaxed);
         let n = self.stats.post_encode_drops.fetch_add(1, Ordering::Relaxed) + 1;
-        if n.is_power_of_two() {
+        if log_nth(n) {
             warn!(seq, total = n, "encoded frame dropped; forcing an IDR");
         }
         self.gate.post_encode_drop(seq);
@@ -579,11 +762,7 @@ impl OutputCtx {
             Some(s) if status == 0 && !flags.contains(VTEncodeInfoFlags::FrameDropped) => s,
             _ => {
                 if status != 0 {
-                    warn!(
-                        status,
-                        seq = frame.seq,
-                        "VideoToolbox failed to encode a frame"
-                    );
+                    self.failed(status, frame.seq, "VideoToolbox failed to encode a frame");
                 } else {
                     debug!(seq = frame.seq, "VideoToolbox dropped a frame");
                 }
@@ -591,30 +770,72 @@ impl OutputCtx {
                 return;
             }
         };
-        let packaged = self
-            .format
-            .lock()
-            .config_for(sample)
-            .and_then(|config| package(sample, &frame, encode_us, config));
-        let encoded = match packaged {
-            Ok(f) => f,
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        let key = is_sync_sample(sample);
+        if !self.chain_allows(frame.seq, key) {
+            return;
+        }
+        let config = match self.format.lock().config_for(sample) {
+            Ok(config) => config,
             Err(e) => {
-                error!(seq = frame.seq, "cannot package encoded frame: {e:#}");
+                // Nothing was taken from the format state; the next frame tries again.
+                self.package_error(frame.seq, &e);
                 self.release_encoded(frame.seq);
                 return;
             }
         };
-        let carried_config = encoded.config.is_some();
-        match self.sink.try_send(encoded) {
-            Ok(()) => {
-                self.stats.delivered.fetch_add(1, Ordering::Relaxed);
+        let carries_config = config.is_some();
+        let packaged = package(sample, &frame, encode_us, key, config);
+        self.deliver(frame.seq, key, carries_config, packaged);
+    }
+
+    /// False (and `seq` is released) for a delta encoded before a lost frame was noticed: it
+    /// references that frame, so the viewer could not decode it. The IDR that repairs the
+    /// chain is already forced, so this cancels rather than forcing another one.
+    fn chain_allows(&self, seq: u32, key: bool) -> bool {
+        if key || !self.chain_broken.load(Ordering::Relaxed) {
+            return true;
+        }
+        self.stats.chain_drops.fetch_add(1, Ordering::Relaxed);
+        debug!(seq, "dropping a delta that follows a lost frame");
+        self.gate.cancel(seq);
+        false
+    }
+
+    /// Hands a packaged frame to the sink. A frame that does not get there breaks the
+    /// reference chain (the gate forces an IDR), and the CodecConfig it carried moves to the
+    /// next delivered frame, so a config is never lost.
+    fn deliver(
+        &self,
+        seq: u32,
+        key: bool,
+        carries_config: bool,
+        packaged: anyhow::Result<EncodedFrame>,
+    ) {
+        let delivered = match packaged {
+            Ok(encoded) => self.sink.try_send(encoded).is_ok(),
+            Err(e) => {
+                self.package_error(seq, &e);
+                false
             }
-            Err(_) => {
-                if carried_config {
-                    self.format.lock().resend = true;
-                }
-                self.release_encoded(frame.seq);
+        };
+        if delivered {
+            self.stats.delivered.fetch_add(1, Ordering::Relaxed);
+            if key {
+                self.chain_broken.store(false, Ordering::Relaxed);
             }
+            return;
+        }
+        if carries_config {
+            self.format.lock().resend = true;
+        }
+        self.release_encoded(seq);
+    }
+
+    fn package_error(&self, seq: u32, e: &anyhow::Error) {
+        let n = self.stats.package_errors.fetch_add(1, Ordering::Relaxed) + 1;
+        if log_nth(n) {
+            error!(seq, total = n, "cannot package encoded frame: {e:#}");
         }
     }
 }
@@ -646,6 +867,7 @@ fn package(
     sample: &CMSampleBuffer,
     frame: &PendingFrame,
     encode_us: u32,
+    key: bool,
     config: Option<CodecConfig>,
 ) -> anyhow::Result<EncodedFrame> {
     // SAFETY: valid sample buffer; Get functions return +0 references that the bindings retain.
@@ -666,7 +888,7 @@ fn package(
         seq: frame.seq,
         capture_us: frame.capture_us,
         encode_us,
-        key: is_sync_sample(sample),
+        key,
         data: Bytes::from(data),
         config,
     })
@@ -726,10 +948,15 @@ impl FormatState {
             }
             self.desc = Some(FormatDesc(desc));
         }
+        Ok(self.take_resend())
+    }
+
+    /// The config, if it is due to be (re)sent.
+    fn take_resend(&mut self) -> Option<CodecConfig> {
         if std::mem::take(&mut self.resend) {
-            Ok(self.config.clone())
+            self.config.clone()
         } else {
-            Ok(None)
+            None
         }
     }
 }
@@ -768,4 +995,289 @@ fn codec_config(desc: &CMFormatDescription) -> anyhow::Result<CodecConfig> {
         height: u32::try_from(dims.height).context("negative height")?,
         avcc: Bytes::from(avcc),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use parking_lot::Mutex;
+    use rd_agent_core::Admitted;
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct TestGate {
+        cancelled: Mutex<Vec<u32>>,
+        post_dropped: Mutex<Vec<u32>>,
+        admitted: AtomicU64,
+    }
+
+    impl FrameGate for TestGate {
+        fn admit(&self, _capture_us: u64) -> Option<Admitted> {
+            let n = self.admitted.fetch_add(1, Ordering::Relaxed) as u32 + 1;
+            Some(Admitted {
+                seq: n,
+                force_keyframe: false,
+            })
+        }
+        fn cancel(&self, seq: u32) {
+            self.cancelled.lock().push(seq);
+        }
+        fn post_encode_drop(&self, seq: u32) {
+            self.post_dropped.lock().push(seq);
+        }
+    }
+
+    fn config() -> CodecConfig {
+        CodecConfig {
+            codec: "avc1.640033".into(),
+            width: 320,
+            height: 192,
+            avcc: Bytes::from_static(&[1, 0x64, 0, 0x33]),
+        }
+    }
+
+    fn frame(seq: u32, key: bool, config: Option<CodecConfig>) -> EncodedFrame {
+        EncodedFrame {
+            seq,
+            capture_us: 0,
+            encode_us: 0,
+            key,
+            data: Bytes::from_static(&[0, 0, 0, 1, 0x65]),
+            config,
+        }
+    }
+
+    fn ctx(capacity: usize) -> (Arc<TestGate>, OutputCtx, mpsc::Receiver<EncodedFrame>) {
+        let gate = Arc::new(TestGate::default());
+        let (tx, rx) = mpsc::channel(capacity);
+        let ctx = OutputCtx::new(gate.clone(), tx);
+        (gate, ctx, rx)
+    }
+
+    /// R4/L1: the frame carrying a CodecConfig fails to package; the config goes out with the
+    /// next delivered frame (the forced IDR), and nothing in between is delivered.
+    #[test]
+    fn config_survives_a_failed_frame() {
+        let (gate, ctx, mut rx) = ctx(8);
+        {
+            let mut format = ctx.format.lock();
+            format.config = Some(config());
+            format.resend = true;
+        }
+        let first = ctx.format.lock().take_resend();
+        assert_eq!(first, Some(config()));
+        ctx.deliver(
+            1,
+            true,
+            true,
+            Err(anyhow::anyhow!("CMBlockBufferCopyDataBytes failed")),
+        );
+        assert_eq!(*gate.post_dropped.lock(), [1], "an IDR is forced");
+        assert!(ctx.chain_broken.load(Ordering::Relaxed));
+        assert!(rx.try_recv().is_err());
+
+        // The next IDR takes the config along.
+        let again = ctx.format.lock().take_resend();
+        assert_eq!(again, Some(config()));
+        ctx.deliver(2, true, true, Ok(frame(2, true, again)));
+        let got = rx.try_recv().unwrap();
+        assert!(got.key && got.config == Some(config()));
+        assert!(!ctx.chain_broken.load(Ordering::Relaxed));
+        assert_eq!(ctx.format.lock().take_resend(), None, "sent once");
+    }
+
+    /// R3: deltas already inside VideoToolbox when a frame is lost are cancelled (not
+    /// delivered, not re-forcing an IDR) until a keyframe has been delivered.
+    #[test]
+    fn deltas_after_a_lost_frame_are_cancelled_until_the_idr() {
+        let (gate, ctx, mut rx) = ctx(1);
+        assert!(ctx.chain_allows(1, false));
+        ctx.deliver(1, false, false, Ok(frame(1, false, None)));
+        // Sink full: frame 2 is lost after encoding.
+        assert!(ctx.chain_allows(2, false));
+        ctx.deliver(2, false, false, Ok(frame(2, false, None)));
+        assert_eq!(*gate.post_dropped.lock(), [2]);
+        assert!(rx.try_recv().is_ok_and(|f| f.seq == 1));
+        // Frames 3 and 4 were encoded before the drop: they reference frame 2.
+        assert!(!ctx.chain_allows(3, false));
+        assert!(!ctx.chain_allows(4, false));
+        assert_eq!(*gate.cancelled.lock(), [3, 4]);
+        assert_eq!(*gate.post_dropped.lock(), [2], "no second forced IDR");
+        // The forced IDR goes through and repairs the chain.
+        assert!(ctx.chain_allows(5, true));
+        ctx.deliver(5, true, false, Ok(frame(5, true, None)));
+        assert!(rx.try_recv().is_ok_and(|f| f.seq == 5 && f.key));
+        assert!(ctx.chain_allows(6, false));
+        assert_eq!(ctx.stats.chain_drops.load(Ordering::Relaxed), 2);
+    }
+
+    /// A keyframe that cannot be delivered keeps the chain broken.
+    #[test]
+    fn a_lost_keyframe_keeps_the_chain_broken() {
+        let (gate, ctx, _rx) = ctx(1);
+        ctx.deliver(1, true, false, Ok(frame(1, true, None)));
+        ctx.deliver(2, true, false, Ok(frame(2, true, None)));
+        assert_eq!(*gate.post_dropped.lock(), [2]);
+        assert!(!ctx.chain_allows(3, false));
+    }
+
+    /// The same when the sink is full.
+    #[test]
+    fn config_survives_a_full_sink() {
+        let (gate, ctx, mut rx) = ctx(1);
+        ctx.deliver(1, false, false, Ok(frame(1, false, None)));
+        ctx.format.lock().config = Some(config());
+        ctx.deliver(2, true, true, Ok(frame(2, true, Some(config()))));
+        assert_eq!(*gate.post_dropped.lock(), [2]);
+        assert!(ctx.format.lock().resend);
+        assert!(rx.try_recv().is_ok_and(|f| f.seq == 1));
+    }
+
+    #[test]
+    fn rebuild_reasons() {
+        let (_gate, ctx, _rx) = ctx(8);
+        let now = Instant::now();
+        assert_eq!(ctx.unhealthy(now), None);
+
+        // Ordinary failures: only after several in a row.
+        for _ in 1..FAILURES_BEFORE_REBUILD {
+            ctx.failed(-12902, 1, "test");
+        }
+        assert_eq!(ctx.unhealthy(now), None);
+        ctx.failed(-12902, 1, "test");
+        assert!(ctx.unhealthy(now).unwrap().contains("in a row"));
+        ctx.consecutive_failures.store(0, Ordering::Relaxed);
+
+        // Statuses that mean the session is gone: at once.
+        for status in [
+            kVTInvalidSessionErr,
+            kVTVideoEncoderMalfunctionErr,
+            kVTVideoEncoderNotAvailableNowErr,
+        ] {
+            assert!(needs_new_session(status));
+            let (_gate, ctx, _rx) = self::ctx(8);
+            ctx.failed(status, 1, "test");
+            assert!(ctx.unhealthy(now).unwrap().contains(&status.to_string()));
+        }
+        assert!(!needs_new_session(-12902));
+
+        // A frame without output for too long.
+        ctx.pending.lock().push_back(PendingFrame {
+            token: 1,
+            seq: 1,
+            capture_us: 0,
+            force_key: false,
+            submitted: now,
+        });
+        assert_eq!(ctx.unhealthy(now + STUCK_AFTER / 2), None);
+        assert!(
+            ctx.unhealthy(now + STUCK_AFTER)
+                .unwrap()
+                .contains("no output")
+        );
+    }
+
+    #[test]
+    fn recovery_backs_off_and_gives_up() {
+        let t0 = Instant::now();
+        let mut r = Recovery::default();
+        assert!(r.may_attempt(t0));
+        r.attempted(t0, "x");
+        assert!(!r.may_attempt(t0 + REBUILD_BACKOFF_MIN / 2));
+        assert!(r.may_attempt(t0 + REBUILD_BACKOFF_MIN));
+        let t1 = t0 + REBUILD_BACKOFF_MIN;
+        r.attempted(t1, "x");
+        assert!(!r.may_attempt(t1 + REBUILD_BACKOFF_MIN));
+        assert!(r.may_attempt(t1 + REBUILD_BACKOFF_MIN * 2));
+        assert_eq!(r.fatal, None);
+        r.attempted(t1, "stuck");
+        assert!(r.fatal.as_deref().unwrap().contains("stuck"));
+        for _ in 0..20 {
+            r.attempted(t1, "x");
+        }
+        assert_eq!(r.backoff, REBUILD_BACKOFF_MAX);
+        r.healthy();
+        assert!(r.may_attempt(t1) && r.fatal.is_none() && r.attempts == 0);
+    }
+
+    fn test_image(width: u32, height: u32) -> CFRetained<CVPixelBuffer> {
+        crate::pattern::TestPattern::new(width, height)
+            .unwrap()
+            .render(0, 0)
+            .unwrap()
+    }
+
+    fn recv(rx: &mut mpsc::Receiver<EncodedFrame>) -> EncodedFrame {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(f) = rx.try_recv() {
+                return f;
+            }
+            assert!(Instant::now() < deadline, "no frame");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// M2: a session VideoToolbox reports as malfunctioning is replaced (new epoch: config +
+    /// IDR), rebuilds back off, and repeated rebuilds without recovery are reported.
+    #[test]
+    fn malfunctioning_session_is_rebuilt() {
+        let gate = Arc::new(TestGate::default());
+        let (tx, mut rx) = mpsc::channel(64);
+        let cfg = EncoderConfig {
+            width: 320,
+            height: 192,
+            fps: 60,
+            rate_control: RateControl::Standard,
+        };
+        let mut enc =
+            H264Encoder::new(cfg, gate.clone(), tx, Arc::new(AtomicU32::new(1_000_000))).unwrap();
+        let image = test_image(320, 192);
+        let mut seq = 0;
+        let mut encode = |enc: &mut H264Encoder| {
+            seq += 1;
+            enc.encode(&image, u64::from(seq) * 16_000, seq, 0, false)
+                .unwrap();
+        };
+        encode(&mut enc);
+        assert!(recv(&mut rx).config.is_some());
+        encode(&mut enc);
+        assert!(recv(&mut rx).config.is_none());
+
+        let t0 = Instant::now();
+        let before = enc.ctx;
+        enc.ctx().failed(kVTVideoEncoderMalfunctionErr, 0, "test");
+        enc.maintain(t0);
+        assert_ne!(enc.ctx, before, "a new session");
+        assert_eq!(enc.recovery.attempts, 1);
+        encode(&mut enc);
+        let f = recv(&mut rx);
+        assert!(f.key && f.config.is_some(), "a new epoch");
+
+        // Within the backoff: no rebuild.
+        let before = enc.ctx;
+        enc.ctx().failed(kVTInvalidSessionErr, 0, "test");
+        enc.maintain(t0);
+        assert_eq!(enc.ctx, before);
+        enc.maintain(t0 + REBUILD_BACKOFF_MIN);
+        assert_ne!(enc.ctx, before);
+        assert_eq!(enc.fatal(), None);
+
+        enc.ctx().failed(kVTInvalidSessionErr, 0, "test");
+        enc.maintain(t0 + REBUILD_BACKOFF_MIN * 4);
+        assert!(enc.fatal().is_some(), "{:?}", enc.recovery);
+
+        // Healthy again after enough delivered frames.
+        for _ in 0..HEALTHY_AFTER_FRAMES {
+            encode(&mut enc);
+            recv(&mut rx);
+        }
+        enc.maintain(Instant::now());
+        assert_eq!(enc.fatal(), None);
+        assert_eq!(enc.recovery.attempts, 0);
+        assert!(gate.post_dropped.lock().is_empty());
+    }
 }

@@ -5,7 +5,7 @@
 #
 # Signs with the self-signed identity from make-signing-identity.sh (override with
 # RD_SIGN_IDENTITY) so the designated requirement - and with it the Screen Recording /
-# Accessibility grants and Keychain access - survives rebuilds. Falls back to ad-hoc signing
+# Accessibility grants - survives rebuilds. Falls back to ad-hoc signing
 # if the identity is missing. Respects CARGO_TARGET_DIR.
 set -euo pipefail
 
@@ -60,7 +60,7 @@ else
   ************************************************************************************
   WARNING: code-signing identity "$IDENTITY" not found; signing AD-HOC.
   An ad-hoc signature changes with every build, so macOS will forget the Screen
-  Recording / Accessibility grants and Keychain access after each rebuild.
+  Recording / Accessibility grants after each rebuild.
   Run packaging/macos/make-signing-identity.sh once to create the identity.
   ************************************************************************************
 

@@ -3,7 +3,9 @@
 //! All `unsafe` FFI lives in this crate. Modules:
 //! - `capture`  — ScreenCaptureKit stream (NV12 420v, scaled output, frame gate on the capture queue)
 //!   and a synthetic test-pattern pipeline (no permission needed)
-//! - `encoder`  — VideoToolbox hardware H.264 (AverageBitRate, on-demand IDR, avcC extraction)
+//! - `encoder`  — VideoToolbox hardware H.264 (AverageBitRate, on-demand IDR, avcC extraction,
+//!   rebuild of failing sessions)
+//! - `geometry` — where the captured display sits in the video frame (capture ⇄ input)
 //! - `input`    — CGEvent injection (mouse abs/rel/buttons/click-state, wheel, keys via HID->kVK)
 //! - `power`    — IOPM assertions (keep display awake, declare user activity)
 //! - `session`  — lock state, permission preflight, OS description, displays
@@ -15,6 +17,7 @@
 pub mod capture;
 mod cf;
 pub mod encoder;
+pub mod geometry;
 pub mod input;
 pub mod keychain;
 mod pattern;
@@ -28,6 +31,7 @@ use std::sync::Arc;
 use rd_agent_core::{DisplayDesc, Guard, InputInjector, LockState, Perms, Platform, VideoPipeline};
 
 pub use encoder::RateControl;
+use geometry::CaptureGeometry;
 
 /// Where session video comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -43,6 +47,9 @@ pub enum VideoSource {
 pub struct MacPlatform {
     video: VideoSource,
     rate_control: RateControl,
+    /// Published by the screen pipeline, followed by the input injector, so pointer
+    /// coordinates map onto the captured display through the same content rect.
+    geometry: Arc<CaptureGeometry>,
 }
 
 impl MacPlatform {
@@ -58,6 +65,7 @@ impl MacPlatform {
         Ok(Arc::new(MacPlatform {
             video,
             rate_control,
+            geometry: Arc::default(),
         }))
     }
 }
@@ -98,11 +106,16 @@ impl Platform for MacPlatform {
     fn video_pipeline(&self) -> anyhow::Result<Box<dyn VideoPipeline>> {
         let rc = self.rate_control;
         Ok(match self.video {
-            VideoSource::Screen => Box::new(capture::ScreenPipeline::with_rate_control(rc)?),
+            VideoSource::Screen => Box::new(
+                capture::ScreenPipeline::with_rate_control(rc)?
+                    .with_capture_geometry(self.geometry.clone()),
+            ),
             VideoSource::Synthetic => Box::new(capture::SyntheticPipeline::with_rate_control(rc)?),
         })
     }
     fn input_injector(&self) -> anyhow::Result<Box<dyn InputInjector>> {
-        Ok(Box::new(input::CgInjector::new()?))
+        Ok(Box::new(
+            input::CgInjector::new()?.with_capture_geometry(self.geometry.clone()),
+        ))
     }
 }

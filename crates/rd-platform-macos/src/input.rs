@@ -10,8 +10,10 @@
 //! post anything, and [`CgInjector::dry_run`] logs instead of posting.
 //!
 //! Conventions:
-//! - MOUSE_ABS / MOUSE_BTN `x`, `y` are 0..=65535 across the captured display and map onto its
-//!   `CGDisplayBounds` (global points, origin top-left), clamped to the display.
+//! - MOUSE_ABS / MOUSE_BTN `x`, `y` are 0..=65535 across the video frame. With a
+//!   [`CaptureGeometry`] they map through the rect the captured display occupies in that frame
+//!   (letterbox aware, see [`crate::geometry`]) onto its `CGDisplayBounds` (global points,
+//!   origin top-left), clamped to the display. Without one the frame is the whole display.
 //! - WHEEL deltas use DOM signs: `dy > 0` is `deltaY > 0` (scroll down, content moves up) and
 //!   `dx > 0` scrolls right. Quartz is the other way round (`wheel1 > 0` scrolls up,
 //!   `wheel2 > 0` scrolls left), so both axes are negated.
@@ -20,8 +22,8 @@
 
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
@@ -38,6 +40,8 @@ use rd_agent_core::{InputEvent, InputInjector};
 use rd_proto::bin::{MouseButton, ScrollPhase, WheelMode};
 use rd_proto::keymap;
 use tracing::{debug, info, warn};
+
+use crate::geometry::{self, CaptureGeometry, CaptureLayout};
 
 /// Largest normalised MOUSE_ABS / MOUSE_BTN coordinate.
 const NORM_MAX: f64 = 65535.0;
@@ -248,6 +252,8 @@ struct Click {
 struct InputState {
     /// Target display, global points.
     bounds: CGRect,
+    /// How the display sits in the video frame; `None` = it fills the frame.
+    layout: Option<CaptureLayout>,
     double_click: Duration,
     /// Last posted pointer position.
     pos: CGPoint,
@@ -269,6 +275,7 @@ impl InputState {
     fn new(bounds: CGRect, double_click: Duration, pos: CGPoint) -> Self {
         Self {
             bounds,
+            layout: None,
             double_click,
             pos,
             relative: false,
@@ -362,10 +369,13 @@ impl InputState {
     }
 
     fn map_abs(&self, x: u16, y: u16) -> CGPoint {
-        let CGRect { origin, size } = self.bounds;
-        self.clamp(CGPoint::new(
-            origin.x + f64::from(x) / NORM_MAX * size.width,
-            origin.y + f64::from(y) / NORM_MAX * size.height,
+        let (u, v) = (f64::from(x) / NORM_MAX, f64::from(y) / NORM_MAX);
+        // A point on a letterbox bar lands on the nearest display edge.
+        self.clamp(geometry::frame_to_display(
+            u,
+            v,
+            self.layout.as_ref(),
+            self.bounds,
         ))
     }
 
@@ -714,6 +724,8 @@ pub struct CgInjector {
     sink: Box<dyn EventSink>,
     /// `None` keeps fixed bounds (dry run).
     display: Option<DisplayTarget>,
+    /// The capture pipeline's layout, followed for every pointer event.
+    capture: Option<Arc<CaptureGeometry>>,
 }
 
 impl CgInjector {
@@ -745,6 +757,13 @@ impl CgInjector {
         Self::with_sink(Box::new(LogSink), bounds, DEFAULT_DOUBLE_CLICK, None)
     }
 
+    /// Map pointer coordinates through the layout the capture pipeline publishes in
+    /// `geometry`, onto the display it captures.
+    pub fn with_capture_geometry(mut self, geometry: Arc<CaptureGeometry>) -> Self {
+        self.capture = Some(geometry);
+        self
+    }
+
     /// Map MOUSE_ABS coordinates onto `display` from now on. Its bounds are re-read after
     /// display reconfigurations; if it disappears the main display is used.
     pub fn set_display(&mut self, display: CGDirectDisplayID) {
@@ -765,6 +784,29 @@ impl CgInjector {
             state: InputState::new(bounds, double_click, bounds.mid()),
             sink,
             display: display.map(|id| DisplayTarget { id, read: None }),
+            capture: None,
+        }
+    }
+
+    /// Picks up the current capture layout; retargets when another display is captured.
+    fn follow_capture(&mut self) {
+        let Some(geometry) = &self.capture else {
+            return;
+        };
+        let layout = geometry.current();
+        if let (Some(layout), Some(target)) = (layout, self.display.as_mut())
+            && target.id != layout.display
+        {
+            info!(
+                display = layout.display,
+                "input follows the captured display"
+            );
+            target.id = layout.display;
+            target.read = None;
+        }
+        if layout != self.state.layout {
+            debug!(?layout, "input capture layout");
+            self.state.layout = layout;
         }
     }
 
@@ -805,6 +847,7 @@ impl InputInjector for CgInjector {
                 | InputEvent::MouseRel { .. }
                 | InputEvent::MouseButton { .. }
         ) {
+            self.follow_capture();
             self.refresh_bounds(now);
         }
         self.state.apply(ev, now, self.sink.as_mut());
@@ -991,6 +1034,76 @@ mod tests {
         ));
         assert_eq!(pos(&mut h, 0, 0), CGPoint::new(-1920.0, 100.0));
         assert_eq!(pos(&mut h, 65535, 65535), CGPoint::new(-1.0, 1179.0));
+    }
+
+    #[test]
+    fn abs_coordinates_map_through_the_capture_letterbox() {
+        // A 16:9 display captured into a 1668x1080 frame: ~71 px bars top and bottom.
+        let display = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(1920.0, 1080.0));
+        let mut h = Harness::with_bounds(display);
+        h.state.layout = Some(CaptureLayout {
+            display: 1,
+            width: 1668,
+            height: 1080,
+            stretch: false,
+        });
+        let pos =
+            |h: &mut Harness, x, y| mouse(h.one(InputEvent::MouseAbs { buttons: 0, x, y })).pos;
+        let norm = |px: f64, size: f64| (px / size * NORM_MAX).round() as u16;
+        // The menu bar as seen in the video, ~80 px below the frame top, is ~10 pt down.
+        let p = pos(&mut h, norm(834.0, 1668.0), norm(80.0, 1080.0));
+        assert!(
+            (p.x - 960.0).abs() < 1.0 && (p.y - 10.5).abs() < 0.5,
+            "{p:?}"
+        );
+        // Clicks on the bars land on the nearest edge.
+        assert_eq!(pos(&mut h, 0, 0), CGPoint::new(0.0, 0.0));
+        assert_eq!(pos(&mut h, 65535, 65535), CGPoint::new(1919.0, 1079.0));
+        let mid = pos(&mut h, 32768, 32768);
+        assert!((mid.x - 960.0).abs() < 0.1 && (mid.y - 540.0).abs() < 0.1);
+
+        // A stretched capture maps the whole frame, like no layout at all.
+        h.state.layout = Some(CaptureLayout {
+            display: 1,
+            width: 1920,
+            height: 1082,
+            stretch: true,
+        });
+        assert_eq!(pos(&mut h, 0, 0), CGPoint::new(0.0, 0.0));
+        let p = pos(&mut h, 0, norm(80.0, 1082.0));
+        assert!((p.y - 80.0 * 1080.0 / 1082.0).abs() < 0.1, "{p:?}");
+    }
+
+    #[test]
+    fn injector_follows_the_published_capture_layout() {
+        let sink = RecordingSink::default();
+        let geometry = Arc::new(CaptureGeometry::default());
+        let mut injector = CgInjector::with_sink(Box::new(sink.clone()), BOUNDS, INTERVAL, None)
+            .with_capture_geometry(geometry.clone());
+        let move_to = |injector: &mut CgInjector, x, y| {
+            injector.inject(InputEvent::MouseAbs { buttons: 0, x, y });
+            mouse(sink.take()[0]).pos
+        };
+        // Nothing published: the frame is the display.
+        assert_eq!(move_to(&mut injector, 0, 0), CGPoint::new(0.0, 0.0));
+        // Letterboxed into a square frame: y = 0 is on the bar, the content starts lower.
+        geometry.publish(
+            7,
+            CaptureLayout {
+                display: 1,
+                width: 1200,
+                height: 1200,
+                stretch: false,
+            },
+        );
+        let content_h = 1117.0 / 1728.0;
+        let top = ((1.0 - content_h) / 2.0 * NORM_MAX).ceil() as u16;
+        let p = move_to(&mut injector, 32768, top);
+        assert!(p.y < 1.0 && (p.x - 864.0).abs() < 0.1, "{p:?}");
+        assert_eq!(move_to(&mut injector, 32768, 0).y, 0.0, "clamped");
+        geometry.retract(7);
+        let p = move_to(&mut injector, 32768, top);
+        assert!(p.y > 100.0, "{p:?}");
     }
 
     #[test]
