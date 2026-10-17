@@ -1,0 +1,9 @@
+[package]
+name = "rd-flow"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Pure flow-control logic: end-to-end ACK window (FlowGate), delay-based BitrateController, RTT tracking. No I/O."
+
+[dependencies]
+parking_lot = { workspace = true }

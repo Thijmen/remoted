@@ -1,0 +1,124 @@
+[
+  {
+    "fields": {
+      "capture_us": "1234567890123",
+      "encode_us": 9000,
+      "epoch": 3,
+      "flags": 5,
+      "payload_hex": "0000000165",
+      "seq": 42,
+      "type": "video"
+    },
+    "hex": "010503002a000000cb04fb711f010000282300000000000165",
+    "name": "video"
+  },
+  {
+    "fields": {
+      "capture_us": "9007199254740993",
+      "flags": 0,
+      "payload_hex": "fcff",
+      "seq": 7,
+      "stream": 1,
+      "type": "audio"
+    },
+    "hex": "02000100070000000100000000002000fcff",
+    "name": "audio"
+  },
+  {
+    "fields": {
+      "buttons": 5,
+      "type": "mouse_abs",
+      "x": 65535,
+      "y": 1
+    },
+    "hex": "1005ffff0100",
+    "name": "mouse_abs"
+  },
+  {
+    "fields": {
+      "dx": -5,
+      "dy": 300,
+      "type": "mouse_rel"
+    },
+    "hex": "1100fbff2c01",
+    "name": "mouse_rel"
+  },
+  {
+    "fields": {
+      "button": 2,
+      "down": true,
+      "type": "mouse_btn",
+      "x": 100,
+      "y": 200
+    },
+    "hex": "120201006400c800",
+    "name": "mouse_btn"
+  },
+  {
+    "fields": {
+      "dx": 0,
+      "dy": -3,
+      "mode": 1,
+      "phase": 0,
+      "type": "wheel"
+    },
+    "hex": "13010000fdff0000",
+    "name": "wheel"
+  },
+  {
+    "fields": {
+      "down": true,
+      "hid": 458756,
+      "repeat": true,
+      "type": "key"
+    },
+    "hex": "1401010004000700",
+    "name": "key"
+  },
+  {
+    "fields": {
+      "type": "release_all"
+    },
+    "hex": "1500",
+    "name": "release_all"
+  },
+  {
+    "fields": {
+      "decode_us": 1500,
+      "epoch": 3,
+      "flags": 1,
+      "queue_us": 65535,
+      "seq": 4000000000,
+      "type": "video_ack"
+    },
+    "hex": "2001030000286beedc05ffff",
+    "name": "video_ack"
+  },
+  {
+    "fields": {
+      "id": 9,
+      "t_origin_us": "123456789",
+      "type": "ping"
+    },
+    "hex": "300000000900000015cd5b07000000000000000000000000",
+    "name": "ping"
+  },
+  {
+    "fields": {
+      "id": 9,
+      "t_origin_us": "123456789",
+      "t_reply_us": "987654321000",
+      "type": "pong"
+    },
+    "hex": "310000000900000015cd5b070000000068f3c8f4e5000000",
+    "name": "pong"
+  },
+  {
+    "fields": {
+      "payload_hex": "010203",
+      "type": "probe_up"
+    },
+    "hex": "8000010203",
+    "name": "probe_up"
+  }
+]

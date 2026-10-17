@@ -1,0 +1,32 @@
+[package]
+name = "rd-gateway"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "rd relay: joins viewer and agent WebSockets, serves portal/viewer/probe"
+
+[dependencies]
+rd-proto = { workspace = true }
+rd-flow = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+rust-embed = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+governor = { workspace = true }
+
+[dev-dependencies]
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake"] }
