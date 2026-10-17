@@ -57,9 +57,35 @@ pub fn win_scancode(hid: u32) -> Option<u16> {
     by_hid(hid).and_then(|k| k.win)
 }
 
+/// The table row for a Windows set-1 scancode (`0xE0xx` = extended, i.e. the low-level
+/// keyboard hook's `scanCode | 0xE000` when `LLKHF_EXTENDED` is set).
+pub fn by_win_scancode(scancode: u16) -> Option<&'static KeyEntry> {
+    KEYS.iter().find(|k| k.win == Some(scancode))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_scancodes_map_back_to_codes() {
+        let code = |sc| by_win_scancode(sc).map(|k| k.code);
+        assert_eq!(code(0x000f), Some("Tab"));
+        assert_eq!(code(0x0038), Some("AltLeft"));
+        assert_eq!(code(0xe038), Some("AltRight"));
+        assert_eq!(code(0xe05b), Some("MetaLeft"));
+        assert_eq!(code(0xe048), Some("ArrowUp"));
+        assert_eq!(code(0x0048), Some("Numpad8"));
+        // Every scancode in the table is unique.
+        for k in KEYS.iter().filter(|k| k.win.is_some()) {
+            assert_eq!(
+                by_win_scancode(k.win.unwrap()).unwrap().hid,
+                k.hid,
+                "{}",
+                k.code
+            );
+        }
+    }
 
     #[test]
     fn basic_keys() {
