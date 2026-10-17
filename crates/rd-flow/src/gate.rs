@@ -13,6 +13,8 @@ use crate::rtt::RttTracker;
 
 /// `rtt_min` is the minimum RTT over this window.
 const RTT_WINDOW_US: u64 = 10_000_000;
+/// The encode term is the median of this many recent non-key encode times.
+const ENCODE_SAMPLES: usize = 64;
 
 /// Window configuration.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -28,6 +30,12 @@ pub struct FlowConfig {
     pub target_bps: u32,
     /// RTT assumed before any sample arrives, microseconds. Default 50_000.
     pub initial_rtt_us: u64,
+    /// Encode latency assumed before the first [`FlowGate::on_encode_time`] sample,
+    /// microseconds. Default 10_000. Use 0 when there is no encoder (synthetic frames).
+    pub initial_encode_us: u64,
+    /// Upper clamp of the encode term, microseconds; it is also never more than one frame
+    /// interval (`1e6 / fps`), so a backlogged encoder cannot widen the window. Default 25_000.
+    pub max_encode_us: u64,
 }
 
 impl Default for FlowConfig {
@@ -39,6 +47,8 @@ impl Default for FlowConfig {
             max_frames: 16,
             target_bps: 8_000_000,
             initial_rtt_us: 50_000,
+            initial_encode_us: 10_000,
+            max_encode_us: 25_000,
         }
     }
 }
@@ -78,6 +88,9 @@ pub struct FlowStats {
     pub window_frames: u32,
     pub window_bytes: u64,
     pub rtt_min_us: u64,
+    /// Encode term of the window horizon: median of the recent non-key encode times, clamped
+    /// to `min(max_encode_us, 1e6 / fps)` (`initial_encode_us` before the first sample).
+    pub encode_us: u64,
     /// Total frames dropped by the window since creation (frames refused while paused are not
     /// counted).
     pub drop_window_total: u64,
@@ -98,6 +111,8 @@ pub struct FlowGate {
 struct InFlight {
     seq: u32,
     admitted_at_us: u64,
+    /// Admitted with `force_keyframe` (it carries a requested IDR).
+    forced: bool,
     sent: Option<Sent>,
 }
 
@@ -119,6 +134,8 @@ struct State {
     /// Number of frames in `inflight` that have not been sent yet (still encoding).
     unsent: u32,
     rtt: RttTracker,
+    /// Recent encode times; survive `reset()` (the encoder did not change).
+    encode: EncodeTimes,
     /// Latest clock value seen by any call; `stats()` evaluates the window at this time.
     now_us: u64,
     paused: bool,
@@ -159,6 +176,7 @@ impl FlowGate {
                 sent_bytes: 0,
                 unsent: 0,
                 rtt: RttTracker::new(RTT_WINDOW_US),
+                encode: EncodeTimes::default(),
                 now_us: 0,
                 paused: false,
                 force_keyframe: false,
@@ -189,12 +207,31 @@ impl FlowGate {
         self.inner.lock().force_keyframe = true;
     }
 
-    /// An IDR has been requested (and not paused) but no frame has been admitted since. A
-    /// static screen produces no captures, so the pipeline should then re-submit its most
-    /// recent frame.
+    /// An IDR has been requested (and not paused) but no frame has been admitted since, and
+    /// the window has room for one. A static screen produces no captures, so the pipeline
+    /// should then re-submit its most recent frame. Turns false once a frame is admitted.
     pub fn keyframe_pending(&self) -> bool {
         let s = self.inner.lock();
-        s.force_keyframe && !s.paused
+        s.force_keyframe && !s.paused && (s.inflight.is_empty() || s.window_open())
+    }
+
+    /// A keyframe the viewer has not seen yet is on its way, so a keyframe request arriving now
+    /// is already answered by it: one was requested but not admitted yet (also while paused),
+    /// or the frame carrying it is still in the encoder or the agent's queues, or it was handed
+    /// to the socket less than `rtt_min` ago (a request arriving that soon was sent before the
+    /// viewer can have received the keyframe). `rtt_min` counts only once measured.
+    pub fn keyframe_on_its_way(&self, now_us: u64) -> bool {
+        let mut s = self.inner.lock();
+        s.observe(now_us);
+        if s.force_keyframe {
+            return true;
+        }
+        let crossing_us = s.rtt.min(s.now_us).unwrap_or(0);
+        s.inflight.iter().any(|f| {
+            f.forced
+                && f.sent
+                    .is_none_or(|sent| now_us.saturating_sub(sent.at_us) < crossing_us)
+        })
     }
 
     /// Capture thread: should this captured frame be encoded? `None` = drop before encode
@@ -215,20 +252,26 @@ impl FlowGate {
         s.last_seq = seq;
         s.admitted_total += 1;
         s.unsent += 1;
+        let force_keyframe = std::mem::take(&mut s.force_keyframe);
         s.inflight.push_back(InFlight {
             seq,
             admitted_at_us: now_us,
+            forced: force_keyframe,
             sent: None,
         });
         Some(Admitted {
             seq,
-            force_keyframe: std::mem::take(&mut s.force_keyframe),
+            force_keyframe,
         })
     }
 
-    /// The encoder produced no output for an admitted `seq`: remove it from the window.
+    /// The encoder produced no output for an admitted `seq`: remove it from the window. If that
+    /// frame was to carry a requested IDR, the request is re-armed for the next frame.
     pub fn cancel(&self, seq: u32) {
-        self.inner.lock().remove(seq);
+        let mut s = self.inner.lock();
+        if s.remove(seq).is_some_and(|f| f.forced && f.sent.is_none()) {
+            s.force_keyframe = true;
+        }
     }
 
     /// Network task: encoded frame `seq` of `bytes` was handed to the socket at `now_us`.
@@ -248,6 +291,17 @@ impl FlowGate {
         });
         s.unsent -= 1;
         s.sent_bytes += bytes as u64;
+    }
+
+    /// How long the encoder took for one frame: submit to output, as measured by the platform
+    /// (rd-agent-core's `EncodedFrame::encode_us`). It must not include queueing after the
+    /// encoder (the agent's own send queues), or the window would grow under congestion.
+    /// Keyframes are ignored. The median of the last 64 samples sizes the window horizon (see
+    /// [`FlowStats::encode_us`]).
+    pub fn on_encode_time(&self, encode_us: u32, key: bool) {
+        if !key {
+            self.inner.lock().encode.push(encode_us);
+        }
     }
 
     /// An already-encoded frame had to be discarded (should never happen). Removes it from the
@@ -324,7 +378,8 @@ impl FlowGate {
     /// Clear the window (new session / reconnect). Keeps seq counter and totals.
     ///
     /// Also forgets the RTT history (the path may have changed), un-pauses, and forces the next
-    /// admitted frame to be an IDR (the receiver starts without a reference frame).
+    /// admitted frame to be an IDR (the receiver starts without a reference frame). The encode
+    /// times are kept (same encoder).
     pub fn reset(&self) {
         let mut s = self.inner.lock();
         s.inflight.clear();
@@ -344,6 +399,7 @@ impl FlowGate {
             window_frames: s.window_frames(horizon),
             window_bytes: s.window_bytes(horizon),
             rtt_min_us: s.rtt_min_us(),
+            encode_us: s.encode_term_us(),
             drop_window_total: s.drop_window_total,
             drop_post_total: s.drop_post_total,
             admitted_total: s.admitted_total,
@@ -362,9 +418,23 @@ impl State {
         self.rtt.min(self.now_us).unwrap_or(self.cfg.initial_rtt_us)
     }
 
-    /// `rtt_min + queue_target`, the delay budget the window is sized for.
+    /// The encode term: median of the recent non-key encode times (`initial_encode_us` before
+    /// the first sample), at most `max_encode_us` and one frame interval.
+    fn encode_term_us(&self) -> u64 {
+        let frame_us = 1_000_000 / u64::from(self.cfg.fps.max(1));
+        let cap = self.cfg.max_encode_us.min(frame_us);
+        self.encode
+            .median
+            .map_or(self.cfg.initial_encode_us, u64::from)
+            .min(cap)
+    }
+
+    /// `rtt_min + encode + queue_target`, the delay budget the window is sized for. Frames
+    /// count from admission, so the time they spend in the encoder must fit in it too.
     fn horizon_us(&self) -> u64 {
-        self.rtt_min_us().saturating_add(self.cfg.queue_target_us)
+        self.rtt_min_us()
+            .saturating_add(self.encode_term_us())
+            .saturating_add(self.cfg.queue_target_us)
     }
 
     /// `W_frames = clamp(ceil(fps * horizon) + 1, min_frames, max_frames)`.
@@ -395,17 +465,48 @@ impl State {
         bytes < self.window_bytes(horizon)
     }
 
-    /// Drop `seq` from the window if it is still in flight.
-    fn remove(&mut self, seq: u32) {
-        let Some(idx) = self.inflight.iter().position(|f| f.seq == seq) else {
-            return;
-        };
-        if let Some(frame) = self.inflight.remove(idx) {
-            match frame.sent {
-                Some(sent) => self.sent_bytes -= sent.bytes as u64,
-                None => self.unsent -= 1,
-            }
+    /// Drop `seq` from the window if it is still in flight; returns the removed frame.
+    fn remove(&mut self, seq: u32) -> Option<InFlight> {
+        let idx = self.inflight.iter().position(|f| f.seq == seq)?;
+        let frame = self.inflight.remove(idx)?;
+        match frame.sent {
+            Some(sent) => self.sent_bytes -= sent.bytes as u64,
+            None => self.unsent -= 1,
         }
+        Some(frame)
+    }
+}
+
+/// Ring of the last [`ENCODE_SAMPLES`] encode times with a cached median.
+#[derive(Debug, Clone, Copy)]
+struct EncodeTimes {
+    ring: [u32; ENCODE_SAMPLES],
+    len: usize,
+    next: usize,
+    median: Option<u32>,
+}
+
+impl Default for EncodeTimes {
+    fn default() -> Self {
+        EncodeTimes {
+            ring: [0; ENCODE_SAMPLES],
+            len: 0,
+            next: 0,
+            median: None,
+        }
+    }
+}
+
+impl EncodeTimes {
+    /// O(n) on a 64-entry copy (~100 ns), once per encoded frame.
+    fn push(&mut self, us: u32) {
+        self.ring[self.next] = us;
+        self.next = (self.next + 1) % ENCODE_SAMPLES;
+        self.len = (self.len + 1).min(ENCODE_SAMPLES);
+        let mut samples = self.ring;
+        let live = &mut samples[..self.len];
+        let mid = live.len() / 2;
+        self.median = Some(*live.select_nth_unstable(mid).1);
     }
 }
 
@@ -415,10 +516,17 @@ mod tests {
 
     const MS: u64 = 1_000;
 
-    /// 60 fps, 8 Mbps, 50 ms assumed RTT: W_frames = ceil(60 * 0.09) + 1 = 7,
+    /// 60 fps, 8 Mbps, 50 ms assumed RTT, no encode term: W_frames = ceil(60 * 0.09) + 1 = 7,
     /// W_bytes = 1 MB/s * 0.09 s = 90_000.
     fn gate() -> FlowGate {
-        FlowGate::new(FlowConfig::default())
+        FlowGate::new(no_encoder())
+    }
+
+    fn no_encoder() -> FlowConfig {
+        FlowConfig {
+            initial_encode_us: 0,
+            ..FlowConfig::default()
+        }
     }
 
     fn admit_seq(g: &FlowGate, now: u64) -> u32 {
@@ -432,8 +540,147 @@ mod tests {
         assert_eq!(s.window_frames, 7);
         assert_eq!(s.window_bytes, 90_000);
         assert_eq!(s.rtt_min_us, 50_000);
+        assert_eq!(s.encode_us, 0);
         assert_eq!(s.last_seq, 0);
         assert!(!s.paused);
+        // The default assumes 10 ms of encode latency until measured: 100 ms horizon.
+        let s = FlowGate::new(FlowConfig::default()).stats();
+        assert_eq!(s.encode_us, 10_000);
+        assert_eq!((s.window_frames, s.window_bytes), (7, 100_000));
+    }
+
+    #[test]
+    fn encode_time_widens_the_window() {
+        let g = FlowGate::new(FlowConfig {
+            fps: 50,
+            ..no_encoder()
+        });
+        g.on_rtt_sample(20 * MS, 0);
+        // 20 ms RTT + 40 ms queue target: ceil(50 * 0.06) + 1 = 4 frames, 60 kB.
+        let base = g.stats();
+        assert_eq!((base.window_frames, base.window_bytes), (4, 60_000));
+        for _ in 0..10 {
+            g.on_encode_time(18_000, false);
+        }
+        let s = g.stats();
+        assert_eq!(s.encode_us, 18_000);
+        // W grows by ceil(fps * enc) = ceil(0.9) = 1 frame, and by target/8 * enc bytes.
+        assert_eq!(s.window_frames, base.window_frames + 1);
+        assert_eq!(s.window_bytes, base.window_bytes + 18_000);
+        // Admission follows: 5 frames fit now (4 before).
+        for i in 0..5 {
+            assert!(g.admit(MS + i).is_some(), "frame {i}");
+            g.on_sent(i as u32 + 1, 100, false, MS + i);
+        }
+        assert_eq!(g.admit(MS + 10), None);
+    }
+
+    #[test]
+    fn encode_term_is_a_clamped_median_of_delta_frames() {
+        let g = FlowGate::new(FlowConfig::default());
+        // Keyframes take longer and are rare: not samples.
+        g.on_encode_time(40_000, true);
+        assert_eq!(g.stats().encode_us, 10_000, "initial value until a sample");
+        for us in [9_000, 30_000, 8_000] {
+            g.on_encode_time(us, false);
+        }
+        assert_eq!(g.stats().encode_us, 9_000, "median");
+        // Only the last 64 samples count.
+        for _ in 0..64 {
+            g.on_encode_time(30_000, false);
+        }
+        for _ in 0..33 {
+            g.on_encode_time(5_000, false);
+        }
+        assert_eq!(g.stats().encode_us, 5_000);
+        // A backlogged encoder cannot widen the window beyond max_encode_us ...
+        let g = FlowGate::new(FlowConfig {
+            fps: 30,
+            ..FlowConfig::default()
+        });
+        for _ in 0..64 {
+            g.on_encode_time(200_000, false);
+        }
+        assert_eq!(g.stats().encode_us, 25_000);
+        // ... nor beyond one frame interval.
+        g.set_fps(120);
+        assert_eq!(g.stats().encode_us, 8_333);
+        g.set_fps(0);
+        assert_eq!(g.stats().encode_us, 25_000, "fps 0 must not divide by zero");
+        // The samples survive a reset (same encoder, new viewer).
+        g.set_fps(30);
+        g.reset();
+        assert_eq!(g.stats().encode_us, 25_000);
+    }
+
+    #[test]
+    fn keyframe_on_its_way_until_sent_plus_one_rtt() {
+        let g = gate();
+        assert!(!g.keyframe_on_its_way(0));
+        g.request_keyframe();
+        assert!(g.keyframe_on_its_way(0), "requested, not admitted");
+        let plain = admit_seq(&g, 0);
+        assert_ne!(plain, 0);
+        let forced = g.admit(1).unwrap();
+        assert!(
+            !forced.force_keyframe,
+            "consumed by the first admitted frame"
+        );
+        // The first frame carried it.
+        assert!(g.keyframe_on_its_way(2), "in the encoder");
+        g.on_sent(plain, 100, false, 3);
+        g.on_sent(1, 5_000, true, 3);
+        // No RTT measured yet: once sent, a later request may be a new one.
+        assert!(!g.keyframe_on_its_way(4));
+        // With a 30 ms RTT, a request arriving within 30 ms of the send crossed the keyframe.
+        g.on_rtt_sample(30 * MS, 5);
+        assert!(g.keyframe_on_its_way(20 * MS));
+        assert!(!g.keyframe_on_its_way(31 * MS));
+        g.on_ack(2, 0, 40 * MS);
+        assert!(!g.keyframe_on_its_way(41 * MS));
+        // Requested while paused: still on its way (produced on resume).
+        g.set_paused(true);
+        g.request_keyframe();
+        assert!(g.keyframe_on_its_way(42 * MS));
+    }
+
+    #[test]
+    fn cancelled_keyframe_is_requested_again() {
+        let g = gate();
+        g.request_keyframe();
+        let a = g.admit(0).unwrap();
+        assert!(a.force_keyframe);
+        assert!(!g.keyframe_pending());
+        // The encoder produced nothing for it: the next frame must be the IDR.
+        g.cancel(a.seq);
+        assert!(g.keyframe_pending());
+        assert!(g.admit(1).unwrap().force_keyframe);
+    }
+
+    #[test]
+    fn keyframe_pending_until_a_frame_is_admitted() {
+        let g = FlowGate::new(FlowConfig {
+            max_frames: 2,
+            ..no_encoder()
+        });
+        assert!(!g.keyframe_pending());
+        g.admit(0);
+        g.admit(1);
+        g.request_keyframe();
+        assert!(
+            !g.keyframe_pending(),
+            "no room: a re-submitted frame would be refused"
+        );
+        g.on_ack(1, 0, 2);
+        assert!(g.keyframe_pending());
+        g.set_paused(true);
+        assert!(!g.keyframe_pending(), "paused");
+        g.set_paused(false);
+        assert!(g.admit(3).unwrap().force_keyframe);
+        assert!(
+            !g.keyframe_pending(),
+            "turns false once a frame is admitted"
+        );
     }
 
     #[test]
@@ -536,7 +783,7 @@ mod tests {
         // A refused frame does not consume it.
         let g = FlowGate::new(FlowConfig {
             max_frames: 2,
-            ..FlowConfig::default()
+            ..no_encoder()
         });
         g.admit(0);
         g.admit(1);

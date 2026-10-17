@@ -45,7 +45,13 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
 5. Either side → `{"t":"session_end","session":"…","reason":"…"}`.
 6. Keepalive: the gateway sends WebSocket Ping frames every 15 s on every leg and closes a leg after
    45 s without Pong. The agent reconnects its control socket if it receives nothing for 30 s.
-   Agent reconnect backoff: 1 s → 30 s exponential with ±20 % jitter.
+   Agent reconnect backoff: 1 s → 30 s exponential with ±20 % jitter, reset after a registration.
+   How the control upgrade's answer changes that:
+   - 401/403, and closes 4002 (wrong machine) / 4009 (replaced): a refusal, wait 30 s.
+   - 429 (failed-login rate limit): wait `Retry-After` (≤ 10 min), else 30 s.
+   - Any other HTTP answer (the proxy's 502/503/504, or 404 when the gateway's route is gone,
+     while the gateway pod restarts): retry every 1 s (±20 %) for up to 2 min, then exponential.
+   - No answer (TCP/TLS failure, timeout): exponential.
 
 ## Viewer session (`/ws/view/{machine}`)
 
@@ -58,12 +64,19 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
 5. Agent → viewer `{"t":"hello","proto":1,"agent":{"os":"macos","version":"0.1.0","displays":[{"id":0,"w_pt":1728,"h_pt":1117,"scale":2.0}]},"caps":["audio","refine"]}`
    (`proto = min(maxes)`; if incompatible agent sends `{"t":"error","code":"proto_mismatch"}` and closes 4005.)
 6. Viewer → `{"t":"start","width":1728,"height":1118,"fps":60,"codec":"avc","start_kbps":8000,"min_kbps":1000,"max_kbps":20000,"adaptive":true,"audio":false,"display":0}`
+   `width`×`height` is a bounding box: the agent always streams the display's own aspect ratio,
+   scaled to the largest even size that fits in the box (never up; at least 320×200), e.g.
+   1728×1118 on a 16:9 display gives 1728×972. `video_config` carries the size actually sent.
+   A `start`/`set` that does not parse (e.g. an unknown codec) or that the agent cannot serve is
+   answered with `{"t":"error","code":"bad_request","msg":…}`; messages with an unknown `t` are
+   ignored.
 7. Agent → `{"t":"video_config","epoch":1,"codec":"avc1.640033","width":1728,"height":1118,"description":"<base64 avcC>"}`
    then VIDEO frames (first has `FIRST_OF_EPOCH|KEY`), `{"t":"stats",…}` every second,
    `{"t":"state",…}` on change, `{"t":"error","code":…}` on problems.
 8. Viewer sends VIDEO_ACK after each decoder output (or discard), input events, `keyframe_req`
-   (agent rate-limits to 1 per 500 ms), `pause`/`resume` (tab hidden/visible), `set` (partial params;
-   size/display/codec change ⇒ new epoch ⇒ new `video_config` + keyframe).
+   (see Keyframes below), `pause`/`resume` (tab hidden/visible; the agent sends a keyframe on
+   resume by itself, so the viewer need not ask), `set` (partial params; size/display/codec
+   change ⇒ new epoch ⇒ new `video_config` + keyframe).
 9. PING/PONG both ways: the agent pings every 500 ms (RTT → flow window); the viewer pings every 1 s
    (clock offset). Every PING must be answered immediately with a PONG
    (`t_origin_us` echoed, `t_reply_us` = responder clock).
@@ -73,6 +86,14 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
 Agent side: the session socket is the only one carrying media. When it closes the agent stops the
 pipeline, releases all keys/buttons and drops the keep-awake guard.
 
+- **Locked host:** the agent never injects input into the lock screen. While the host is locked
+  (checked at most every 200 ms) every input event except RELEASE_ALL is dropped; keys/buttons
+  still held when the lock is noticed are released. The first dropped event of a locked period
+  makes the agent send the viewer `{"t":"state",…,"locked":true}` (once per period).
+- **Capture stopped:** if capture stops on its own (permission revoked, display gone, capture
+  service error) the agent sends `{"t":"error","code":"capture_stopped","msg":…}` once (checked
+  every second) and keeps the session open; it is reported again only after capture ran again.
+
 ### Clocks
 - Agent timestamps: `rd_agent_core::clock::now_us()` (monotonic µs since agent start).
 - Viewer timestamps: `Math.round(performance.now() * 1000)`.
@@ -80,14 +101,58 @@ pipeline, releases all keys/buttons and drops the keep-awake guard.
   `offset = t_reply − (t_origin + t_recv) / 2`. capture→paint = `(paint_us + offset) − capture_us`.
 
 ## Flow control (agent) — see `crates/rd-flow`
-- Window: `W_frames = clamp(ceil(fps·(rtt_min + 40ms)) + 1, 2, 16)`, `W_bytes = target_bps/8·(rtt_min + 40ms)`.
-- Capture callback: `gate.admit()` → `None` = drop before encode. Always admit if nothing in flight.
-- Encoded frames are never dropped (not by the agent, not by the gateway). If one ever must be, the
-  next frame is forced IDR (`FrameGate::post_encode_drop`).
+- **Window:** `horizon = rtt_min + enc + 40 ms`,
+  `W_frames = clamp(ceil(fps·horizon) + 1, 2, 16)`, `W_bytes = target_bps/8 · horizon`.
+  - `rtt_min`: lowest agent PING RTT (every 500 ms) over the last 10 s; 50 ms until measured.
+  - `enc`: median encoder time (`encode_us`, VideoToolbox submit → output) of the last 64
+    non-key frames, clamped to `min(25 ms, 1/fps)`; 10 ms until measured (0 in the gateway's
+    synthetic probe). Frames count from admission, so their time in the encoder must fit in the
+    budget too. Time in the agent's own send queues is deliberately not part of it (it would
+    widen the window exactly when the socket is congested). In `stats` as `window_enc_ms`.
+  - Frames still in the encoder count against `W_bytes` at the average frame size
+    (`target_bps/8/fps`).
+- Capture callback: `gate.admit()` → `None` = drop before encode. Always admit if nothing is in
+  flight (a keyframe larger than `W_bytes` cannot deadlock). Paused: admit nothing.
+- Encoded frames are never dropped (not by the agent, not by the gateway). The queue between the
+  encoder and the sender holds 32 frames (2 × the largest window), so frames the window admitted
+  always fit, even while the socket is blocked. If one ever must be dropped, the next frame is
+  forced IDR (`FrameGate::post_encode_drop`). If the encoder drops a frame that was to carry a
+  requested IDR (`cancel`), the next frame carries it instead.
 - Viewer ACKs after **decoder output** (so decoder backlog counts toward the window), cumulative.
-- Stall: oldest in-flight > 1.5 s → log; > 8 s → agent closes the session (4006), viewer reconnects.
-- Bitrate: delay-based controller ticking every 250 ms (`BitrateController`), applies to the encoder only
-  on > 5 % change.
+  A window reset (resume after > 1.5 s with unacknowledged frames) forgets in-flight frames and
+  `rtt_min` (not `enc`) and forces an IDR.
+- **Keyframes** are forced for a new stream, on resume, on `keyframe_req` and after a window
+  reset or post-encode drop. A `keyframe_req` is dropped when a keyframe the viewer has not seen
+  yet is already on its way: requested but not yet admitted, in the encoder or the agent's
+  queues, or handed to the socket less than `rtt_min` ago (the request crossed it). Otherwise at
+  most one per 500 ms; requests inside the interval are coalesced into one at its end. A static
+  screen produces no captures, so the pipeline polls `FrameGate::refresh_wanted()` (a keyframe
+  is wanted, not paused, room in the window; false once a frame is admitted) and re-submits its
+  most recent frame.
+- Stall: oldest in-flight > 1.5 s → log; > 8 s → agent closes the session (4006), viewer
+  reconnects (not while paused).
+- **Bitrate:** delay-based `BitrateController`, ticking every 250 ms:
+  ```text
+  serialization_i = bytes_i · 8 / max(delivery_rate, 1 Mbps)
+  q_i = sent_to_ack_i − rtt_min − serialization_i − decode_i       (sent non-key frames)
+  q   = median(q_i over the last 500 ms)
+  delivery_rate = bits ACKed in the last 1 s;  app_limited = encoded rate (1 s) < 0.7 · target
+  drop_ratio = window drops / captured frames, last 1 s
+
+  q > 150 ms                                  → target = max(min, 0.7 · delivery); hold 2 s
+  q > 50 ms for 2 ticks, or (q ≥ 15 ms and drop_ratio > 10 %),
+    or (q ≥ 5 ms with window drops for 4 ticks)
+                                              → target = max(min, min(0.85 · target, 0.95 · delivery)); hold 2 s
+  startup (first 3 s), q < 15 ms, !app_limited → target · 1.25 per tick (window drops ignored)
+  after the hold, q < 15 ms, !app_limited, no window drop for 2 s
+                                              → every 500 ms: target = min(max, 1.06 · target + 200 kbps)
+  ```
+  - `q` and the drop ratio only use frames sent / captured after the most recent cut, so stale
+    samples cannot cut twice. Cuts never raise the target.
+  - Until the first full second has elapsed, rates are averaged over the elapsed time.
+  - A change is pushed to the encoder only when it is > 5 % from the last one pushed; in fixed
+    mode (`adaptive:false`) the target stays at `start_kbps` and every change of it is pushed.
+  - Why each refinement exists: `crates/rd-flow/src/bitrate.rs` (tuned with `tests/sim.rs`).
 
 ## Gateway HTTP surface (viewer port 8080)
 

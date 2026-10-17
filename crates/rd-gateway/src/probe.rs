@@ -116,6 +116,8 @@ impl Run {
                 gate: FlowGate::new(FlowConfig {
                     fps,
                     target_bps: max_bps,
+                    // Synthetic frames: no encoder latency in the window horizon.
+                    initial_encode_us: 0,
                     ..FlowConfig::default()
                 }),
                 bitrate: BitrateController::new(

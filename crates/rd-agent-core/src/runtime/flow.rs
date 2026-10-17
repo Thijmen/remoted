@@ -19,6 +19,9 @@ const MIN_HEIGHT: u32 = 200;
 const MAX_FPS: u32 = 120;
 const MIN_KBPS: u32 = 100;
 const MAX_KBPS: u32 = 500_000;
+/// Upper clamp of the flow window (`W_frames`). The frame sink is sized from it so that frames
+/// the window admitted always fit (see `session::FRAME_SINK_CAPACITY`).
+pub(crate) const MAX_WINDOW_FRAMES: u32 = 16;
 
 /// Window + bitrate state of one session. Thread-safe: the capture/encoder threads call the
 /// [`FrameGate`] methods, the network tasks the rest.
@@ -31,13 +34,18 @@ pub(crate) struct Flow {
 }
 
 impl Flow {
+    /// A new session's flow. The first frame is a keyframe ([`FrameGate::refresh_wanted`]
+    /// stays true until one is admitted, so a static screen still produces it).
     pub(crate) fn new(params: &Effective) -> Self {
+        let gate = FlowGate::new(FlowConfig {
+            fps: params.fps,
+            target_bps: params.bitrate.start_bps,
+            max_frames: MAX_WINDOW_FRAMES,
+            ..FlowConfig::default()
+        });
+        gate.request_keyframe();
         Flow {
-            gate: FlowGate::new(FlowConfig {
-                fps: params.fps,
-                target_bps: params.bitrate.start_bps,
-                ..FlowConfig::default()
-            }),
+            gate,
             bitrate: Mutex::new(BitrateController::new(params.bitrate, now_us())),
             paused: AtomicBool::new(false),
             captured: AtomicU64::new(0),
@@ -148,16 +156,34 @@ impl Effective {
     }
 }
 
-/// Fits the requested size into the display's native size (keeping the aspect ratio), enforces
-/// the minimum size and rounds down to even numbers (4:2:0 chroma).
+/// The output size for a requested `width`x`height` on a display of `native` pixels. The
+/// result always has the **display's** aspect ratio: the request is a bounding box, and the
+/// display is scaled to the largest size that fits in it (never up), then raised to the minimum
+/// size if needed, and rounded to even numbers (4:2:0 chroma).
+///
+/// The display's own aspect matters: the capture scales the display into the output frame
+/// keeping its aspect, so any other aspect would letterbox it inside the frame, and the viewer
+/// (which maps the pointer over the whole frame) would click next to where it points.
 pub(crate) fn clamp_size(width: u32, height: u32, native: (u32, u32)) -> (u32, u32) {
     let (nw, nh) = (native.0.max(2), native.1.max(2));
-    let (w, h) = (f64::from(width.max(1)), f64::from(height.max(1)));
-    let scale = (f64::from(nw) / w).min(f64::from(nh) / h).min(1.0);
-    let fit = |v: f64, min: u32, max: u32| ((v * scale).round() as u32).clamp(min.min(max), max);
-    let w = fit(w, MIN_WIDTH, nw);
-    let h = fit(h, MIN_HEIGHT, nh);
-    (w & !1, h & !1)
+    let (fw, fh) = (f64::from(nw), f64::from(nh));
+    let (bw, bh) = (width.max(1), height.max(1));
+    // Largest scale that fits the bounding box, and the smallest that meets the minimums.
+    let fit = (f64::from(bw) / fw).min(f64::from(bh) / fh);
+    let floor = (f64::from(MIN_WIDTH) / fw).max(f64::from(MIN_HEIGHT) / fh);
+    let scale = fit.max(floor).min(1.0);
+    // Rounded to the nearest even number, but never beyond the display or (unless the minimum
+    // size forced a larger scale) the requested box.
+    let request_bound = scale <= fit;
+    let even = |v: f64, native: u32, requested: u32| {
+        let mut limit = native;
+        if request_bound {
+            limit = limit.min(requested);
+        }
+        let rounded = ((v / 2.0).round() as u32).saturating_mul(2);
+        rounded.min(limit & !1).max(2)
+    };
+    (even(fw * scale, nw, bw), even(fh * scale, nh, bh))
 }
 
 /// Bitrate limits from `start`: `min <= start <= max`, all within sane bounds. Zero values fall
@@ -203,20 +229,77 @@ mod tests {
         }
     }
 
+    /// Width/height of `size` vs the display's, as a relative error.
+    fn aspect_error(size: (u32, u32), native: (u32, u32)) -> f64 {
+        let a = f64::from(size.0) / f64::from(size.1);
+        let n = f64::from(native.0) / f64::from(native.1);
+        (a / n - 1.0).abs()
+    }
+
     #[test]
     fn sizes() {
+        // The built-in 16" panel (3456x2234 px, 16:10.3): the presets fit it.
         let native = (3456, 2234);
         assert_eq!(clamp_size(1728, 1118, native), (1728, 1118));
         assert_eq!(clamp_size(1727, 1117, native), (1726, 1116));
         assert_eq!(clamp_size(3456, 2234, native), (3456, 2234));
-        // Too large: scaled down to fit, aspect kept.
+        assert_eq!(clamp_size(1280, 828, native), (1280, 828));
+        // Too large: the whole display, never upscaled.
         assert_eq!(clamp_size(6912, 4468, native), (3456, 2234));
-        assert_eq!(clamp_size(7000, 1000, native), (3456, 494));
-        // Too small: minimum per dimension.
-        assert_eq!(clamp_size(100, 100, native), (320, 200));
-        assert_eq!(clamp_size(0, 0, native), (320, 200));
+        assert_eq!(clamp_size(7001, 4469, native), (3456, 2234));
+        // A box of another shape: the display's aspect, fitted inside it.
+        assert_eq!(clamp_size(7000, 1000, native), (1548, 1000));
+        assert_eq!(clamp_size(1000, 7000, native), (1000, 646));
+        // Too small: raised to the minimum size, aspect kept.
+        assert_eq!(clamp_size(100, 100, native), (320, 206));
+        assert_eq!(clamp_size(0, 0, native), (320, 206));
         // A display smaller than the minimum wins.
         assert_eq!(clamp_size(1920, 1080, (300, 101)), (300, 100));
+    }
+
+    #[test]
+    fn sizes_on_a_16_9_display() {
+        // External monitor / HDMI dummy plug at 1920x1080 pt, HiDPI and not.
+        for native in [(3840, 2160), (1920, 1080)] {
+            // The default preset is a bounding box: 1728 wide, the display's 16:9 height.
+            assert_eq!(clamp_size(1728, 1118, native), (1728, 972), "{native:?}");
+            assert_eq!(clamp_size(1280, 828, native), (1280, 720), "{native:?}");
+            assert_eq!(clamp_size(100, 100, native), (356, 200), "{native:?}");
+        }
+        assert_eq!(clamp_size(2592, 1676, (3840, 2160)), (2592, 1458));
+        assert_eq!(clamp_size(3456, 2234, (3840, 2160)), (3456, 1944));
+        assert_eq!(clamp_size(3456, 2234, (1920, 1080)), (1920, 1080));
+        // Ultrawide and portrait.
+        assert_eq!(clamp_size(1728, 1118, (3440, 1440)), (1728, 724));
+        assert_eq!(clamp_size(1728, 1118, (1080, 1920)), (628, 1118));
+        for native in [
+            (3840, 2160),
+            (1920, 1080),
+            (3440, 1440),
+            (1080, 1920),
+            (2560, 1600),
+        ] {
+            for (w, h) in [
+                (1728, 1118),
+                (2592, 1676),
+                (1280, 828),
+                (1536, 750),
+                (640, 480),
+            ] {
+                let size = clamp_size(w, h, native);
+                assert!(
+                    size.0.is_multiple_of(2) && size.1.is_multiple_of(2),
+                    "{size:?}"
+                );
+                assert!(size.0 <= native.0 && size.1 <= native.1, "{size:?}");
+                // Inside the requested box, unless the minimum size had to win.
+                if size.0 > MIN_WIDTH && size.1 > MIN_HEIGHT {
+                    assert!(size.0 <= w && size.1 <= h, "{size:?} outside {w}x{h}");
+                }
+                // Within the rounding of one pixel per dimension.
+                assert!(aspect_error(size, native) < 0.005, "{size:?} on {native:?}");
+            }
+        }
     }
 
     #[test]
@@ -248,6 +331,11 @@ mod tests {
         let d = StreamDefaults::default();
         let e = Effective::new(&params(1728, 1118), Some((3456, 2234)), &d).unwrap();
         assert_eq!((e.width, e.height, e.fps), (1728, 1118, 60));
+        // On a 16:9 display the preset becomes 16:9, and that is what the pipeline (and from
+        // there video_config) gets.
+        let e = Effective::new(&params(1728, 1118), Some((3840, 2160)), &d).unwrap();
+        let cfg = e.video_config(8_000_000);
+        assert_eq!((cfg.width, cfg.height), (1728, 972));
         assert!(Effective::new(&params(1728, 1118), None, &d).is_err());
         let mut p = params(1728, 1118);
         p.codec = VideoCodec::Hevc;
@@ -255,5 +343,27 @@ mod tests {
         p.codec = VideoCodec::Avc;
         p.fps = 1000;
         assert_eq!(Effective::new(&p, Some((3456, 2234)), &d).unwrap().fps, 120);
+    }
+
+    #[test]
+    fn refresh_wanted_follows_keyframe_requests() {
+        let d = StreamDefaults::default();
+        let e = Effective::new(&params(1728, 1118), Some((3456, 2234)), &d).unwrap();
+        let flow = Flow::new(&e);
+        // A new session wants its first keyframe.
+        assert!(flow.refresh_wanted());
+        let first = flow.admit(now_us()).unwrap();
+        assert!(first.force_keyframe);
+        assert!(!flow.refresh_wanted(), "false once a frame is admitted");
+        flow.gate.on_ack(first.seq, 0, now_us());
+        // keyframe_req / resume.
+        flow.gate.request_keyframe();
+        assert!(flow.refresh_wanted());
+        flow.set_paused(true);
+        assert!(!flow.refresh_wanted(), "not while paused");
+        flow.set_paused(false);
+        assert!(flow.refresh_wanted());
+        assert!(flow.admit(now_us()).unwrap().force_keyframe);
+        assert!(!flow.refresh_wanted());
     }
 }

@@ -3,6 +3,7 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -24,7 +25,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::StatusCode;
 
 pub const TOKEN: &str = "rd1.mbp.secret";
 pub const SESSION_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -67,6 +69,11 @@ pub struct FakePlatform {
     events: Arc<Mutex<Vec<Event>>>,
     /// Capture rate of the fake pipeline, independent of the requested fps.
     capture_fps: u32,
+    /// What `VideoPipeline::failure` reports.
+    capture_failure: Arc<Mutex<Option<String>>>,
+    /// Nothing changes on screen: after its first frame the pipeline only captures when the
+    /// gate wants a refresh (like ScreenCaptureKit, which delivers no frame for an idle screen).
+    static_screen: Arc<AtomicBool>,
 }
 
 impl FakePlatform {
@@ -79,7 +86,17 @@ impl FakePlatform {
             }),
             events: Arc::default(),
             capture_fps,
+            capture_failure: Arc::default(),
+            static_screen: Arc::default(),
         })
+    }
+
+    pub fn set_capture_failure(&self, reason: Option<&str>) {
+        *self.capture_failure.lock() = reason.map(str::to_owned);
+    }
+
+    pub fn set_static_screen(&self, on: bool) {
+        self.static_screen.store(on, Ordering::SeqCst);
     }
 
     pub fn set_locked(&self, locked: bool) {
@@ -155,6 +172,8 @@ impl Platform for FakePlatform {
         Ok(Box::new(FakePipeline {
             events: self.events.clone(),
             capture_fps: self.capture_fps,
+            failure: self.capture_failure.clone(),
+            static_screen: self.static_screen.clone(),
             running: None,
             gate: None,
             sink: None,
@@ -189,6 +208,8 @@ impl InputInjector for RecordingInjector {
 struct FakePipeline {
     events: Arc<Mutex<Vec<Event>>>,
     capture_fps: u32,
+    failure: Arc<Mutex<Option<String>>>,
+    static_screen: Arc<AtomicBool>,
     running: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
     gate: Option<Arc<dyn FrameGate>>,
     sink: Option<FrameSink>,
@@ -201,11 +222,15 @@ impl FakePipeline {
         };
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
+        let static_screen = self.static_screen.clone();
         let period = Duration::from_secs(1) / self.capture_fps;
         let thread = std::thread::spawn(move || {
             let mut need_config = true;
             while !thread_stop.load(Ordering::SeqCst) {
                 std::thread::sleep(period);
+                if !need_config && static_screen.load(Ordering::SeqCst) && !gate.refresh_wanted() {
+                    continue;
+                }
                 let capture_us = now_us();
                 let Some(admitted) = gate.admit(capture_us) else {
                     continue;
@@ -272,6 +297,9 @@ impl VideoPipeline for FakePipeline {
     }
     fn set_bitrate(&self, bps: u32) {
         self.events.lock().push(Event::Bitrate(bps));
+    }
+    fn failure(&self) -> Option<String> {
+        self.failure.lock().clone()
     }
     fn stop(&mut self) {
         let was_running = self.running.is_some();
@@ -412,6 +440,8 @@ pub struct FakeGateway {
     pub url: String,
     controls: mpsc::UnboundedReceiver<Conn>,
     sessions: mpsc::UnboundedReceiver<Conn>,
+    /// HTTP statuses for the next control upgrades (instead of accepting them).
+    reject: Arc<Mutex<VecDeque<u16>>>,
     _accept: tokio::task::JoinHandle<()>,
 }
 
@@ -421,9 +451,12 @@ impl FakeGateway {
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let (control_tx, controls) = mpsc::unbounded_channel();
         let (session_tx, sessions) = mpsc::unbounded_channel();
+        let reject: Arc<Mutex<VecDeque<u16>>> = Arc::default();
+        let reject_accept = reject.clone();
         let accept = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let (control_tx, session_tx) = (control_tx.clone(), session_tx.clone());
+                let reject = reject_accept.clone();
                 tokio::spawn(async move {
                     let seen = Arc::new(Mutex::new((String::new(), None)));
                     let seen_cb = seen.clone();
@@ -434,7 +467,15 @@ impl FakeGateway {
                             .get("authorization")
                             .and_then(|v| v.to_str().ok())
                             .map(str::to_owned);
-                        *seen_cb.lock() = (req.uri().path().to_owned(), auth);
+                        let path = req.uri().path().to_owned();
+                        if path == "/ws/agent"
+                            && let Some(status) = reject.lock().pop_front()
+                        {
+                            let mut err = ErrorResponse::new(Some("rejected by the test".into()));
+                            *err.status_mut() = StatusCode::from_u16(status).unwrap();
+                            return Err(err);
+                        }
+                        *seen_cb.lock() = (path, auth);
                         Ok(resp)
                     };
                     let Ok(ws) = tokio_tungstenite::accept_hdr_async(stream, callback).await else {
@@ -455,8 +496,14 @@ impl FakeGateway {
             url,
             controls,
             sessions,
+            reject,
             _accept: accept,
         }
+    }
+
+    /// Answer the next control upgrades with these HTTP statuses.
+    pub fn reject_controls(&self, statuses: &[u16]) {
+        self.reject.lock().extend(statuses);
     }
 
     /// The next control connection, after checking its `register` and answering it.
@@ -569,6 +616,17 @@ impl Viewer {
         send_json(&mut self.ws, v).await;
     }
 
+    /// Sends `msgs` back to back in one write, like a browser sending them from one task.
+    pub async fn send_burst(&mut self, msgs: impl IntoIterator<Item = Value>) {
+        for v in msgs {
+            self.ws
+                .feed(Message::Text(v.to_string().into()))
+                .await
+                .expect("send failed");
+        }
+        self.ws.flush().await.expect("send failed");
+    }
+
     pub async fn ack(&mut self, h: &VideoHeader) {
         let ack = VideoAck {
             flags: 0,
@@ -633,6 +691,20 @@ impl Viewer {
                 Msg::Json(_) => {}
             }
         }
+    }
+
+    /// Collects the JSON messages (except `stats`) received in the next `d`.
+    pub async fn json_for(&mut self, d: Duration) -> Vec<Value> {
+        let deadline = tokio::time::Instant::now() + d;
+        let mut out = Vec::new();
+        while let Ok(msg) = tokio::time::timeout_at(deadline, self.next()).await {
+            match msg {
+                Msg::Close(code) => panic!("session closed ({code:?})"),
+                Msg::Json(v) => out.push(v),
+                Msg::Bin(_) => {}
+            }
+        }
+        out
     }
 
     /// Collects VIDEO headers for `d` (other messages are handled/skipped).

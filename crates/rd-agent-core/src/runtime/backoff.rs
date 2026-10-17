@@ -30,6 +30,12 @@ impl Backoff {
         jitter(base)
     }
 
+    /// The shortest delay, without advancing the backoff (the gateway is restarting behind its
+    /// proxy and will be back in seconds).
+    pub(crate) fn min_delay(&self) -> Duration {
+        jitter(self.min)
+    }
+
     /// Jump straight to the longest delay (the gateway refused us; retrying fast won't help).
     pub(crate) fn max_delay(&mut self) -> Duration {
         self.next = self.max;
@@ -65,6 +71,8 @@ mod tests {
         }
         b.reset();
         assert!(within(b.next_delay(), 1000));
+        assert!(within(b.min_delay(), 1000));
+        assert!(within(b.next_delay(), 2000), "min_delay does not advance");
         assert!(within(b.max_delay(), 30000));
         assert!(within(b.next_delay(), 30000));
     }

@@ -11,8 +11,12 @@ packaging/macos/make-signing-identity.sh
 
 This creates a self-signed code-signing certificate, "RD Local Code Signing", in the login
 keychain. Every build is signed with it, so the app keeps the same identity across rebuilds,
-and macOS keeps its Screen Recording / Accessibility grants and Keychain access. Without it,
-`build-app.sh` falls back to ad-hoc signing, and macOS forgets the grants after every rebuild.
+and macOS keeps its Screen Recording / Accessibility grants. Without it, `build-app.sh` falls
+back to ad-hoc signing, and macOS forgets the grants after every rebuild.
+
+Keychain items do *not* survive rebuilds this way: a self-signed certificate has no Team ID,
+so macOS ties an item to the exact build and asks "allow access?" again after every rebuild.
+That is why the agent token lives in the config file (step 4), not in the Keychain.
 
 ## 2. Build and install
 
@@ -44,9 +48,11 @@ tools/new-agent-token.sh mbp
 ```
 
 Setup asks for the gateway URL (default `wss://rd-agent.example.com`), the machine id
-(`mbp`) and the token, then:
-- stores the token in the Keychain and writes the config file
-  (`~/Library/Application Support/dev.thijmen.rd.agent/config.toml`);
+(`mbp`) and the token (when the config file already has a token for that machine, Enter keeps
+it), then:
+- writes the config file with the token,
+  `~/Library/Application Support/dev.thijmen.rd.agent/config.toml`. The file is mode 0600 and
+  its directory 0700, so only your user can read it. Setup never prints the token;
 - starts the app so that macOS shows its standard prompts for **Screen Recording** and
   **Accessibility**. Enable "RD Agent" in System Settings → Privacy & Security, then press
   Enter so setup checks again. The check runs as RD Agent.app, not as your terminal: macOS
@@ -56,14 +62,23 @@ Setup asks for the gateway URL (default `wss://rd-agent.example.com`), the machi
 Restart the agent after granting permissions:
 `launchctl kickstart -k gui/$(id -u)/dev.thijmen.rd.agent`.
 
+**Older installs** (set up before the token moved to the config file) have it in the Keychain
+(service `dev.thijmen.rd.agent`, account `gateway-token`). The agent still reads it there when
+neither `RD_AGENT_TOKEN` nor the config file has one, but after a rebuild that read waits on the
+"allow access" dialog at the Mac. Run `setup` once more and enter the token, so it moves into
+the config file; the Keychain item is then unused (`uninstall.sh --purge` removes it).
+
 ## 5. Check
 
 ```sh
 "/Applications/RD Agent.app/Contents/MacOS/rd-agent" status
 ```
 
-`status` shows the config, the token (present or missing), the app's permissions, the
-LaunchAgent state and whether the gateway accepts the token. Logs:
+`status` shows the config, where the token comes from (the `RD_AGENT_TOKEN` environment
+variable, the config file, or the Keychain of an older install; it warns when the config file is
+readable by others), the app's permissions, the LaunchAgent state and whether the gateway
+accepts the token. It never prints the token. The agent logs the same source at start-up
+(`token_from=…`). Logs:
 `~/Library/Logs/rd-agent/` (daily files), plus the unified log:
 `log stream --predicate 'subsystem == "dev.thijmen.rd.agent"'`.
 
@@ -87,6 +102,7 @@ permission belongs to the app.
 ```sh
 packaging/macos/uninstall.sh            # unload + remove the LaunchAgent and the app
 packaging/macos/uninstall.sh --purge    # also logs, the Keychain token and the privacy grants
+rm -rf ~/Library/Application\ Support/dev.thijmen.rd.agent   # the config file and its token
 ```
 
 See [recovery.md](recovery.md) for the locked-screen / reboot path.

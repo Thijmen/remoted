@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! rd-agent run        [--config PATH] [--gateway URL] [--machine ID] [--source screen|synthetic] [--token-env VAR]
-//! rd-agent setup      interactive, in person: token -> Keychain, config.toml, permission prompts, LaunchAgent
+//! rd-agent setup      interactive, in person: config.toml (with the token, mode 0600), permission prompts, LaunchAgent
 //! rd-agent install | uninstall     LaunchAgent management
 //! rd-agent status     config, token, permissions, LaunchAgent state, gateway reachability
 //! rd-agent selftest   --size 1728x1118 --fps 60 --seconds 10 [--bitrate-kbps 8000] [--record out.rdv] [--synthetic]
@@ -83,7 +83,8 @@ struct RunArgs {
     /// Video source.
     #[arg(long, value_enum, default_value_t = Source::Screen)]
     source: Source,
-    /// Read the token from this environment variable instead of RD_AGENT_TOKEN / Keychain.
+    /// Read the token from this environment variable instead of RD_AGENT_TOKEN / the config
+    /// file / the Keychain.
     #[arg(long, value_name = "VAR")]
     token_env: Option<String>,
 }
@@ -197,9 +198,15 @@ fn main() -> ExitCode {
 
 fn run(args: RunArgs) -> anyhow::Result<()> {
     let mut cfg = config::load_for_run(args.config.config.as_deref(), args.gateway, args.machine)?;
-    cfg.token = Some(config::resolve_token(args.token_env.as_deref(), &cfg)?);
+    let (token, token_source) = config::resolve_token(args.token_env.as_deref(), &cfg)?;
+    cfg.token = Some(token);
     let platform = host::platform(args.source)?;
-    info!(source = ?args.source, version = env!("CARGO_PKG_VERSION"), "rd-agent run");
+    info!(
+        source = ?args.source,
+        token_from = %token_source,
+        version = env!("CARGO_PKG_VERSION"),
+        "rd-agent run"
+    );
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_name("rd-agent")

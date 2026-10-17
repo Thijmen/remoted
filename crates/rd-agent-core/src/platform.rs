@@ -39,7 +39,9 @@ pub struct EncodedFrame {
     pub seq: u32,
     /// Agent clock ([`crate::clock::now_us`]) when the frame was captured.
     pub capture_us: u64,
-    /// Time spent in the encoder, µs.
+    /// Time spent in the encoder, µs: from submitting the frame to its output callback. The
+    /// flow window's horizon uses its median, so it must not include any time the frame waits
+    /// after the encoder (in the sink or the runtime's queues).
     pub encode_us: u32,
     pub key: bool,
     /// AVCC: 4-byte big-endian length-prefixed NAL units, no in-band SPS/PPS required.
@@ -70,8 +72,10 @@ pub trait FrameGate: Send + Sync + 'static {
     }
 }
 
-/// Encoded frames go to the runtime through this bounded channel (capacity 8). The encoder
-/// callback uses `try_send`; on failure it must call [`FrameGate::post_encode_drop`].
+/// Encoded frames go to the runtime through this bounded channel. Its capacity is twice the
+/// flow window's frame limit, so a frame the window admitted always fits, even while the
+/// socket is blocked. The encoder callback uses `try_send`; on failure (which should not
+/// happen) it must call [`FrameGate::post_encode_drop`].
 pub type FrameSink = tokio::sync::mpsc::Sender<EncodedFrame>;
 
 /// Capture + encode, fused (platforms can keep frames on the GPU end to end).

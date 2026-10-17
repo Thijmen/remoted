@@ -156,6 +156,10 @@ pub struct AgentStats {
     pub inflight_bytes: u32,
     pub window_frames: u32,
     pub window_bytes: u32,
+    /// Encode-latency term of the flow window's horizon (`rtt_min + enc + 40 ms`): median of
+    /// recent encode times, clamped. Added after v1 shipped: older agents omit it (0).
+    #[serde(default)]
+    pub window_enc_ms: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +434,12 @@ mod tests {
             stats.starts_with(r#"{"t":"stats","target_kbps":0"#),
             "{stats}"
         );
+        // Stats from an agent without `window_enc_ms` still parse.
+        let old = r#"{"t":"stats","target_kbps":8000,"enc_kbps":1,"cap_fps":60.0,"enc_fps":60.0,"drop_window":0,"drop_post":0,"enc_ms_p50":4.0,"enc_ms_p99":9.0,"rtt_min_ms":20.0,"q_ms":1.0,"inflight_frames":2,"inflight_bytes":9,"window_frames":7,"window_bytes":90000}"#;
+        match serde_json::from_str::<AgentMsg>(old).unwrap() {
+            AgentMsg::Stats(s) => assert_eq!((s.window_frames, s.window_enc_ms), (7, 0.0)),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

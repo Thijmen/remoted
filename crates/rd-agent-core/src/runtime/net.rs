@@ -28,10 +28,15 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DialError {
-    /// The gateway answered the upgrade with an HTTP error: 401 (bad token), 404 (unknown or
-    /// expired session), 429 (rate limited), ...
-    #[error("gateway refused the connection: HTTP {0}")]
-    Refused(StatusCode),
+    /// The upgrade was answered with an HTTP error: from the gateway 401 (bad token), 404
+    /// (unknown or expired session), 429 (rate limited), ...; or from the reverse proxy in
+    /// front of it 502/503/404 while the gateway is (re)starting.
+    #[error("gateway refused the connection: HTTP {status}")]
+    Refused {
+        status: StatusCode,
+        /// `Retry-After` in seconds, if the answer had one.
+        retry_after: Option<Duration>,
+    },
     #[error(transparent)]
     Failed(#[from] anyhow::Error),
 }
@@ -109,9 +114,10 @@ impl Gateway {
         .await
         {
             Ok((ws, _)) => Ok(ws),
-            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
-                Err(DialError::Refused(response.status()))
-            }
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => Err(DialError::Refused {
+                status: response.status(),
+                retry_after: retry_after(response.headers()),
+            }),
             Err(e) => Err(anyhow!(e)
                 .context(format!("WebSocket handshake with {url}"))
                 .into()),
@@ -138,6 +144,12 @@ impl Gateway {
         }
         Err(last_err)
     }
+}
+
+/// `Retry-After: <seconds>` (the HTTP-date form is not used by the gateway).
+fn retry_after(headers: &tokio_tungstenite::tungstenite::http::HeaderMap) -> Option<Duration> {
+    let secs = headers.get(header::RETRY_AFTER)?.to_str().ok()?;
+    secs.trim().parse().ok().map(Duration::from_secs)
 }
 
 /// Session ids come from the gateway (32 hex chars); anything that could escape the URL path
@@ -250,6 +262,20 @@ mod tests {
         assert!(Gateway::new("https://x", "t").is_err());
         assert!(Gateway::new("ws://x/?a=b", "t").is_err());
         assert!(Gateway::new("ws://x", "bad\ntoken").is_err());
+    }
+
+    #[test]
+    fn retry_after_seconds() {
+        use tokio_tungstenite::tungstenite::http::HeaderMap;
+        let mut h = HeaderMap::new();
+        assert_eq!(retry_after(&h), None);
+        h.insert(header::RETRY_AFTER, HeaderValue::from_static(" 42"));
+        assert_eq!(retry_after(&h), Some(Duration::from_secs(42)));
+        h.insert(
+            header::RETRY_AFTER,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
+        assert_eq!(retry_after(&h), None);
     }
 
     #[test]

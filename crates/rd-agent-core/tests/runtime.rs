@@ -3,9 +3,10 @@
 
 mod common;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::*;
+use rd_agent_core::runtime::Timings;
 use rd_agent_core::{InputEvent, Perms};
 use rd_proto::bin::{self, BinMsg, MouseButton, Ping, ScrollPhase, WheelMode, video_flags};
 use serde_json::json;
@@ -91,7 +92,8 @@ async fn protocol_mismatch_is_rejected_with_4005() {
 async fn video_config_precedes_the_first_keyframe() {
     let mut s = setup().await;
     let mut viewer = s.open_session(SESSION_A).await;
-    // Odd and oversized dimensions are clamped: aspect kept, within the native 3456x2234, even.
+    // Odd and oversized dimensions are clamped: the display's aspect, never above its native
+    // 3456x2234, even.
     viewer.start(7001, 4469).await;
     let config = loop {
         match viewer.next().await {
@@ -104,7 +106,7 @@ async fn video_config_precedes_the_first_keyframe() {
     assert_eq!(config["codec"], "avc1.640033");
     assert_eq!(
         (config["width"].clone(), config["height"].clone()),
-        (json!(3456), json!(2206))
+        (json!(3456), json!(2234))
     );
     assert_eq!(config["description"], "AWQAM//hAAA=");
     let first = viewer.next_video().await;
@@ -117,7 +119,7 @@ async fn video_config_precedes_the_first_keyframe() {
     let events = s.platform.events();
     assert!(
         events.iter().any(|e| matches!(e, Event::PipelineStart(c)
-            if (c.width, c.height, c.fps, c.bitrate_bps) == (3456, 2206, 60, 8_000_000))),
+            if (c.width, c.height, c.fps, c.bitrate_bps) == (3456, 2234, 60, 8_000_000))),
         "{events:?}"
     );
     assert!(events.contains(&Event::AwakeAcquired));
@@ -203,19 +205,47 @@ async fn keyframe_requests_are_rate_limited() {
     // Let the stream settle past the epoch's own keyframe.
     viewer.videos_for(Duration::from_millis(600)).await;
 
-    for reason in ["a", "b", "c"] {
-        viewer
-            .send(json!({"t": "keyframe_req", "reason": reason}))
-            .await;
-    }
+    viewer
+        .send_burst(["a", "b", "c"].map(|r| json!({"t": "keyframe_req", "reason": r})))
+        .await;
+    let keys = |frames: &[rd_proto::bin::VideoHeader]| frames.iter().filter(|h| h.is_key()).count();
     let early = viewer.videos_for(Duration::from_millis(350)).await;
-    let early_keys = early.iter().filter(|h| h.is_key()).count();
-    assert_eq!(early_keys, 1, "keyframes right after 3 requests");
-    // The two extra requests are coalesced into one, due 500 ms after the first.
-    let late = viewer.videos_for(Duration::from_millis(1000)).await;
-    let late_keys = late.iter().filter(|h| h.is_key()).count();
-    assert_eq!(late_keys, 1, "deferred keyframes");
-    assert!(early.iter().chain(&late).all(|h| h.epoch == 1));
+    assert_eq!(keys(&early), 1, "keyframes right after 3 requests");
+    // The two extra requests arrived while that keyframe was on its way: answered by it.
+    let late = viewer.videos_for(Duration::from_millis(800)).await;
+    assert_eq!(
+        keys(&late),
+        0,
+        "keyframes for requests a keyframe already answered"
+    );
+
+    // A request once its keyframe was delivered is a new one; inside the 500 ms interval it is
+    // deferred to the interval's end, and further requests are coalesced with it.
+    viewer
+        .send(json!({"t": "keyframe_req", "reason": "d"}))
+        .await;
+    let d = viewer.videos_for(Duration::from_millis(100)).await;
+    assert_eq!(
+        keys(&d),
+        1,
+        "a request after the interval is served at once"
+    );
+    viewer
+        .send_burst(["e", "f"].map(|r| json!({"t": "keyframe_req", "reason": r})))
+        .await;
+    let soon = viewer.videos_for(Duration::from_millis(250)).await;
+    assert_eq!(keys(&soon), 0, "rate limited");
+    let deferred = viewer.videos_for(Duration::from_millis(800)).await;
+    assert_eq!(keys(&deferred), 1, "deferred keyframes");
+    assert!(
+        early
+            .iter()
+            .chain(&late)
+            .chain(&d)
+            .chain(&soon)
+            .chain(&deferred)
+            .all(|h| h.epoch == 1)
+    );
 
     s.agent.stop().await;
 }
@@ -426,10 +456,16 @@ async fn pause_stops_video_and_resume_restarts_it_with_a_keyframe() {
     let paused = viewer.videos_for(Duration::from_millis(500)).await;
     assert!(paused.is_empty(), "frames while paused: {}", paused.len());
 
-    viewer.send(json!({"t": "resume"})).await;
-    let resumed = viewer.videos_for(Duration::from_millis(500)).await;
+    // Older viewers also ask for a keyframe right after resuming.
+    viewer
+        .send_burst([
+            json!({"t": "resume"}),
+            json!({"t": "keyframe_req", "reason": "resume"}),
+        ])
+        .await;
+    let resumed = viewer.videos_for(Duration::from_millis(1000)).await;
     assert!(
-        resumed.len() >= 10,
+        resumed.len() >= 20,
         "frames after resume: {}",
         resumed.len()
     );
@@ -437,6 +473,8 @@ async fn pause_stops_video_and_resume_restarts_it_with_a_keyframe() {
         resumed[0].is_key(),
         "first frame after resume is a keyframe"
     );
+    // One keyframe per resume, not a second one 500 ms later.
+    assert_eq!(resumed.iter().filter(|h| h.is_key()).count(), 1);
 
     s.agent.stop().await;
 }
@@ -524,4 +562,239 @@ async fn shutdown_ends_the_session_cleanly() {
     assert!(events.contains(&Event::ReleaseAll));
     assert!(events.contains(&Event::AwakeReleased));
     assert!(s.gw.no_control_within(Duration::from_millis(500)).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn static_screen_gets_keyframes_through_refresh() {
+    let platform = FakePlatform::new(100);
+    platform.set_static_screen(true);
+    let mut s = setup_with(platform, common::timings()).await;
+    let (mut viewer, first) = s.streaming_session(SESSION_A).await;
+    assert_eq!(first.flags, KEY_FIRST);
+    // Nothing changes on screen: nothing to send.
+    let idle = viewer.videos_for(Duration::from_millis(600)).await;
+    assert!(idle.is_empty(), "frames of a static screen: {}", idle.len());
+
+    // A decoder that needs a keyframe gets one anyway (the pipeline re-submits its last frame).
+    viewer
+        .send(json!({"t": "keyframe_req", "reason": "decoder_error"}))
+        .await;
+    let refreshed = viewer.videos_for(Duration::from_millis(400)).await;
+    assert_eq!(refreshed.len(), 1, "{refreshed:?}");
+    assert!(refreshed[0].is_key());
+
+    // So does a viewer coming back from a hidden tab: exactly one.
+    viewer.videos_for(Duration::from_millis(300)).await;
+    viewer.send(json!({"t": "pause"})).await;
+    viewer.videos_for(Duration::from_millis(200)).await;
+    viewer
+        .send_burst([
+            json!({"t": "resume"}),
+            json!({"t": "keyframe_req", "reason": "resume"}),
+        ])
+        .await;
+    let resumed = viewer.videos_for(Duration::from_millis(1000)).await;
+    assert_eq!(resumed.len(), 1, "{resumed:?}");
+    assert!(resumed[0].is_key());
+
+    s.agent.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unparseable_start_and_set_get_bad_request() {
+    let mut s = setup().await;
+    let mut viewer = s.open_session(SESSION_A).await;
+    viewer
+        .send(
+            json!({"t": "start", "width": 1728, "height": 1118, "fps": 60, "codec": "av1",
+                     "start_kbps": 8000, "min_kbps": 1000, "max_kbps": 20000}),
+        )
+        .await;
+    let err = viewer.expect("error").await;
+    assert_eq!(err["code"], "bad_request");
+    let msg = err["msg"].as_str().unwrap();
+    assert!(msg.contains("\"start\"") && msg.contains("av1"), "{msg}");
+    // A codec the agent knows but does not encode is a bad request too.
+    viewer
+        .send(
+            json!({"t": "start", "width": 1728, "height": 1118, "fps": 60, "codec": "hevc",
+                     "start_kbps": 8000, "min_kbps": 1000, "max_kbps": 20000}),
+        )
+        .await;
+    assert_eq!(viewer.expect("error").await["code"], "bad_request");
+
+    viewer.start(1728, 1118).await;
+    viewer.expect("video_config").await;
+    viewer.send(json!({"t": "set", "width": "wide"})).await;
+    let err = viewer.expect("error").await;
+    assert_eq!(err["code"], "bad_request");
+    assert!(err["msg"].as_str().unwrap().contains("\"set\""));
+    // Message types from newer viewers are still ignored silently.
+    viewer.send(json!({"t": "from_the_future", "x": 1})).await;
+    let json = viewer.json_for(Duration::from_millis(300)).await;
+    assert!(json.iter().all(|v| v["t"] != "error"), "{json:?}");
+    assert!(
+        !viewer
+            .videos_for(Duration::from_millis(200))
+            .await
+            .is_empty()
+    );
+
+    s.agent.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn capture_failure_is_reported_once_per_failure() {
+    let mut s = setup().await;
+    let (mut viewer, _) = s.streaming_session(SESSION_A).await;
+    s.platform
+        .set_capture_failure(Some("the display went away"));
+    let err = viewer.expect("error").await;
+    assert_eq!(err["code"], "capture_stopped");
+    assert_eq!(err["msg"], "the display went away");
+    // Not repeated while it lasts; the session stays open.
+    let json = viewer.json_for(Duration::from_millis(2500)).await;
+    assert!(json.iter().all(|v| v["t"] != "error"), "{json:?}");
+
+    // Capture recovers, then fails again: reported again.
+    s.platform.set_capture_failure(None);
+    viewer.json_for(Duration::from_millis(1200)).await;
+    s.platform
+        .set_capture_failure(Some("screen recording permission revoked"));
+    let err = viewer.expect("error").await;
+    assert_eq!(err["code"], "capture_stopped");
+    assert_eq!(err["msg"], "screen recording permission revoked");
+
+    s.agent.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn input_is_dropped_while_the_host_is_locked() {
+    // No state polling: the report has to come from the dropped input.
+    let timings = Timings {
+        state_poll: Duration::from_secs(3600),
+        ..common::timings()
+    };
+    let mut s = setup_with(FakePlatform::new(100), timings).await;
+    let (mut viewer, _) = s.streaming_session(SESSION_A).await;
+    let key = |down| InputEvent::Key {
+        down,
+        repeat: false,
+        hid: 0x0007_0004,
+    };
+    let inputs = |p: &FakePlatform| p.count(|e| matches!(e, Event::Input(_)));
+
+    send_bin(&mut viewer.ws, key(true).to_message()).await;
+    s.platform
+        .wait_for("unlocked input", |e| {
+            e.iter().any(|e| matches!(e, Event::Input(_)))
+        })
+        .await;
+
+    s.platform.set_locked(true);
+    // Let the cached (unlocked) state expire.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let releases_before = s.platform.count(|e| *e == Event::ReleaseAll);
+    for ev in [
+        key(false),
+        InputEvent::MouseAbs {
+            buttons: 0,
+            x: 100,
+            y: 100,
+        },
+        key(true),
+        InputEvent::ReleaseAll,
+        key(false),
+    ] {
+        send_bin(&mut viewer.ws, ev.to_message()).await;
+    }
+    // The viewer is told once that the host is locked; so is the gateway.
+    let json = viewer.json_for(Duration::from_millis(600)).await;
+    let locked_states: Vec<_> = json
+        .iter()
+        .filter(|v| v["t"] == "state" && v["locked"] == true)
+        .collect();
+    assert_eq!(locked_states.len(), 1, "{json:?}");
+    s.control.expect_state(|v| v["locked"] == true).await;
+    // Nothing reached the host but releases: one when the lock was noticed (the key held down
+    // before it), and the viewer's RELEASE_ALL.
+    assert_eq!(inputs(&s.platform), 1, "{:?}", s.platform.events());
+    assert_eq!(
+        s.platform.count(|e| *e == Event::ReleaseAll),
+        releases_before + 2
+    );
+    // More input in the same locked period: dropped, no further report.
+    for _ in 0..20 {
+        send_bin(&mut viewer.ws, key(true).to_message()).await;
+    }
+    let json = viewer.json_for(Duration::from_millis(400)).await;
+    assert!(json.iter().all(|v| v["t"] != "state"), "{json:?}");
+    assert_eq!(inputs(&s.platform), 1);
+
+    // Unlocked: input flows again.
+    s.platform.set_locked(false);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    send_bin(&mut viewer.ws, key(false).to_message()).await;
+    s.platform
+        .wait_for("input after unlocking", |e| {
+            e.iter().filter(|e| matches!(e, Event::Input(_))).count() == 2
+        })
+        .await;
+
+    // A new locked period is reported again (the shared state still says locked, so the
+    // viewer is told directly).
+    s.platform.set_locked(true);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    send_bin(&mut viewer.ws, key(true).to_message()).await;
+    let json = viewer.json_for(Duration::from_millis(600)).await;
+    assert_eq!(
+        json.iter()
+            .filter(|v| v["t"] == "state" && v["locked"] == true)
+            .count(),
+        1,
+        "{json:?}"
+    );
+    assert_eq!(inputs(&s.platform), 2);
+
+    s.agent.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn proxy_errors_are_retried_fast_and_refusals_slowly() {
+    init_tracing();
+    // A long maximum backoff, so the slow path is unmistakable.
+    let timings = Timings {
+        backoff_max: Duration::from_secs(30),
+        ..common::timings()
+    };
+    let mut gw = FakeGateway::start().await;
+    // The gateway pod is still starting: the proxy answers 503, 502, 404.
+    gw.reject_controls(&[503, 502, 404]);
+    let started = Instant::now();
+    let agent = Agent::start(&gw.url, FakePlatform::new(100), timings.clone());
+    let control = gw.control().await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "registered after {:?}",
+        started.elapsed()
+    );
+
+    // A redeploy: the gateway goes away, the proxy answers 503 for a while.
+    gw.reject_controls(&[503, 503, 503]);
+    let lost = Instant::now();
+    drop(control);
+    let _control = gw.control().await;
+    assert!(
+        lost.elapsed() < Duration::from_secs(3),
+        "re-registered after {:?}",
+        lost.elapsed()
+    );
+    agent.stop().await;
+
+    // A bad token is refused (401): back off for long.
+    let mut gw = FakeGateway::start().await;
+    gw.reject_controls(&[401]);
+    let agent = Agent::start(&gw.url, FakePlatform::new(100), timings);
+    assert!(gw.no_control_within(Duration::from_secs(2)).await);
+    agent.stop().await;
 }

@@ -1,4 +1,5 @@
-//! macOS: [`MacPlatform`], Keychain, TCC permissions, LaunchAgent, selftest.
+//! macOS: [`MacPlatform`], the Keychain token of older installs, TCC permissions, LaunchAgent,
+//! selftest.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,12 +46,11 @@ pub fn platform(source: Source) -> anyhow::Result<Arc<dyn Platform>> {
     Ok(platform)
 }
 
+/// The token in the login Keychain, where `setup` put it before it moved into the config
+/// file. Only read when no other source has one: after a rebuild this may wait on a macOS
+/// "allow access" dialog.
 pub fn load_token() -> anyhow::Result<Option<String>> {
     keychain::load_token()
-}
-
-pub fn store_token(token: &str) -> anyhow::Result<()> {
-    keychain::store_token(token)
 }
 
 /// The app bundle this executable lives in (`.../RD Agent.app`), if any.

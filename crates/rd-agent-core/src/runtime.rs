@@ -138,7 +138,9 @@ pub async fn check_gateway(cfg: &AgentConfig) -> anyhow::Result<()> {
     let dial = gateway.dial(&url, control::MAX_MESSAGE);
     let mut ws = match tokio::time::timeout(Timings::default().dial_timeout, dial).await {
         Err(_) => bail!("timed out connecting to {url}"),
-        Ok(Err(DialError::Refused(status))) => bail!("gateway refused the agent: HTTP {status}"),
+        Ok(Err(DialError::Refused { status, .. })) => {
+            bail!("gateway refused the agent: HTTP {status}")
+        }
         Ok(Err(DialError::Failed(e))) => return Err(e),
         Ok(Ok(ws)) => ws,
     };
@@ -150,7 +152,7 @@ pub async fn check_gateway(cfg: &AgentConfig) -> anyhow::Result<()> {
 fn token(cfg: &AgentConfig) -> anyhow::Result<&str> {
     match cfg.token.as_deref().map(str::trim) {
         Some(t) if !t.is_empty() => Ok(t),
-        _ => bail!("no agent token configured (Keychain, RD_AGENT_TOKEN or config file)"),
+        _ => bail!("no agent token configured (config file, RD_AGENT_TOKEN or Keychain)"),
     }
 }
 
@@ -199,8 +201,9 @@ impl Ctx {
         Ok(ctx)
     }
 
-    /// Re-reads lock state and permissions; subscribers are notified only on change.
-    fn refresh_state(&self) {
+    /// Re-reads lock state and permissions; subscribers are notified only on change (then
+    /// returns true).
+    fn refresh_state(&self) -> bool {
         let locked = self.platform.lock_state() == LockState::Locked;
         let perms = self.platform.permissions();
         self.state.send_if_modified(|s| {
@@ -208,7 +211,7 @@ impl Ctx {
             s.locked = locked;
             s.perms = perms;
             changed
-        });
+        })
     }
 
     /// Marks a session as connected until the returned guard is dropped.

@@ -1,9 +1,13 @@
 //! Deterministic discrete-event simulation of the whole flow-control loop:
 //!
 //! ```text
-//! capture 60 fps -> FlowGate::admit -> encoder (4 ms) -> bottleneck link (bandwidth B(t),
-//! deep FIFO) -> one-way delay D -> viewer decoder (3 ms) -> cumulative ACK -> delay D -> agent
+//! capture 60 fps -> FlowGate::admit -> encoder (in order, lognormal: median 9.3 ms, p90 14 ms,
+//! like VideoToolbox's standard rate control) -> bottleneck link (bandwidth B(t), deep FIFO)
+//! -> one-way delay D -> viewer decoder (3 ms) -> cumulative ACK -> delay D -> agent
 //! ```
+//!
+//! Every encoded frame reports its submit-to-output time (`FlowGate::on_encode_time`), which
+//! sizes the window horizon (`rtt_min + enc + 40 ms`).
 //!
 //! The agent PINGs every 500 ms over the same FIFO (so RTT samples include queueing, as they do
 //! on the real TCP stream) and ticks the `BitrateController` every 250 ms, pushing reported
@@ -21,14 +25,16 @@ const SEC: u64 = 1_000_000;
 const MBPS: u64 = 1_000_000;
 
 const FPS: u64 = 60;
-const ENCODE_US: u64 = 4 * MS;
+/// Median encode time and the sigma of its log (p90 = median * e^(1.2816 sigma) = 14 ms).
+const ENCODE_MEDIAN_US: f64 = 9_300.0;
+const ENCODE_SIGMA: f64 = 0.319;
 const DECODE_US: u64 = 3 * MS;
 const TICK_US: u64 = 250 * MS;
 const PING_EVERY_US: u64 = 500 * MS;
 /// PING message size on the wire (24 bytes + WebSocket/TLS framing).
 const PING_BYTES: u64 = 60;
 const QUEUE_TARGET_US: u64 = 40 * MS;
-/// Encode + decode time and scheduling slack on top of the latency bound.
+/// Encode jitter above the median, decode time and scheduling slack on top of the latency bound.
 const LATENCY_TOLERANCE_US: u64 = 15 * MS;
 
 /// SplitMix64: tiny, deterministic, good enough for frame-size jitter.
@@ -47,6 +53,13 @@ impl Rng {
     fn uniform(&mut self, lo: f64, hi: f64) -> f64 {
         let unit = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
         lo + (hi - lo) * unit
+    }
+
+    /// Standard normal (Box-Muller).
+    fn normal(&mut self) -> f64 {
+        let u1 = self.uniform(1e-12, 1.0);
+        let u2 = self.uniform(0.0, 1.0);
+        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
     }
 }
 
@@ -73,6 +86,9 @@ struct Scenario {
     frame_jitter: f64,
     first_seq: u32,
     seed: u64,
+    /// Encode time = median * e^(sigma * N(0,1)); the encoder works in order.
+    encode_median_us: f64,
+    encode_sigma: f64,
 }
 
 impl Scenario {
@@ -89,6 +105,8 @@ impl Scenario {
             frame_jitter: 0.5,
             first_seq: 1,
             seed: 0x5eed,
+            encode_median_us: ENCODE_MEDIAN_US,
+            encode_sigma: ENCODE_SIGMA,
         }
     }
 
@@ -169,10 +187,18 @@ impl Link {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Event {
     Capture,
-    Encoded { seq: u32, frame: usize },
-    Ack { seq: u32 },
+    Encoded {
+        seq: u32,
+        frame: usize,
+        encode_us: u64,
+    },
+    Ack {
+        seq: u32,
+    },
     Ping,
-    Pong { sent_us: u64 },
+    Pong {
+        sent_us: u64,
+    },
     Tick,
     RequestKeyframe,
 }
@@ -232,6 +258,7 @@ fn run(sc: Scenario) -> Outcome {
     let mut encoder_bps = u64::from(ctrl.target_bps());
     gate.set_target_bps(ctrl.target_bps());
     let mut link = Link::new(sc.bandwidth.clone());
+    let mut encoder_free_us = 0u64;
     let mut decoder_free_us = 0u64;
 
     let mut events = BinaryHeap::new();
@@ -294,17 +321,30 @@ fn run(sc: Scenario) -> Outcome {
                             target_bps: encoder_bps,
                         });
                         let frame = frames.len() - 1;
+                        // In order: a frame leaves the encoder after its predecessor.
+                        let encode = sc.encode_median_us * (sc.encode_sigma * rng.normal()).exp();
+                        let done = (now + encode as u64).max(encoder_free_us);
+                        encoder_free_us = done;
                         schedule(
                             &mut events,
-                            now + ENCODE_US,
-                            Event::Encoded { seq: a.seq, frame },
+                            done,
+                            Event::Encoded {
+                                seq: a.seq,
+                                frame,
+                                encode_us: done - now,
+                            },
                         );
                     }
                 }
                 schedule(&mut events, now + SEC / FPS, Event::Capture);
             }
-            Event::Encoded { seq, frame } => {
+            Event::Encoded {
+                seq,
+                frame,
+                encode_us,
+            } => {
                 let f = frames[frame];
+                gate.on_encode_time(encode_us as u32, f.key);
                 ctrl.on_encoded(f.bytes as usize, now);
                 gate.on_sent(seq, f.bytes as usize, f.key, now);
                 seq_to_frame.push_back((seq, frame));
@@ -437,8 +477,9 @@ impl Outcome {
         v[(v.len() * 95).div_ceil(100) - 1]
     }
 
-    /// `rtt_min + 40 ms + 2 frame serialization times + tolerance`, with the serialization of an
-    /// average frame at the mean encoder target over `[from, to)` and the bandwidth at `from`.
+    /// `rtt_min + enc + 40 ms + 2 frame serialization times + tolerance` (the window horizon
+    /// plus slack), with the serialization of an average frame at the mean encoder target over
+    /// `[from, to)` and the bandwidth at `from`.
     fn latency_bound(&self, from: u64, to: u64) -> u64 {
         let in_range: Vec<&FrameRecord> = self
             .frames
@@ -449,6 +490,7 @@ impl Outcome {
             in_range.iter().map(|f| f.target_bps).sum::<u64>() / in_range.len().max(1) as u64;
         let serialization_us = mean_target * SEC / FPS / self.scenario.bandwidth_at(from);
         2 * self.scenario.one_way_delay_us
+            + self.scenario.encode_median_us as u64
             + QUEUE_TARGET_US
             + 2 * serialization_us
             + LATENCY_TOLERANCE_US
@@ -666,7 +708,7 @@ fn huge_keyframes_never_deadlock() {
     out.assert_no_stall();
     let keys: Vec<&FrameRecord> = out.frames.iter().filter(|f| f.key).collect();
     assert!(keys.len() >= 18, "only {} keyframes", keys.len());
-    let window_bytes = 5 * MBPS / 8 * (40 * MS + QUEUE_TARGET_US) / SEC;
+    let window_bytes = 5 * MBPS / 8 * (40 * MS + ENCODE_MEDIAN_US as u64 + QUEUE_TARGET_US) / SEC;
     assert!(keys.iter().all(|k| k.bytes > 5 * window_bytes));
     assert!(keys.iter().all(|k| k.ack_us.is_some()));
     // P-frames keep flowing between keyframes.
@@ -757,7 +799,7 @@ fn fixed_mode_keeps_target() {
         "the window must drop the excess"
     );
     let frame_us = 8 * SEC / FPS / 5;
-    let cap_bound = 2 * 20 * MS + 16 * frame_us + LATENCY_TOLERANCE_US;
+    let cap_bound = 2 * 20 * MS + ENCODE_MEDIAN_US as u64 + 16 * frame_us + LATENCY_TOLERANCE_US;
     let p95 = out.p95_latency(5 * SEC, 60 * SEC);
     assert!(
         p95 <= cap_bound,

@@ -9,11 +9,15 @@
 //!   in-flight window is full (or paused) the frame is dropped *before encode* (the H.264
 //!   reference chain stays valid). Otherwise it gets the next `seq`.
 //! - The **encoder** either produces the frame (network task later calls
-//!   [`FlowGate::on_sent`]) or drops it ([`FlowGate::cancel`]).
+//!   [`FlowGate::on_encode_time`] and [`FlowGate::on_sent`]) or drops it
+//!   ([`FlowGate::cancel`]).
 //! - The **viewer** ACKs cumulatively after decode output: [`FlowGate::on_ack`] releases all
 //!   frames with `seq <= acked` and returns per-frame samples for the [`BitrateController`].
-//! - Window: `W_frames = clamp(ceil(fps * (rtt_min + queue_target)) + 1, min_frames, max_frames)`,
-//!   `W_bytes = target_bps / 8 * (rtt_min + queue_target)`. A frame is ALWAYS admitted when
+//! - Window: `horizon = rtt_min + enc + queue_target`,
+//!   `W_frames = clamp(ceil(fps * horizon) + 1, min_frames, max_frames)`,
+//!   `W_bytes = target_bps / 8 * horizon`, where `enc` is the median of the last 64 non-key
+//!   encode times clamped to `min(max_encode_us, 1e6 / fps)` (frames count from admission, so
+//!   their time in the encoder must fit in the budget too). A frame is ALWAYS admitted when
 //!   nothing is in flight (so a large keyframe can never deadlock the window).
 //!
 //! Sequence numbers are `u32`, start at 1, and increase by one per admitted frame for the

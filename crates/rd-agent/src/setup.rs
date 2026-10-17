@@ -1,6 +1,10 @@
-//! `rd-agent setup`: interactive first-time setup, run in person at the Mac. Stores the token
-//! in the Keychain, writes config.toml, shows the permission prompts and installs the
+//! `rd-agent setup`: interactive first-time setup, run in person at the Mac. Writes config.toml
+//! with the token (readable only by the user), shows the permission prompts and installs the
 //! LaunchAgent.
+//!
+//! The token is not kept in the Keychain: the app is signed with a self-signed certificate (no
+//! Team ID), so macOS ties a Keychain item to the exact build, and every rebuild would make
+//! the LaunchAgent wait on an unseen "allow access" dialog.
 
 use std::io::{BufRead as _, Write as _};
 
@@ -50,19 +54,32 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         "machine ids are 1-64 characters of [A-Za-z0-9_-]"
     );
 
-    let token = prompt_token(&machine)?;
-    host::store_token(&token)?;
-    println!("token stored in the Keychain");
+    // Enter keeps the token already in the config file (if it is for this machine).
+    let current = existing
+        .as_ref()
+        .and_then(|c| c.token.as_deref())
+        .map(str::trim)
+        .filter(|t| config::token_machine(t) == Some(machine.as_str()))
+        .map(str::to_owned);
+    let token = prompt_token(&machine, current)?;
 
     let cfg = AgentConfig {
         gateway_url,
         machine,
-        token: None,
+        token: Some(token),
         defaults: existing.map(|c| c.defaults).unwrap_or_default(),
     };
     cfg.save(&path)
         .with_context(|| format!("writing {}", path.display()))?;
-    println!("wrote {}", path.display());
+    if args.config.config.is_none()
+        && let Some(dir) = path.parent()
+    {
+        config::restrict_app_dir(dir)?;
+    }
+    println!(
+        "wrote {} (with the token; readable only by you)",
+        path.display()
+    );
 
     // Asked for by a fresh instance of the app (via LaunchServices), so the grants go to
     // RD Agent.app and not to the terminal this runs in.
@@ -123,9 +140,18 @@ fn prompt(label: &str, default: &str) -> anyhow::Result<String> {
     })
 }
 
-fn prompt_token(machine: &str) -> anyhow::Result<String> {
-    print!("Agent token (rd1.{machine}.<secret>): ");
+/// Asks for the token; with `current`, an empty answer keeps it. Never prints a token.
+fn prompt_token(machine: &str, current: Option<String>) -> anyhow::Result<String> {
+    match &current {
+        Some(_) => print!("Agent token (rd1.{machine}.<secret>) [Enter keeps the current one]: "),
+        None => print!("Agent token (rd1.{machine}.<secret>): "),
+    }
     let token = read_line()?;
+    if token.is_empty()
+        && let Some(current) = current
+    {
+        return Ok(current);
+    }
     match config::token_machine(&token) {
         Some(m) if m == machine => Ok(token),
         Some(m) => bail!("this token is for machine {m:?}, not {machine:?}"),

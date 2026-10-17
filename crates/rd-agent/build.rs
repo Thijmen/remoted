@@ -16,8 +16,10 @@ fn main() {
     let packaging_dir = manifest.join("../../packaging/macos");
     let packaged = packaging_dir.join(TEMPLATE);
     let embedded = manifest.join("assets").join(TEMPLATE);
-    // Watching the directory notices the template being added or removed.
-    println!("cargo:rerun-if-changed={}", packaging_dir.display());
+    // The template files only: watching packaging/macos would rebuild rd-agent after every
+    // build-app.sh, which writes its app bundle under packaging/macos/build. Cargo still notices
+    // a watched file being added or removed.
+    println!("cargo:rerun-if-changed={}", packaged.display());
     println!("cargo:rerun-if-changed={}", embedded.display());
     let source = if packaged.is_file() {
         packaged

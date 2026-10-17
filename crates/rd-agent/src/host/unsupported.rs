@@ -27,10 +27,6 @@ pub fn load_token() -> anyhow::Result<Option<String>> {
     bail!(UNSUPPORTED)
 }
 
-pub fn store_token(_token: &str) -> anyhow::Result<()> {
-    bail!(UNSUPPORTED)
-}
-
 pub fn app_permissions(_request: bool) -> anyhow::Result<Perms> {
     bail!(UNSUPPORTED)
 }

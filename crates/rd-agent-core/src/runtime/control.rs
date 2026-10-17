@@ -14,6 +14,7 @@ use rd_proto::control::{AgentToGateway, GatewayToAgent};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, sleep_until, timeout};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tracing::{debug, error, info, warn};
@@ -30,6 +31,11 @@ pub(crate) const MAX_MESSAGE: usize = 64 << 10;
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long shutdown waits for the current session to end cleanly.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// While the proxy answers for a gateway that is not there (restart, redeploy), retry at the
+/// shortest backoff for this long before backing off exponentially.
+const UNAVAILABLE_FAST_RETRY: Duration = Duration::from_secs(120);
+/// Upper bound for a `Retry-After` the gateway asks for.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(600);
 
 /// Runs the control connection until `shutdown` resolves. Shutting down ends the current
 /// session first (reported with `session_end` while still connected), then closes the control
@@ -37,16 +43,33 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
     let mut sessions = Sessions::new(ctx.clone());
     let mut backoff = Backoff::new(ctx.timings.backoff_min, ctx.timings.backoff_max);
+    let mut unavailable_since: Option<Instant> = None;
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
         // `shutdown` is never polled again once it resolved: every path that sees it breaks.
-        let delay = match connect_and_serve(&ctx, &mut sessions, shutdown.as_mut()).await {
+        let outcome = connect_and_serve(&ctx, &mut sessions, shutdown.as_mut()).await;
+        if !matches!(outcome, Outcome::Unavailable) {
+            unavailable_since = None;
+        }
+        let delay = match outcome {
             Outcome::Shutdown => break,
             Outcome::Lost { registered: true } => {
                 backoff.reset();
                 backoff.next_delay()
             }
             Outcome::Lost { registered: false } | Outcome::Failed => backoff.next_delay(),
+            Outcome::Unavailable => {
+                let since = *unavailable_since.get_or_insert_with(Instant::now);
+                if since.elapsed() < UNAVAILABLE_FAST_RETRY {
+                    backoff.min_delay()
+                } else {
+                    backoff.next_delay()
+                }
+            }
+            Outcome::RateLimited { retry_after } => match retry_after {
+                Some(d) => d.clamp(ctx.timings.backoff_min, MAX_RETRY_AFTER),
+                None => backoff.max_delay(),
+            },
             Outcome::Refused => backoff.max_delay(),
         };
         info!(
@@ -62,16 +85,33 @@ pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
 }
 
 /// How a control connection attempt ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
     /// Could not connect (network, TLS, timeout).
     Failed,
     /// Connected; the connection was lost later.
     Lost { registered: bool },
-    /// The gateway does not want us (bad token, rate limited, wrong machine, replaced by
-    /// another agent): retrying fast won't help.
+    /// An HTTP error that is not about us: the reverse proxy answering 502/503/504/404 while
+    /// the gateway restarts, or another 5xx. Retried fast for a while.
+    Unavailable,
+    /// HTTP 429: too many failed logins from this address; wait as long as asked.
+    RateLimited { retry_after: Option<Duration> },
+    /// The gateway does not want us (401/403 bad token, wrong machine, replaced by another
+    /// agent): retrying fast won't help.
     Refused,
     /// The runtime is shutting down.
     Shutdown,
+}
+
+/// What an HTTP answer to the control upgrade means. Only 401/403 are about the agent itself;
+/// everything else (5xx, a 404 from the proxy when the gateway's route is gone, ...) means the
+/// gateway is not there right now.
+fn classify_http(status: StatusCode, retry_after: Option<Duration>) -> Outcome {
+    match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Outcome::Refused,
+        StatusCode::TOO_MANY_REQUESTS => Outcome::RateLimited { retry_after },
+        _ => Outcome::Unavailable,
+    }
 }
 
 async fn connect_and_serve<F: Future<Output = ()>>(
@@ -90,9 +130,24 @@ async fn connect_and_serve<F: Future<Output = ()>>(
     };
     let ws = match dialed {
         Ok(Ok(ws)) => ws,
-        Ok(Err(DialError::Refused(status))) => {
-            error!(%status, url, "the gateway refused the agent; check the token");
-            return Outcome::Refused;
+        Ok(Err(DialError::Refused {
+            status,
+            retry_after,
+        })) => {
+            let outcome = classify_http(status, retry_after);
+            match outcome {
+                Outcome::Refused => {
+                    error!(%status, url, "the gateway refused the agent; check the token");
+                }
+                Outcome::RateLimited { retry_after } => warn!(
+                    %status,
+                    url,
+                    retry_after_s = retry_after.map(|d| d.as_secs()),
+                    "the gateway is rate limiting this address (failed logins)"
+                ),
+                _ => warn!(%status, url, "the gateway is unavailable; retrying soon"),
+            }
+            return outcome;
         }
         Ok(Err(DialError::Failed(e))) => {
             warn!("connecting to the gateway failed: {e:#}");
@@ -382,5 +437,34 @@ impl Sessions {
         if timeout(SHUTDOWN_GRACE, &mut current.task).await.is_err() {
             warn!("the session did not end in time; aborting it");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_answers_to_the_control_upgrade() {
+        // Only a bad token / wrong machine is a refusal.
+        assert_eq!(
+            classify_http(StatusCode::UNAUTHORIZED, None),
+            Outcome::Refused
+        );
+        assert_eq!(classify_http(StatusCode::FORBIDDEN, None), Outcome::Refused);
+        // The proxy while the gateway pod restarts, and other server errors: retry soon.
+        for status in [502, 503, 504, 500, 404] {
+            let status = StatusCode::from_u16(status).unwrap();
+            assert_eq!(
+                classify_http(status, None),
+                Outcome::Unavailable,
+                "{status}"
+            );
+        }
+        let five = Some(Duration::from_secs(5));
+        assert_eq!(
+            classify_http(StatusCode::TOO_MANY_REQUESTS, five),
+            Outcome::RateLimited { retry_after: five }
+        );
     }
 }

@@ -32,8 +32,8 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tracing::{Instrument as _, debug, error, info, warn};
 
-use super::flow::{Effective, Flow};
-use super::input::InputThread;
+use super::flow::{Effective, Flow, MAX_WINDOW_FRAMES};
+use super::input::{InputThread, OnLockedDrop};
 use super::net::WsStream;
 use super::task::TaskGuard;
 use super::video::{self, EncodeWindow};
@@ -46,7 +46,14 @@ const CONTROL_QUEUE: usize = 32;
 /// Video messages waiting for the writer; small, the flow window already bounds video.
 const VIDEO_QUEUE: usize = 4;
 /// Encoded frames from the pipeline (the [`crate::platform::FrameSink`] contract).
-const FRAME_SINK_CAPACITY: usize = 8;
+///
+/// A full sink forces a post-encode drop (and an IDR), so it must hold every frame the window
+/// can have in flight: while the socket is blocked the writer holds one message, the video
+/// queue four (a `video_config` takes a slot too), the sender one, and the rest of the window
+/// (up to [`MAX_WINDOW_FRAMES`] = 16) piles up here. 8 slots were not enough for a 16-frame
+/// window (14 frames on the agent side). Twice the window also covers a window reset on resume,
+/// which admits a new window while frames of the old one may still be queued.
+const FRAME_SINK_CAPACITY: usize = 2 * MAX_WINDOW_FRAMES as usize;
 /// Viewer JSON messages waiting for the session task.
 const VIEWER_QUEUE: usize = 32;
 /// Largest message accepted from the viewer (the gateway itself allows 64 KiB).
@@ -56,6 +63,8 @@ const BITRATE_TICK: Duration = Duration::from_millis(250);
 const PING_INTERVAL: Duration = Duration::from_millis(500);
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const KEYFRAME_MIN_INTERVAL: Duration = Duration::from_millis(500);
+/// How often the pipeline is asked whether capture stopped on its own.
+const CAPTURE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// PONGs claiming a longer round trip are bogus.
 const MAX_RTT_US: u64 = 60_000_000;
 /// A new session waits this long for its predecessor to release capture and input.
@@ -255,6 +264,19 @@ impl Outbox {
     }
 }
 
+/// What the reader passes to the session task.
+#[derive(Debug)]
+enum FromViewer {
+    Msg(ViewerMsg),
+    /// A message that did not parse, e.g. a `start` with an unknown codec: answered with
+    /// `bad_request` (in order with the other replies).
+    Invalid {
+        /// Its `t`, if it has one.
+        t: Option<String>,
+        error: String,
+    },
+}
+
 /// State the reader needs from the session.
 #[derive(Default)]
 struct Shared {
@@ -271,7 +293,7 @@ struct Session {
     video_out: mpsc::Sender<Message>,
     writer: TaskGuard<()>,
     reader: TaskGuard<ReadEnd>,
-    viewer: mpsc::Receiver<ViewerMsg>,
+    viewer: mpsc::Receiver<FromViewer>,
     shared: Arc<Shared>,
     input: Option<InputThread>,
     /// Why input injection is unavailable, reported after `hello`.
@@ -293,7 +315,12 @@ impl Session {
         let writer = TaskGuard::spawn(write_loop(sink, control_rx, video_rx));
         let out = Outbox(control_tx);
 
-        let (input, input_error) = match spawn_input(ctx.platform.clone()).await {
+        let (input, input_error) = match spawn_input(
+            ctx.platform.clone(),
+            locked_reporter(ctx.clone(), out.clone()),
+        )
+        .await
+        {
             Ok(input) => (Some(input), None),
             Err(e) => {
                 error!("input injection unavailable: {e:#}");
@@ -355,6 +382,10 @@ impl Session {
                     self.send_stats();
                     Ok(())
                 }
+                _ = self.timers.capture.tick(), if streaming => {
+                    self.check_capture();
+                    Ok(())
+                }
                 Ok(()) = state.changed() => {
                     let s = *state.borrow_and_update();
                     if !awaiting_hello {
@@ -375,7 +406,17 @@ impl Session {
         end
     }
 
-    async fn on_viewer_msg(&mut self, msg: ViewerMsg) -> Result<(), End> {
+    async fn on_viewer_msg(&mut self, msg: FromViewer) -> Result<(), End> {
+        let msg = match msg {
+            FromViewer::Msg(msg) => msg,
+            FromViewer::Invalid { t, error } => {
+                let what = t.map_or("unparseable message".to_owned(), |t| {
+                    format!("invalid {t:?} message")
+                });
+                self.out.error("bad_request", format!("{what}: {error}"));
+                return Ok(());
+            }
+        };
         match msg {
             ViewerMsg::Hello {
                 proto,
@@ -482,6 +523,8 @@ impl Session {
             // An earlier start failed after creating the flow.
             Some(flow) => {
                 flow.restart(&params);
+                // A new pipeline: its first frame must be a keyframe, like a new flow's.
+                flow.gate.request_keyframe();
                 flow.clone()
             }
             None => self
@@ -530,6 +573,7 @@ impl Session {
             encode,
             ping_id: 0,
             stalled: false,
+            capture_failed: false,
         })
     }
 
@@ -568,11 +612,17 @@ impl Session {
         }
     }
 
+    /// `keyframe_req` or resume. Without a stream there is nothing to do: a stream starts with
+    /// a keyframe.
     fn request_keyframe(&mut self) {
-        if self.keyframes.request(Instant::now())
-            && let Some(stream) = &self.stream
-        {
+        let Some(stream) = &self.stream else {
+            return;
+        };
+        let on_its_way = stream.flow.gate.keyframe_on_its_way(now_us());
+        if self.keyframes.request(Instant::now(), on_its_way) {
             stream.flow.gate.request_keyframe();
+        } else if on_its_way {
+            debug!("a keyframe is already on its way; request dropped");
         }
     }
 
@@ -625,7 +675,10 @@ impl Session {
             debug!(kbps = bps / 1000, ?decision, "encoder bitrate");
             stream.pipeline.set_bitrate(bps);
         }
-        if self.keyframes.poll(Instant::now()) {
+        if self
+            .keyframes
+            .poll(Instant::now(), flow.gate.keyframe_on_its_way(now))
+        {
             flow.gate.request_keyframe();
         }
 
@@ -679,6 +732,30 @@ impl Session {
         }
     }
 
+    /// Reports `capture_stopped` once when the pipeline says capture stopped by itself
+    /// (permission revoked, display gone, ...). The session stays open: a later `set` or
+    /// keyframe may get capture going again, and then a new failure is reported again.
+    fn check_capture(&mut self) {
+        let Some(stream) = self.stream.as_mut() else {
+            return;
+        };
+        match stream.pipeline.failure() {
+            Some(reason) if !stream.capture_failed => {
+                stream.capture_failed = true;
+                error!(reason, "video capture stopped");
+                self.out.json(&AgentMsg::Error {
+                    code: "capture_stopped".into(),
+                    msg: reason,
+                });
+            }
+            None if stream.capture_failed => {
+                stream.capture_failed = false;
+                info!("video capture is running again");
+            }
+            _ => {}
+        }
+    }
+
     /// Teardown: input released first (never leave keys held), then capture stopped, the
     /// keep-awake guard dropped and the socket closed with `end`'s code.
     async fn close(mut self, end: End) {
@@ -728,6 +805,8 @@ struct Streaming {
     ping_id: u32,
     mark: StatsMark,
     stalled: bool,
+    /// `capture_stopped` was reported and the pipeline still reports the failure.
+    capture_failed: bool,
 }
 
 impl Streaming {
@@ -776,6 +855,7 @@ impl Streaming {
             inflight_bytes: saturating_u32(flow.inflight_bytes),
             window_frames: flow.window_frames,
             window_bytes: saturating_u32(flow.window_bytes),
+            window_enc_ms: flow.encode_us as f32 / 1000.0,
         };
         self.mark = StatsMark {
             at: now,
@@ -856,6 +936,10 @@ impl Pipeline {
         }
     }
 
+    fn failure(&self) -> Option<String> {
+        self.0.as_ref().and_then(|p| p.failure())
+    }
+
     async fn stop(mut self) {
         if let Some(mut pipeline) = self.0.take() {
             let _ = tokio::task::spawn_blocking(move || pipeline.stop()).await;
@@ -875,6 +959,7 @@ struct Timers {
     bitrate: Interval,
     ping: Interval,
     stats: Interval,
+    capture: Interval,
 }
 
 impl Timers {
@@ -888,6 +973,7 @@ impl Timers {
             bitrate: interval(BITRATE_TICK),
             ping: interval(PING_INTERVAL),
             stats: interval(STATS_INTERVAL),
+            capture: interval(CAPTURE_CHECK_INTERVAL),
         }
     }
 
@@ -896,10 +982,14 @@ impl Timers {
         self.bitrate.reset();
         self.ping.reset_immediately();
         self.stats.reset();
+        self.capture.reset();
     }
 }
 
-/// `keyframe_req` rate limit: at most one forced keyframe per [`KEYFRAME_MIN_INTERVAL`];
+/// `keyframe_req` handling. A request that a keyframe already on its way answers (see
+/// [`rd_flow::FlowGate::keyframe_on_its_way`]) is dropped: the viewer reset its decoder before
+/// asking, so any keyframe it receives after asking will do. That is what makes resume cost one
+/// IDR, not two. Otherwise at most one keyframe is forced per [`KEYFRAME_MIN_INTERVAL`], and
 /// requests inside the interval are coalesced into one at its end.
 #[derive(Debug, Default)]
 struct KeyframeLimiter {
@@ -908,8 +998,14 @@ struct KeyframeLimiter {
 }
 
 impl KeyframeLimiter {
-    /// True if the keyframe may be forced now; otherwise it is deferred.
-    fn request(&mut self, now: Instant) -> bool {
+    /// True if a keyframe must be forced now; otherwise it was dropped (`on_its_way`) or
+    /// deferred.
+    fn request(&mut self, now: Instant, on_its_way: bool) -> bool {
+        if on_its_way {
+            // Answers this request and any deferred one.
+            self.pending = false;
+            return false;
+        }
         if self
             .last
             .is_some_and(|t| now.saturating_duration_since(t) < KEYFRAME_MIN_INTERVAL)
@@ -922,10 +1018,24 @@ impl KeyframeLimiter {
         true
     }
 
-    /// True when a deferred request is due.
-    fn poll(&mut self, now: Instant) -> bool {
-        self.pending && self.request(now)
+    /// True when a deferred request is due (and no keyframe is on its way by now).
+    fn poll(&mut self, now: Instant, on_its_way: bool) -> bool {
+        self.pending && self.request(now, on_its_way)
     }
+}
+
+/// The input thread's report of dropped input while the host is locked. If the shared state
+/// did not know about the lock yet, refreshing it tells the gateway and (through the session's
+/// state subscription) the viewer; otherwise the viewer gets a `state` with `locked: true`
+/// directly. The input thread calls this at most once per locked period.
+fn locked_reporter(ctx: Arc<Ctx>, out: Outbox) -> OnLockedDrop {
+    Box::new(move || {
+        if !ctx.refresh_state() {
+            let mut state = *ctx.state.borrow();
+            state.locked = true;
+            out.json(&AgentMsg::State(state));
+        }
+    })
 }
 
 /// Highest version both sides speak, if their ranges overlap.
@@ -964,12 +1074,15 @@ fn apply_patch(p: &mut StreamParams, patch: &StreamParamsPatch) {
     p.display = display.unwrap_or(p.display);
 }
 
-async fn spawn_input(platform: Arc<dyn Platform>) -> anyhow::Result<InputThread> {
+async fn spawn_input(
+    platform: Arc<dyn Platform>,
+    on_locked_drop: OnLockedDrop,
+) -> anyhow::Result<InputThread> {
     let injector_platform = platform.clone();
     let injector = tokio::task::spawn_blocking(move || injector_platform.input_injector())
         .await
         .context("creating the input injector panicked")??;
-    InputThread::spawn(injector, platform).context("spawning the input thread")
+    InputThread::spawn(injector, platform, on_locked_drop).context("spawning the input thread")
 }
 
 // ---------------------------------------------------------------------------
@@ -987,7 +1100,7 @@ struct Reader {
     shared: Arc<Shared>,
     out: Outbox,
     input: Option<crossbeam_channel::Sender<InputEvent>>,
-    viewer: mpsc::Sender<ViewerMsg>,
+    viewer: mpsc::Sender<FromViewer>,
     idle: Duration,
 }
 
@@ -1053,14 +1166,26 @@ impl Reader {
         if self.closing() {
             return;
         }
-        match serde_json::from_str::<ViewerMsg>(text) {
-            Ok(ViewerMsg::Unknown) => debug!("unknown viewer message ignored"),
-            Ok(msg) => {
-                if self.viewer.try_send(msg).is_err() {
-                    warn!("viewer message queue full; message dropped");
+        let msg = match serde_json::from_str::<ViewerMsg>(text) {
+            // Newer viewers may send message types we do not know: not an error.
+            Ok(ViewerMsg::Unknown) => {
+                debug!("unknown viewer message ignored");
+                return;
+            }
+            Ok(msg) => FromViewer::Msg(msg),
+            Err(e) => {
+                let t = serde_json::from_str::<serde_json::Value>(text)
+                    .ok()
+                    .and_then(|v| Some(v.get("t")?.as_str()?.to_owned()));
+                debug!(t, "unparseable viewer message: {e}");
+                FromViewer::Invalid {
+                    t,
+                    error: e.to_string(),
                 }
             }
-            Err(e) => debug!("unparseable viewer message ignored: {e}"),
+        };
+        if self.viewer.try_send(msg).is_err() {
+            warn!("viewer message queue full; message dropped");
         }
     }
 }
@@ -1106,15 +1231,25 @@ mod tests {
 
     #[test]
     fn keyframe_limiter() {
+        let ms = Duration::from_millis;
         let t0 = Instant::now();
         let mut k = KeyframeLimiter::default();
-        assert!(k.request(t0));
-        assert!(!k.request(t0 + Duration::from_millis(100)));
-        assert!(!k.request(t0 + Duration::from_millis(200)));
-        assert!(!k.poll(t0 + Duration::from_millis(400)));
-        assert!(k.poll(t0 + Duration::from_millis(500)));
-        assert!(!k.poll(t0 + Duration::from_millis(1500)));
-        assert!(k.request(t0 + Duration::from_millis(1500)));
+        assert!(k.request(t0, false));
+        // The keyframe forced at t0 is still on its way: requests are answered by it.
+        assert!(!k.request(t0 + ms(10), true));
+        assert!(!k.poll(t0 + ms(600), false), "dropped, not deferred");
+        // It arrived; a new request inside the interval is deferred to its end.
+        assert!(!k.request(t0 + ms(100), false));
+        assert!(!k.request(t0 + ms(200), false));
+        assert!(!k.poll(t0 + ms(400), false));
+        assert!(k.poll(t0 + ms(500), false));
+        assert!(!k.poll(t0 + ms(1500), false));
+        assert!(k.request(t0 + ms(1500), false));
+        // A deferred request is dropped when another keyframe (say, after a post-encode drop)
+        // is on its way by the time it is due.
+        assert!(!k.request(t0 + ms(1600), false));
+        assert!(!k.poll(t0 + ms(2000), true));
+        assert!(!k.poll(t0 + ms(2100), false));
     }
 
     #[test]

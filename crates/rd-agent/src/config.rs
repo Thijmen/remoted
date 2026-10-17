@@ -1,5 +1,6 @@
 //! Configuration file and token resolution.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
@@ -53,22 +54,76 @@ pub fn load_for_run(
     Ok(cfg)
 }
 
+/// Where the agent token came from (never the token itself).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenSource {
+    /// `--token-env VAR` or [`TOKEN_ENV`].
+    Env(String),
+    /// The config file (`rd-agent setup` puts it there).
+    ConfigFile,
+    /// The login Keychain: installs set up before the token moved into the config file.
+    Keychain,
+}
+
+impl fmt::Display for TokenSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TokenSource::Env(var) => write!(f, "environment variable {var}"),
+            TokenSource::ConfigFile => f.write_str("config file"),
+            TokenSource::Keychain => f.write_str("Keychain"),
+        }
+    }
+}
+
 /// Token precedence: `--token-env VAR` (must be set), `RD_AGENT_TOKEN`, the config file, the
-/// Keychain.
-pub fn resolve_token(token_env: Option<&str>, cfg: &AgentConfig) -> anyhow::Result<String> {
+/// Keychain (read only when nothing else has a token, so a configured agent never touches it).
+pub fn resolve_token(
+    token_env: Option<&str>,
+    cfg: &AgentConfig,
+) -> anyhow::Result<(String, TokenSource)> {
     if let Some(var) = token_env {
         return non_empty(std::env::var(var).ok())
+            .map(|t| (t, TokenSource::Env(var.to_owned())))
             .with_context(|| format!("--token-env {var}: the variable is not set"));
     }
     if let Some(token) = non_empty(std::env::var(TOKEN_ENV).ok()) {
-        return Ok(token);
+        return Ok((token, TokenSource::Env(TOKEN_ENV.to_owned())));
     }
     if let Some(token) = non_empty(cfg.token.clone()) {
-        return Ok(token);
+        return Ok((token, TokenSource::ConfigFile));
     }
     match non_empty(host::load_token()?) {
-        Some(token) => Ok(token),
+        Some(token) => Ok((token, TokenSource::Keychain)),
         None => bail!("no agent token: run `rd-agent setup`, or set {TOKEN_ENV}"),
+    }
+}
+
+/// Owner-only permissions (0700) for the agent's own config directory, which holds the token.
+/// Only for the per-user default location: a directory given with `--config` may be shared.
+pub fn restrict_app_dir(dir: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("restricting {}", dir.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
+/// The file's permission bits when others than the owner may read or write it (Unix).
+pub fn too_open(path: &Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
+        (mode & 0o077 != 0).then_some(mode)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
     }
 }
 
@@ -95,6 +150,54 @@ mod tests {
         assert_eq!(token_machine("rd1.mbp."), None);
         assert_eq!(token_machine("rd2.mbp.abc"), None);
         assert_eq!(token_machine("garbage"), None);
+    }
+
+    #[test]
+    fn token_from_the_config_file() {
+        // An inherited RD_AGENT_TOKEN would win; nothing to check then.
+        if std::env::var_os(TOKEN_ENV).is_some() {
+            return;
+        }
+        let cfg = AgentConfig {
+            gateway_url: "wss://gw".into(),
+            machine: "mbp".into(),
+            token: Some(" rd1.mbp.secret\n".into()),
+            defaults: Default::default(),
+        };
+        // Found before the Keychain is consulted (the test never touches the Keychain).
+        let (token, source) = resolve_token(None, &cfg).unwrap();
+        assert_eq!(token, "rd1.mbp.secret");
+        assert_eq!(source, TokenSource::ConfigFile);
+        assert_eq!(source.to_string(), "config file");
+        // --token-env must name a variable that is set.
+        let missing = format!("RD_AGENT_TEST_UNSET_{}", std::process::id());
+        assert!(resolve_token(Some(&missing), &cfg).is_err());
+    }
+
+    #[test]
+    fn private_files() {
+        let dir = std::env::temp_dir().join(format!("rd-agent-perm-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("config.toml");
+        let cfg = AgentConfig {
+            gateway_url: "wss://gw".into(),
+            machine: "mbp".into(),
+            token: Some("rd1.mbp.secret".into()),
+            defaults: Default::default(),
+        };
+        cfg.save(&file).unwrap();
+        assert_eq!(too_open(&file), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(too_open(&file), Some(0o644));
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            restrict_app_dir(&dir).unwrap();
+            let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::path::Path;
 
 use rd_agent_core::config::AgentConfig;
 
+use crate::config::TokenSource;
 use crate::{config, host};
 
 pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
@@ -30,20 +31,19 @@ pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
         None
     };
 
-    let env_token = std::env::var(config::TOKEN_ENV).is_ok_and(|t| !t.trim().is_empty());
-    let keychain = match host::load_token() {
-        Ok(Some(_)) => "present".to_owned(),
-        Ok(None) => "missing".to_owned(),
-        Err(e) => format!("unreadable ({e:#})"),
-    };
-    println!(
-        "token:        Keychain {keychain}{}",
-        if env_token {
-            format!(", {} set (takes precedence)", config::TOKEN_ENV)
-        } else {
-            String::new()
-        }
-    );
+    // Resolved like `run` does, so this shows the token the agent will use. The Keychain is
+    // only read when nothing else has a token. The token itself is never printed.
+    let lookup = cfg.clone().unwrap_or_else(|| AgentConfig {
+        gateway_url: String::new(),
+        machine: String::new(),
+        token: None,
+        defaults: Default::default(),
+    });
+    let token = config::resolve_token(None, &lookup);
+    match &token {
+        Ok((_, source)) => println!("token:        {}", describe(source, &path)),
+        Err(e) => println!("token:        missing ({e:#})"),
+    }
 
     // Checked in a fresh instance of the app: from a terminal, this process's own grants would
     // be the terminal's.
@@ -76,8 +76,8 @@ pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
     }
 
     if let Some(mut cfg) = cfg {
-        let check = match config::resolve_token(None, &cfg) {
-            Ok(token) => {
+        let check = match token {
+            Ok((token, _)) => {
                 cfg.token = Some(token);
                 check_gateway(&cfg)
             }
@@ -86,6 +86,27 @@ pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
         println!("gateway:      {check}");
     }
     Ok(())
+}
+
+/// Where the token comes from, with what to do about it if anything.
+fn describe(source: &TokenSource, config_path: &Path) -> String {
+    match source {
+        TokenSource::Env(var) => format!(
+            "from the environment variable {var} (takes precedence over the config file and \
+             the Keychain)"
+        ),
+        TokenSource::ConfigFile => match config::too_open(config_path) {
+            None => format!("from the config file ({})", config_path.display()),
+            Some(mode) => format!(
+                "from the config file ({}), which others can read (mode {mode:o}): run \
+                 chmod 600 on it",
+                config_path.display()
+            ),
+        },
+        TokenSource::Keychain => "from the Keychain (older install; run `rd-agent setup` again to \
+             move it into the config file, which survives app rebuilds)"
+            .to_owned(),
+    }
 }
 
 fn check_gateway(cfg: &AgentConfig) -> String {

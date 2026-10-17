@@ -43,6 +43,8 @@ async fn forward(
     let mut epochs = Epochs::default();
     let mut warned = false;
     while let Some(mut frame) = frames.recv().await {
+        // The encoder's own submit-to-output time (not our queueing): sizes the window.
+        flow.gate.on_encode_time(frame.encode_us, frame.key);
         let (config, header) = match epochs.plan(&mut frame) {
             Plan::Discard => {
                 if !warned {
