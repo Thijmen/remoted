@@ -114,9 +114,16 @@ pub fn app_permissions(request: bool) -> anyhow::Result<Perms> {
 
 /// `rd-agent permissions`: check (and with `request`, ask for) this process's permissions and
 /// write them to `report`.
-pub fn report_permissions(request: bool, report: &std::path::Path) -> anyhow::Result<()> {
+pub fn report_permissions(
+    request: bool,
+    screen_only: bool,
+    report: &std::path::Path,
+) -> anyhow::Result<()> {
     let mut perms = session::permissions();
-    if request && !(perms.screen && perms.input) {
+    if request && screen_only && !perms.screen {
+        perms.screen = session::request_screen_capture();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    } else if request && !screen_only && !(perms.screen && perms.input) {
         let asked = session::request_permissions();
         perms = Perms {
             screen: perms.screen || asked.screen,

@@ -109,6 +109,11 @@ pub fn permissions() -> Perms {
     }
 }
 
+/// Shows the standard system prompt for Screen Recording only (when it is missing).
+pub fn request_screen_capture() -> bool {
+    CGRequestScreenCaptureAccess()
+}
+
 /// Only called by `rd-agent setup` (in person): shows the standard system permission prompts.
 pub fn request_permissions() -> Perms {
     let screen = CGRequestScreenCaptureAccess();

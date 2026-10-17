@@ -54,6 +54,10 @@ struct PermissionsArgs {
     /// Show the standard system prompts for missing permissions.
     #[arg(long)]
     request: bool,
+    /// With --request: ask for Screen Recording only (view-only use, e.g. testing a viewer on
+    /// the same Mac, where injected input would loop back into the viewer).
+    #[arg(long, requires = "request")]
+    screen_only: bool,
     /// Write the result here as JSON.
     #[arg(long, value_name = "PATH")]
     report: PathBuf,
@@ -168,7 +172,7 @@ fn main() -> ExitCode {
         }
         Command::Permissions(args) => {
             logging::init_cli();
-            host::report_permissions(args.request, &args.report)
+            host::report_permissions(args.request, args.screen_only, &args.report)
         }
         Command::Selftest(args) => {
             logging::init_cli_verbose();

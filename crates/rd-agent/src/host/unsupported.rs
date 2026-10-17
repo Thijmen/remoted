@@ -35,7 +35,11 @@ pub fn app_permissions(_request: bool) -> anyhow::Result<Perms> {
     bail!(UNSUPPORTED)
 }
 
-pub fn report_permissions(_request: bool, _report: &std::path::Path) -> anyhow::Result<()> {
+pub fn report_permissions(
+    _request: bool,
+    _screen_only: bool,
+    _report: &std::path::Path,
+) -> anyhow::Result<()> {
     bail!(UNSUPPORTED)
 }
 
