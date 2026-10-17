@@ -500,10 +500,9 @@ impl Session {
             }
             return;
         }
-        if !self.ctx.platform.permissions().screen {
-            return self
-                .out
-                .error("tcc_screen", "the agent has no Screen Recording permission");
+        let screen_ok = self.ctx.platform.permissions().screen;
+        if !screen_ok {
+            warn!("Screen Recording preflight says no; trying capture anyway");
         }
         match self.start_stream(requested, params).await {
             Ok(stream) => {

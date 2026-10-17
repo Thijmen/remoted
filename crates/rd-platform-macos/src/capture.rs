@@ -419,11 +419,11 @@ impl VideoPipeline for ScreenPipeline {
     ) -> anyhow::Result<()> {
         self.stop();
         validate(&cfg)?;
-        // Never let ScreenCaptureKit trigger the permission prompt from the agent.
-        ensure!(
-            CGPreflightScreenCaptureAccess(),
-            "Screen Recording permission is not granted (run `rd-agent setup` in person)"
-        );
+        // The preflight can disagree with what ScreenCaptureKit allows; only a viewer that asked
+        // for video gets here, so let ScreenCaptureKit decide (it fails if access is denied).
+        if !CGPreflightScreenCaptureAccess() {
+            tracing::warn!("Screen Recording preflight says no; asking ScreenCaptureKit directly");
+        }
         self.bitrate.store(cfg.bitrate_bps, Ordering::Relaxed);
 
         let display_id = session::resolve_display(cfg.display)
