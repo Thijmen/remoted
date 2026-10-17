@@ -3,7 +3,7 @@
 //! All `unsafe` FFI lives in this crate. Modules:
 //! - `capture`  — ScreenCaptureKit stream (NV12 420v, scaled output, frame gate on the capture queue)
 //!   and a synthetic test-pattern pipeline (no permission needed)
-//! - `encoder`  — VideoToolbox low-latency H.264 (AverageBitRate, on-demand IDR, avcC extraction)
+//! - `encoder`  — VideoToolbox hardware H.264 (AverageBitRate, on-demand IDR, avcC extraction)
 //! - `input`    — CGEvent injection (mouse abs/rel/buttons/click-state, wheel, keys via HID->kVK)
 //! - `power`    — IOPM assertions (keep display awake, declare user activity)
 //! - `session`  — lock state, permission preflight, OS description, displays

@@ -29,7 +29,7 @@ fn main() -> std::process::ExitCode {
         #[arg(long)]
         synthetic: bool,
         /// VideoToolbox configuration: low-latency or standard.
-        #[arg(long, default_value = "low-latency")]
+        #[arg(long, default_value = "standard")]
         rate_control: RateControl,
     }
 

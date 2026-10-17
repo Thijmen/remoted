@@ -65,19 +65,23 @@ pub const RATE_CONTROL_ENV: &str = "RD_VT_RATE_CONTROL";
 /// How the session is configured. Both modes use the hardware encoder, ConstrainedHigh (or
 /// High), no frame reordering, `AverageBitRate`, IDR only on demand and BT.709 tags.
 ///
-/// Measured on an M1 Pro (macOS 26.3, 1728x1118@60, synthetic content): `LowLatency` settles
-/// at ~16-20 ms per frame after the first ~3 s (the media engine re-clocks to "just in time")
-/// and drops several frames after each IDR at low bitrates, but holds the bitrate within a few
-/// percent per second. `Standard` stays at ~7 ms with no drops, at the cost of ~2x larger IDRs
-/// and looser per-second bitrate adherence; its SPS lacks the VUI bitstream restriction, which
-/// the encoder then adds to the avcC itself.
+/// Measured on an M1 Pro (macOS 26.3, 1728x1118@60, synthetic content, 2026-10-17):
+/// - `Standard`: p50 ~9.3 ms, p90 ~14 ms, no drops. IDRs ~250 KiB (vs ~177 KiB) and looser
+///   per-second bitrate adherence. Its SPS lacks the VUI bitstream restriction, which the
+///   encoder then adds to the avcC itself (see `vui.rs`).
+/// - `LowLatency`: p50 ~19 ms, p90 ~28-36 ms. `RealTime = true` makes VideoToolbox pace itself
+///   to `ExpectedFrameRate` (about one frame interval); `Standard` with `RealTime = true` shows
+///   the same ~17 ms. Overstating `ExpectedFrameRate` (90-240) lowers p50 to 10-12 ms but p90
+///   stays above 25 ms and the encoder starts dropping frames.
+///
+/// So `Standard` is the default; `LowLatency` stays selectable for comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RateControl {
-    /// `EnableLowLatencyRateControl` + `RealTime = true` (the plan's configuration).
-    #[default]
+    /// `EnableLowLatencyRateControl` + `RealTime = true` (the original plan's configuration).
     LowLatency,
     /// Default rate control with `RealTime = false` and `PrioritizeEncodingSpeedOverQuality`:
     /// the encoder runs flat out instead of pacing itself to the frame rate.
+    #[default]
     Standard,
 }
 
@@ -85,13 +89,11 @@ impl RateControl {
     /// The default, unless overridden with `RD_VT_RATE_CONTROL=standard|low-latency`.
     pub fn from_env() -> Self {
         match std::env::var(RATE_CONTROL_ENV).as_deref() {
-            Ok("standard") => RateControl::Standard,
-            Ok("low-latency") | Err(_) => RateControl::LowLatency,
+            Ok("standard") | Err(_) => RateControl::Standard,
+            Ok("low-latency") => RateControl::LowLatency,
             Ok(other) => {
-                warn!(
-                    "{RATE_CONTROL_ENV}={other:?} is not low-latency|standard; using low-latency"
-                );
-                RateControl::LowLatency
+                warn!("{RATE_CONTROL_ENV}={other:?} is not low-latency|standard; using standard");
+                RateControl::Standard
             }
         }
     }

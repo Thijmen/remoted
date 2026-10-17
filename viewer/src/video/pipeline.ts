@@ -252,11 +252,11 @@ export class VideoPipeline {
     const w = frame.displayWidth;
     const h = frame.displayHeight;
     try {
+      this.stats.width = w;
+      this.stats.height = h;
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
-        this.stats.width = w;
-        this.stats.height = h;
         this.deps.resized?.(w, h);
       }
       this.ctx.drawImage(frame, 0, 0, w, h);

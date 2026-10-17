@@ -75,6 +75,7 @@ export class Session {
   private pingId = 0;
   private openedUs = 0;
   private lastRxMs = 0;
+  private lastTickMs = 0;
   private pollAbort: AbortController | null = null;
   /** Binary frames that failed to parse (for the HUD). */
   malformed = 0;
@@ -86,6 +87,10 @@ export class Session {
     // Hidden tabs may have timers throttled heavily; give the stream a fresh grace period.
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) this.lastRxMs = performance.now();
+    });
+    // Page Lifecycle: a frozen page gets 'resume' before its queued tasks run.
+    document.addEventListener('resume', () => {
+      this.lastRxMs = performance.now();
     });
   }
 
@@ -239,7 +244,13 @@ export class Session {
   }
 
   private tick(): void {
-    if (this.phase === 'streaming' && !document.hidden && performance.now() - this.lastRxMs > RX_TIMEOUT_MS) {
+    const now = performance.now();
+    // A late tick means this page was throttled or frozen (hidden tab, Energy Saver), not that
+    // the network went quiet: queued messages may not have been processed yet. Restart the
+    // grace period instead of abandoning a healthy socket.
+    if (this.lastTickMs > 0 && now - this.lastTickMs > 2 * PING_INTERVAL_MS) this.lastRxMs = now;
+    this.lastTickMs = now;
+    if (this.phase === 'streaming' && !document.hidden && now - this.lastRxMs > RX_TIMEOUT_MS) {
       this.abandon('no data from agent');
       return;
     }
@@ -253,6 +264,7 @@ export class Session {
   }
 
   private closed(code: number, reason: string): void {
+    console.info(`[rd] disconnected code=${code} reason=${reason || '-'} hidden=${document.hidden}`);
     this.teardown();
     this.on.disconnected();
     if (this.userClosed) {

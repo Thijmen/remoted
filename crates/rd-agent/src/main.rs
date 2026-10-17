@@ -101,7 +101,7 @@ struct SelftestArgs {
     /// Encode a moving test pattern instead of the screen (needs no permission).
     #[arg(long)]
     synthetic: bool,
-    /// Encoder rate control: low-latency or standard [default: RD_VT_RATE_CONTROL or low-latency].
+    /// Encoder rate control: low-latency or standard [default: RD_VT_RATE_CONTROL or standard].
     #[arg(long, value_name = "MODE")]
     rate_control: Option<String>,
 }
