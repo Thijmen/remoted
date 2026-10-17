@@ -29,7 +29,6 @@ use rd_agent_core::clock::now_us;
 use rd_agent_core::{Admitted, FrameGate, FrameSink, VideoConfig, VideoPipeline};
 use screencapturekit::cm::SCFrameStatus;
 use screencapturekit::prelude::*;
-use screencapturekit::stream::configuration::color_matrix;
 use screencapturekit::stream::delegate_trait::StreamCallbacks;
 use tracing::{debug, error, info, warn};
 
@@ -578,7 +577,11 @@ fn stream_configuration(cfg: &VideoConfig, stretch: bool) -> anyhow::Result<SCSt
         .with_scales_to_fit(true)
         .with_preserves_aspect_ratio(!stretch)?
         .with_pixel_format(PixelFormat::YCbCr_420v)
-        .with_color_matrix(color_matrix::ITU_R_709_2)?
+        // Not .with_color_matrix(): SCStreamConfiguration.colorMatrix is an *unretained*
+        // CFStringRef meant for the kCGDisplayStream* constants, and the crate passes a
+        // temporary string, so startCapture crashed (EXC_BAD_ACCESS in
+        // -[SCStream serializeStreamProperties]). BT.709 is the default anyway; the encoder
+        // tags the stream as BT.709.
         .with_minimum_frame_interval(&CMTime::new(1, cfg.fps as i32))
         .with_queue_depth(SCK_QUEUE_DEPTH)
         .with_shows_cursor(true))
