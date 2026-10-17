@@ -90,6 +90,12 @@ pub trait VideoPipeline: Send {
     fn set_bitrate(&self, bps: u32);
     /// Stop capture and encoding; no more frames are delivered after this returns.
     fn stop(&mut self);
+    /// Why capture stopped on its own (permission revoked, display gone, capture service
+    /// error), if it did. The runtime polls this about once a second and reports
+    /// `capture_stopped` to the viewer. `None` while healthy or before `start`.
+    fn failure(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Injects viewer input. Called from a dedicated input thread (never the network task).
