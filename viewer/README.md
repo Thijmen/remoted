@@ -37,3 +37,14 @@ disconnect. The small ▾ tab at the top of the screen opens the menu and the se
 
 To run the latency test, open `/latency-target` on the host, rest the remote cursor on its box, then press the T
 chord. The viewer sends F13 and measures how long it takes for the box flip to be painted.
+
+## Keyboard and connection notes
+
+- Keys are sent by physical position (`KeyboardEvent.code`); `src/input/keyboard.ts` holds the key state.
+- Caps Lock is synced, not forwarded: the host's lock follows the local one (`getModifierState`).
+- Windows: AltGr (Right Alt on US-International, German, …) arrives as Right Option. The extra left Ctrl that
+  Windows sends with it is dropped; to tell the two apart, a left Ctrl press is held back until the next key, click
+  or scroll (at most 100 ms). A Shift keyup releases both Shifts (Windows omits one when both were down).
+- A key released after focus moved to the menu or a banner is still released on the host.
+- A session socket that cannot open within 10 s is retried. If it is refused because the sign-in expired (or the
+  user is not allowed), the viewer stops and asks for a page reload instead of retrying forever.

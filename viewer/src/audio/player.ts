@@ -5,6 +5,10 @@ import { AudioRing, CHANNELS } from './ring';
 import workletUrl from './worklet.ts?worker&url';
 
 const SAMPLE_RATE = 48_000;
+/** A failing decoder is re-created at most this often … */
+const RECONFIGURE_MIN_INTERVAL_MS = 1000;
+/** … and not at all after this many failures without a decoded packet in between. */
+const MAX_FAILURES_IN_A_ROW = 5;
 
 export interface AudioStats {
   /** 'sab' = SharedArrayBuffer ring, 'message' = PCM posted to the worklet (not isolated). */
@@ -30,6 +34,12 @@ export class AudioPlayer {
   private decoder: AudioDecoder | null = null;
   private ready: Promise<void>;
   private scratch = new Float32Array(0);
+  /** Bumped by every configure/reset/close: an older configure() still awaiting must not attach a decoder. */
+  private configSeq = 0;
+  private closed = false;
+  private failuresInARow = 0;
+  private lastConfigureMs = Number.NEGATIVE_INFINITY;
+  private retryTimer = 0;
 
   constructor(volume: number) {
     this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' });
@@ -68,8 +78,17 @@ export class AudioPlayer {
   }
 
   /** `audio_config` from the agent: (re)create the Opus decoder. */
-  async configure(cfg: AudioConfigMsg): Promise<void> {
+  configure(cfg: AudioConfigMsg): Promise<void> {
+    this.failuresInARow = 0;
+    return this.apply(cfg);
+  }
+
+  private async apply(cfg: AudioConfigMsg): Promise<void> {
+    const token = ++this.configSeq;
+    clearTimeout(this.retryTimer);
+    this.lastConfigureMs = performance.now();
     await this.ready;
+    if (token !== this.configSeq || this.closed) return;
     this.closeDecoder();
     this.post({ type: 'reset' });
     if (cfg.codec !== 'opus') {
@@ -85,23 +104,46 @@ export class AudioPlayer {
       const support = await AudioDecoder.isConfigSupported(config);
       if (!support.supported) throw new Error('opus not supported');
     } catch (e) {
-      this.stats.lastError = String(e);
+      if (token === this.configSeq) this.stats.lastError = String(e);
       return;
     }
+    if (token !== this.configSeq || this.closed) return;
     const decoder = new AudioDecoder({
-      output: (data) => this.onDecoded(data),
+      output: (data) => {
+        if (this.decoder !== decoder) {
+          data.close();
+          return;
+        }
+        this.failuresInARow = 0;
+        this.onDecoded(data);
+      },
       error: (e) => {
         this.stats.decodeErrors++;
         this.stats.lastError = e.message;
         if (this.decoder === decoder) {
           this.decoder = null;
-          void this.configure(cfg);
+          this.retry(cfg);
         }
       },
     });
+    this.closeDecoder();
     decoder.configure(config);
     this.decoder = decoder;
     this.stats.lastError = '';
+  }
+
+  /** Re-create a failed decoder, rate-limited, and give up on a decoder that never produces anything. */
+  private retry(cfg: AudioConfigMsg): void {
+    if (++this.failuresInARow > MAX_FAILURES_IN_A_ROW) {
+      this.stats.lastError = `audio decoder keeps failing (${this.stats.lastError}); audio stopped`;
+      return;
+    }
+    const token = this.configSeq;
+    const wait = Math.max(0, this.lastConfigureMs + RECONFIGURE_MIN_INTERVAL_MS - performance.now());
+    clearTimeout(this.retryTimer);
+    this.retryTimer = window.setTimeout(() => {
+      if (token === this.configSeq && !this.closed) void this.apply(cfg);
+    }, wait);
   }
 
   onAudio(msg: AudioMsg): void {
@@ -127,11 +169,17 @@ export class AudioPlayer {
 
   /** Session lost: drop decoder and buffered audio. */
   reset(): void {
+    this.configSeq++;
+    clearTimeout(this.retryTimer);
+    this.failuresInARow = 0;
     this.closeDecoder();
     this.post({ type: 'reset' });
   }
 
   close(): void {
+    this.closed = true;
+    this.configSeq++;
+    clearTimeout(this.retryTimer);
     this.closeDecoder();
     this.node?.disconnect();
     this.node = null;

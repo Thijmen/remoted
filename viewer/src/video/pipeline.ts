@@ -201,8 +201,7 @@ export class VideoPipeline {
     try {
       decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ts, data: msg.payload }));
     } catch (e) {
-      this.inFlight.delete(ts);
-      this.discard(msg);
+      // This frame is in `inFlight` already: it is ACKed (discarded) after the older ones, in seq order.
       this.decoderFailed(e);
       return;
     }
@@ -286,8 +285,22 @@ export class VideoPipeline {
   private configFailed(reason: string): void {
     this.configuring = false;
     this.stats.lastError = reason;
+    this.discardInFlight();
     this.discardQueued();
     this.closeDecoder();
+  }
+
+  /**
+   * Frames inside a decoder that is going away never produce output: ACK them as discarded (in seq order,
+   * which is insertion order). Otherwise, on a static screen that sends no further frame, the agent's
+   * window stays occupied until it declares the session stalled.
+   */
+  private discardInFlight(): void {
+    for (const i of this.inFlight.values()) {
+      this.stats.discarded++;
+      this.deps.sendAck(encodeVideoAck(AckFlags.DISCARDED, i.epoch, i.seq, 0, 0));
+    }
+    this.inFlight.clear();
   }
 
   private ensureDecoder(): VideoDecoder {
@@ -309,7 +322,7 @@ export class VideoPipeline {
   private decoderFailed(e: unknown): void {
     this.stats.decoderErrors++;
     this.stats.lastError = `decoder: ${errorText(e)}`;
-    this.inFlight.clear();
+    this.discardInFlight();
     this.closeDecoder();
     this.waitingForKey = true;
     const config = this.config;

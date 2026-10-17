@@ -9,10 +9,10 @@ import {
   encodeReleaseAll,
   encodeWheel,
 } from '../proto/bin';
-import { type ChordAction, chordFor } from './chords';
+import type { ChordAction } from './chords';
 import { type Rect, normalizePoint } from './coords';
-import { hidForCode } from './keymap.gen';
-import { type ModifierMapping, isMacViewer, isModifierCode, mapCode } from './modifiers';
+import { KeyboardForwarder } from './keyboard';
+import { type ModifierMapping, isMacViewer, isWindowsViewer } from './modifiers';
 import { WheelNormalizer } from './wheel';
 
 export interface InputSink {
@@ -58,10 +58,9 @@ export class InputController {
   /** Wire button mask (MOUSE_ABS flags) and the DOM mask it was derived from. */
   private buttons = 0;
   private domButtons = 0;
-  /** Physical code → HID sent on keydown, so keyup releases the same key even if the mapping changed. */
-  private readonly pressed = new Map<string, number>();
-  /** Codes whose keydown was consumed by a chord; their keyup is swallowed too. */
-  private readonly swallowed = new Set<string>();
+  private readonly keys: KeyboardForwarder;
+  /** Local Caps Lock as of the last key or pointer event anywhere on the page (null: not seen yet). */
+  private localCaps: boolean | null = null;
   private pos = { x: 0x8000, y: 0x8000 };
   private pendingMove: { x: number; y: number } | null = null;
   private lastMoveMs = Number.NEGATIVE_INFINITY;
@@ -72,7 +71,6 @@ export class InputController {
   private locked = false;
   private readonly wheel: WheelNormalizer;
   private wheelRaf = 0;
-  private readonly macViewer = isMacViewer(navigator);
 
   constructor(
     /** Element covering the video area (the canvas, CSS `object-fit: contain`). */
@@ -82,6 +80,10 @@ export class InputController {
     opts: InputOptions,
   ) {
     this.opts = { ...opts };
+    this.keys = new KeyboardForwarder(
+      { send: (b) => this.sink.send(b), chord: (a) => this.cb.chord(a), mapping: () => this.opts.mapping },
+      { windows: isWindowsViewer(navigator), mac: isMacViewer(navigator) },
+    );
     this.wheel = new WheelNormalizer(window.devicePixelRatio, opts.invertScroll);
     new ResizeObserver(() => this.updateRect()).observe(surface);
     this.attach();
@@ -90,7 +92,10 @@ export class InputController {
   /** Forward input only while streaming. Disabling releases everything. */
   setEnabled(on: boolean): void {
     if (this.enabled && !on) this.releaseAll();
+    const enabling = on && !this.enabled;
     this.enabled = on;
+    // A new session's agent starts with Caps Lock off; match the local lock right away.
+    if (enabling && this.localCaps !== null) this.keys.syncCaps(this.localCaps);
   }
 
   setOptions(opts: InputOptions): void {
@@ -112,7 +117,7 @@ export class InputController {
     return this.locked;
   }
 
-  /** Release every key and button on the remote side and forget local state. */
+  /** Release every key and button on the remote side (this also clears its Caps Lock) and forget local state. */
   releaseAll(): void {
     this.sink.send(encodeReleaseAll());
     this.forget();
@@ -120,8 +125,7 @@ export class InputController {
 
   /** Drop local key/button state without telling the agent (it already released on disconnect). */
   forget(): void {
-    this.pressed.clear();
-    this.swallowed.clear();
+    this.keys.forget();
     this.buttons = 0;
     this.domButtons = 0;
     this.pendingMove = null;
@@ -170,6 +174,11 @@ export class InputController {
     }
     window.addEventListener('keydown', (e) => this.onKey(e, true), { capture: true });
     window.addEventListener('keyup', (e) => this.onKey(e, false), { capture: true });
+    // Also before a session runs (the Connect click), so Caps Lock can be synced as soon as it starts.
+    window.addEventListener('pointerdown', (e) => (this.localCaps = e.getModifierState('CapsLock')), {
+      capture: true,
+      passive: true,
+    });
     window.addEventListener('blur', () => this.enabled && this.releaseAll());
     document.addEventListener('visibilitychange', () => document.hidden && this.enabled && this.releaseAll());
     document.addEventListener('pointerlockchange', () => this.onPointerLockChange());
@@ -229,14 +238,18 @@ export class InputController {
       this.pos = this.normalize(e);
       this.pendingMove = this.pos;
     }
+    this.keys.syncCaps(e.getModifierState('CapsLock'));
     this.syncButtons(e.buttons);
   }
 
-  /** Emit MOUSE_BTN for every changed button (after flushing the position they apply to). */
+  /** Emit MOUSE_BTN for every changed button (after the modifiers and the motion they apply to). */
   private syncButtons(dom: number): void {
     const changed = dom ^ this.domButtons;
     if (changed === 0) return;
-    this.flushMove();
+    this.keys.flushPending();
+    // Buttons are never dropped, so the motion before them must not be either (not even under backpressure).
+    if (this.locked) this.flushRel(true);
+    else this.flushMove();
     for (const [bit, button] of DOM_BUTTON_BITS) {
       if ((changed & bit) === 0) continue;
       const down = (dom & bit) !== 0;
@@ -283,6 +296,11 @@ export class InputController {
     clearInterval(this.relTimer);
     this.relTimer = 0;
     if (locked) {
+      // The last absolute position goes out now: no MOUSE_ABS may follow relative motion.
+      clearTimeout(this.moveTimer);
+      this.moveTimer = 0;
+      if (this.enabled) this.flushMove();
+      this.pendingMove = null;
       this.relTimer = window.setInterval(() => this.flushRel(), MOVE_INTERVAL_MS);
     } else if (this.enabled) {
       this.releaseAll();
@@ -290,9 +308,9 @@ export class InputController {
     this.cb.pointerLockChanged(locked);
   }
 
-  /** Summed pointer-lock motion, sent every 4 ms; coalesces further under backpressure. */
-  private flushRel(): void {
-    if (!this.enabled || this.backpressured()) return;
+  /** Summed pointer-lock motion, sent every 4 ms; coalesces further under backpressure unless `force`d. */
+  private flushRel(force = false): void {
+    if (!this.enabled || (!force && this.backpressured())) return;
     let dx = Math.trunc(this.relX);
     let dy = Math.trunc(this.relY);
     this.relX -= dx;
@@ -312,6 +330,7 @@ export class InputController {
   private onWheel(e: WheelEvent): void {
     if (!this.enabled) return;
     e.preventDefault();
+    this.keys.flushPending(); // Ctrl+wheel
     this.wheel.push(e, performance.now());
     this.scheduleWheel();
   }
@@ -332,42 +351,11 @@ export class InputController {
   // keyboard
 
   private onKey(e: KeyboardEvent, down: boolean): void {
-    if (!this.enabled || !this.forwardsKeysFrom(e.target)) return;
-    if (down) {
-      const chord = chordFor(e);
-      if (chord) {
-        e.preventDefault();
-        e.stopPropagation();
-        this.swallowed.add(e.code);
-        if (!e.repeat) this.cb.chord(chord);
-        return;
-      }
-    } else if (this.swallowed.delete(e.code)) {
+    this.localCaps = e.getModifierState('CapsLock');
+    if (!this.enabled) return;
+    if (this.keys.handle(e, down, this.forwardsKeysFrom(e.target)) === 'consume') {
       e.preventDefault();
-      return;
-    }
-    const held = this.pressed.get(e.code);
-    const hid = held ?? hidForCode(mapCode(e.code, this.opts.mapping));
-    if (hid === undefined) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (down) {
-      this.pressed.set(e.code, hid);
-      this.sink.send(encodeKey(true, e.repeat && held !== undefined, hid));
-      return;
-    }
-    if (held === undefined) return;
-    this.pressed.delete(e.code);
-    this.sink.send(encodeKey(false, false, hid));
-    // Chrome on macOS swallows keyups of keys released while Cmd is held.
-    if (this.macViewer && (e.code === 'MetaLeft' || e.code === 'MetaRight')) this.releaseNonModifiers();
-  }
-
-  private releaseNonModifiers(): void {
-    for (const [code, hid] of this.pressed) {
-      if (isModifierCode(code)) continue;
-      this.pressed.delete(code);
-      this.sink.send(encodeKey(false, false, hid));
+      e.stopPropagation();
     }
   }
 }

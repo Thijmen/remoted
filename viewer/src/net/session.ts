@@ -2,6 +2,7 @@ import { type AudioMsg, type Bytes, ProtoError, type VideoMsg, encodePing, encod
 import {
   type AgentHello,
   type AgentMsg,
+  CloseCode,
   type GwErrorMsg,
   MIN_PROTO_VERSION,
   PROTO_VERSION,
@@ -12,7 +13,7 @@ import {
   parseViewerIncoming,
 } from '../proto/control';
 import { nowUs } from '../util/stats';
-import { fetchMachine, wsUrl } from './api';
+import { type Access, fetchMachine, probeAccess, wsUrl } from './api';
 import { Backoff, OFFLINE_POLL_MS, closeAction } from './backoff';
 import { ClockEstimator } from './clock';
 
@@ -22,6 +23,12 @@ const RX_TIMEOUT_MS = 5000;
 /** The gateway gives the agent 10 s to join; allow for slack before giving up ourselves. */
 const JOIN_TIMEOUT_MS = 15_000;
 const HELLO_TIMEOUT_MS = 10_000;
+/** Chromium only gives up on a hanging opening handshake after 240 s (half-up VPN, stuck proxy). */
+const OPEN_TIMEOUT_MS = 10_000;
+/** Bound for the HTTP requests made while reconnecting (offline poll, sign-in check). */
+const FETCH_TIMEOUT_MS = 5000;
+/** Sockets in a row refused before opening, while /api/me is fine, before saying so. */
+const REFUSED_HINT_AFTER = 3;
 /** Close code we use when abandoning a socket locally (private-use range). */
 const LOCAL_ABANDON = 4000;
 
@@ -77,6 +84,8 @@ export class Session {
   private lastRxMs = 0;
   private lastTickMs = 0;
   private pollAbort: AbortController | null = null;
+  /** Consecutive sockets that closed before opening. */
+  private unopened = 0;
   /** Binary frames that failed to parse (for the HUD). */
   malformed = 0;
 
@@ -151,8 +160,12 @@ export class Session {
     }
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
+    this.after(OPEN_TIMEOUT_MS, () => {
+      if (this.ws === ws && this.phase === 'opening') this.abandon('connect timeout');
+    });
     ws.onopen = () => {
       this.phase = 'joining';
+      this.unopened = 0;
       this.openedUs = nowUs();
       this.lastRxMs = performance.now();
       this.on.status({ kind: 'joining' });
@@ -264,6 +277,7 @@ export class Session {
   }
 
   private closed(code: number, reason: string): void {
+    const neverOpened = this.phase === 'opening';
     console.info(`[rd] disconnected code=${code} reason=${reason || '-'} hidden=${document.hidden}`);
     this.teardown();
     this.on.disconnected();
@@ -271,6 +285,19 @@ export class Session {
       this.on.status({ kind: 'closed' });
       return;
     }
+    if (neverOpened) this.unopened++;
+    if (neverOpened && code === 1006) {
+      // A refused upgrade (signed out, not allowed) looks exactly like a network failure: ask the HTTP API.
+      this.checkAccess((access) => {
+        const refused = access === 'ok' && this.unopened >= REFUSED_HINT_AFTER;
+        this.react(code, refused ? 'session socket refused although signed in (proxy or Origin?)' : reason);
+      });
+      return;
+    }
+    this.react(code, reason);
+  }
+
+  private react(code: number, reason: string): void {
     switch (closeAction(code)) {
       case 'stop':
         this.on.status({ kind: 'stopped', code, reason });
@@ -287,12 +314,29 @@ export class Session {
     }
   }
 
+  /** Signed out or not allowed: retrying cannot help, a reload (which signs in again) can. */
+  private denied(): void {
+    this.on.status({ kind: 'stopped', code: CloseCode.FORBIDDEN, reason: 'signed out or not allowed' });
+  }
+
+  /** Probe /api/me, stop if access is denied, else continue with `then` (unless torn down meanwhile). */
+  private checkAccess(then: (access: Access) => void): void {
+    const abort = new AbortController();
+    this.pollAbort = abort;
+    void probeAccess(withTimeout(abort.signal)).then((access) => {
+      if (abort.signal.aborted) return;
+      this.pollAbort = null;
+      if (access === 'denied') this.denied();
+      else then(access);
+    });
+  }
+
   private pollUntilOnline(): void {
     const poll = async () => {
       const abort = new AbortController();
       this.pollAbort = abort;
       try {
-        const m = await fetchMachine(this.opts.machine, abort.signal);
+        const m = await fetchMachine(this.opts.machine, withTimeout(abort.signal));
         if (abort.signal.aborted) return;
         if (m?.online) {
           this.connect();
@@ -300,7 +344,13 @@ export class Session {
         }
       } catch {
         if (abort.signal.aborted) return;
-        // Transient (network, auth redirect): keep polling.
+        // Network trouble or a timeout, but a sign-in redirect or a 403 also ends up here.
+        const access = await probeAccess(withTimeout(abort.signal));
+        if (abort.signal.aborted) return;
+        if (access === 'denied') {
+          this.denied();
+          return;
+        }
       }
       this.after(OFFLINE_POLL_MS, () => void poll());
     };
@@ -337,4 +387,9 @@ export class Session {
   private every(ms: number, f: () => void): void {
     this.timers.push(window.setInterval(f, ms));
   }
+}
+
+/** `signal`, also aborted after FETCH_TIMEOUT_MS (a hung request must not stall reconnecting). */
+function withTimeout(signal: AbortSignal): AbortSignal {
+  return AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]);
 }

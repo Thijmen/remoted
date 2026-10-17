@@ -81,7 +81,12 @@ export class ViewerApp {
   private agentStats: AgentStats | null = null;
   private agentState: AgentState | null = null;
   private requested: StreamParams | null = null;
+  /** The session view is shown (not the connect screen). */
   private active = false;
+  /** A session is wanted (connecting, streaming, reconnecting): wake lock, audio, HUD, leave-page guard. */
+  private live = false;
+  /** `pause` was sent for the current session (hidden tab). */
+  private paused = false;
   private hudTimer = 0;
   private resizeTimer = 0;
   private readonly statsLog: Array<HudSnapshot & { agent: AgentStats | null }> = [];
@@ -151,7 +156,7 @@ export class ViewerApp {
     this.stage.append(handle, this.toolbar, this.hud.el);
     root.append(this.connectView, this.stage, this.banners.el);
     window.addEventListener('beforeunload', (e) => {
-      if (this.active) e.preventDefault();
+      if (this.live) e.preventDefault();
     });
     document.addEventListener('visibilitychange', () => this.onVisibility());
     document.addEventListener('fullscreenchange', () => {
@@ -232,18 +237,40 @@ export class ViewerApp {
   }
 
   private connect(): void {
-    // Runs in the click handler: the AudioContext must be created from a user gesture.
-    if (this.settings.audio) this.startAudio();
     this.active = true;
     this.connectView.hidden = true;
     this.stage.hidden = false;
     this.canvas.focus();
-    void this.wake.acquire();
+    this.goLive();
     void this.decoders.then((caps) => {
       this.decoderCaps = caps;
       if (this.active) this.session.start();
     });
+  }
+
+  /** Reconnect after `stopped` (a banner click). */
+  private reconnect(): void {
+    this.goLive();
+    this.session.start();
+  }
+
+  /** Session resources. Must run inside a user gesture (Connect / Reconnect click): the AudioContext. */
+  private goLive(): void {
+    if (this.settings.audio) this.startAudio();
+    this.live = true;
+    void this.wake.acquire();
+    clearInterval(this.hudTimer);
     this.hudTimer = window.setInterval(() => this.tickHud(), 1000);
+  }
+
+  /** No session wanted any more: let the display sleep, stop audio and the HUD, no leave-page prompt. */
+  private goIdle(): void {
+    this.live = false;
+    clearInterval(this.hudTimer);
+    this.hudTimer = 0;
+    this.audio?.close();
+    this.audio = null;
+    this.wake.release();
   }
 
   /** Must run inside a user gesture (Connect click / settings change). */
@@ -266,11 +293,8 @@ export class ViewerApp {
 
   private showConnectScreen(): void {
     this.active = false;
-    clearInterval(this.hudTimer);
+    this.goIdle();
     this.stopLatencyTest();
-    this.audio?.close();
-    this.audio = null;
-    this.wake.release();
     if (document.pointerLockElement) document.exitPointerLock();
     if (document.fullscreenElement) void document.exitFullscreen();
     this.toolbar.hidden = true;
@@ -311,12 +335,14 @@ export class ViewerApp {
   private onStatus(s: SessionStatus): void {
     this.input.setEnabled(s.kind === 'streaming');
     const name = this.info?.name ?? this.machine;
-    const reconnect: BannerAction = { label: 'Reconnect', run: () => this.session.start() };
+    const reconnectNow: BannerAction = { label: 'Reconnect now', run: () => this.session.start() };
     const leave: BannerAction = { label: 'Disconnect', run: () => this.disconnect() };
     let banner: Banner | null = null;
     switch (s.kind) {
       case 'connecting':
-        banner = { level: 'info', text: s.attempt ? `Reconnecting to ${name}…` : `Connecting to ${name}…` };
+        banner = s.attempt
+          ? { level: 'info', text: `Reconnecting to ${name}…`, actions: [reconnectNow, leave] }
+          : { level: 'info', text: `Connecting to ${name}…` };
         break;
       case 'joining':
         banner = { level: 'info', text: `Waiting for ${name} to join…` };
@@ -325,12 +351,14 @@ export class ViewerApp {
         banner = { level: 'info', text: 'Starting session…' };
         break;
       case 'streaming':
+        // (Re)connected while hidden: nothing is watching, so do not stream.
+        if (document.hidden) this.pause();
         break;
       case 'retrying':
         banner = {
           level: 'warn',
           text: `Connection lost (${describeClose(s.code, s.reason)}). Reconnecting in ${(s.delayMs / 1000).toFixed(1)} s…`,
-          actions: [{ label: 'Reconnect now', run: () => this.session.start() }, leave],
+          actions: [reconnectNow, leave],
         };
         break;
       case 'offline':
@@ -340,9 +368,16 @@ export class ViewerApp {
           actions: [...this.recoveryActions(), leave],
         };
         break;
-      case 'stopped':
-        banner = { level: 'error', text: stoppedText(s.code, s.reason), actions: [reconnect, leave] };
+      case 'stopped': {
+        this.goIdle();
+        // Signed out: a reload goes through the sign-in page and comes back here.
+        const retry: BannerAction =
+          s.code === CloseCode.FORBIDDEN
+            ? { label: 'Reload', run: () => location.reload() }
+            : { label: 'Reconnect', run: () => this.reconnect() };
+        banner = { level: 'error', text: stoppedText(s.code, s.reason), actions: [retry, leave] };
         break;
+      }
       case 'closed':
         this.showConnectScreen();
         return;
@@ -383,7 +418,10 @@ export class ViewerApp {
   }
 
   private setAgentState(st: AgentState): void {
+    const wasLocked = this.agentState?.locked === true;
     this.agentState = st;
+    // The agent drops input while the Mac is locked (Caps Lock syncs included): start from a clean slate.
+    if (wasLocked && !st.locked && this.session.streaming) this.input.releaseAll();
     const name = this.info?.name ?? this.machine;
     const recovery = this.recoveryActions();
     let banner: Banner | null = null;
@@ -408,6 +446,7 @@ export class ViewerApp {
     this.agentStats = null;
     this.agentHello = null;
     this.requested = null;
+    this.paused = false;
   }
 
   private recoveryActions(): BannerAction[] {
@@ -423,7 +462,7 @@ export class ViewerApp {
     saveSettings(this.machine, next);
     this.video.setRenderMode(next.renderMode);
     this.input.setOptions({ mapping: next.mapping, invertScroll: next.invertScroll });
-    if (next.audio && this.active) this.startAudio();
+    if (next.audio && this.live) this.startAudio();
     if (!next.audio && this.audio) {
       this.audio.close();
       this.audio = null;
@@ -464,11 +503,17 @@ export class ViewerApp {
   private onVisibility(): void {
     if (!this.session.streaming) return;
     if (document.hidden) {
-      this.session.sendJson({ t: 'pause' });
-    } else {
+      this.pause();
+    } else if (this.paused) {
+      this.paused = false;
+      // No keyframe_req: the agent forces a keyframe on resume, and a decoder Chrome reclaimed while
+      // hidden asks for its own.
       this.session.sendJson({ t: 'resume' });
-      this.session.sendJson({ t: 'keyframe_req', reason: 'resume' });
     }
+  }
+
+  private pause(): void {
+    if (!this.paused && this.session.sendJson({ t: 'pause' })) this.paused = true;
   }
 
   // -------------------------------------------------------------------------
@@ -584,6 +629,8 @@ export class ViewerApp {
 }
 
 function describeClose(code: number, reason: string): string {
+  // Browsers give 1006 no reason, so one here is the viewer's own diagnosis.
+  if (code === 1006 && reason) return reason;
   const known: Record<number, string> = {
     [CloseCode.AGENT_TIMEOUT]: 'agent did not answer',
     [CloseCode.SESSION_ENDED]: 'session ended by the agent',
@@ -598,7 +645,7 @@ function stoppedText(code: number, reason: string): string {
     case CloseCode.KICKED:
       return 'Another viewer took over this machine.';
     case CloseCode.FORBIDDEN:
-      return 'You are not allowed to view this machine.';
+      return 'Signed out or not allowed — reload the page to sign in again.';
     case CloseCode.PROTOCOL:
       return `Protocol error${reason ? `: ${reason}` : ''}. Reload the page or update the agent.`;
     case CloseCode.IDLE_TIMEOUT:
