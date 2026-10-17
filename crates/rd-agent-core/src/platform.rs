@@ -61,6 +61,13 @@ pub trait FrameGate: Send + Sync + 'static {
     /// Releases `seq` and forces the next admitted frame to be an IDR (the reference chain
     /// is broken).
     fn post_encode_drop(&self, seq: u32);
+    /// True while a keyframe is wanted but no frame has been admitted to carry it (resume,
+    /// keyframe_req, a new viewer). Screen capture only delivers frames when something
+    /// changes, so on a static screen the pipeline should re-submit its most recent frame
+    /// (through `admit` as usual) when this is true. Polling every ~50-100 ms is enough.
+    fn refresh_wanted(&self) -> bool {
+        false
+    }
 }
 
 /// Encoded frames go to the runtime through this bounded channel (capacity 8). The encoder

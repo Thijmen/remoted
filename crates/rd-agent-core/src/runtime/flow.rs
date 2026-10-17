@@ -93,6 +93,10 @@ impl FrameGate for Flow {
     fn post_encode_drop(&self, seq: u32) {
         self.gate.on_post_encode_drop(seq);
     }
+
+    fn refresh_wanted(&self) -> bool {
+        !self.paused.load(Ordering::Relaxed) && self.gate.keyframe_pending()
+    }
 }
 
 /// Stream parameters after validation and clamping.

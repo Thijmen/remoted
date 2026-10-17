@@ -189,6 +189,14 @@ impl FlowGate {
         self.inner.lock().force_keyframe = true;
     }
 
+    /// An IDR has been requested (and not paused) but no frame has been admitted since. A
+    /// static screen produces no captures, so the pipeline should then re-submit its most
+    /// recent frame.
+    pub fn keyframe_pending(&self) -> bool {
+        let s = self.inner.lock();
+        s.force_keyframe && !s.paused
+    }
+
     /// Capture thread: should this captured frame be encoded? `None` = drop before encode
     /// (counted in `drop_window_total`, except while paused). Always admits when nothing is in
     /// flight (unless paused).
