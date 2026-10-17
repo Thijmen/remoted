@@ -99,7 +99,7 @@ pipeline, releases all keys/buttons and drops the keep-awake guard.
 | `GET /latency-target` | latency target page (`latency.html`), opened ON the host to be filmed/detected |
 | `GET /keytest` | key test page (`keytest.html`), opened ON the host |
 | `GET /assets/*` | hashed Vite assets (`Cache-Control: public, max-age=31536000, immutable`) |
-| `GET /api/me` | `{"email":"…","dev":false}` |
+| `GET /api/me` | `{"email":"…","uid":"…","dev":false}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`) |
 | `GET /api/machines` | `[{"machine":"mbp","name":"MacBook Pro","online":true,"since_ms":1729160000000,"os":"macOS 26.3","agent_version":"0.1.0","state":{AgentState},"viewer":null\|{"user":"…","since_ms":…},"recovery":[{"label":"Screen Sharing (VNC)","url":"https://…"}]}]` |
 | `GET /ws/view/{machine}` | viewer session WS |
 | `GET /ws/probe` | probe WS (below) |
@@ -108,7 +108,7 @@ pipeline, releases all keys/buttons and drops the keep-awake guard.
 | `POST /api/probe/up` | streamed request body; → `{"bytes":N,"elapsed_ms":N}` |
 
 HTML pages are served with `Cache-Control: no-cache`. All responses on 8080 carry
-`Content-Security-Policy: default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:`,
+`Content-Security-Policy: default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'`, `X-Frame-Options: DENY`,
 `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
 
@@ -143,6 +143,7 @@ Metrics port 9090: `GET /healthz` → `ok`, `GET /metrics` (Prometheus text, opt
 | `RD_METRICS_ADDR` | `0.0.0.0:9090` | |
 | `RD_PUBLIC_ORIGIN` | – (required unless `--dev`) | e.g. `https://rd.example.com` |
 | `RD_ALLOWED_EMAILS` | – (required unless `--dev`) | comma separated |
+| `RD_ALLOWED_UIDS` | – (optional) | comma separated `X-authentik-uid` values; when set, a viewer must match both lists |
 | `RD_AGENT_TOKENS_DIR` | `/etc/rd/agents` | one file per machine with hex sha256 |
 | `RD_MACHINES_FILE` | – | JSON `[{"machine":"mbp","name":"MacBook Pro","recovery":[{"label":"…","url":"…"}]}]` |
 | `RD_SESSION_IDLE_TIMEOUT` | `3600` | seconds without input |

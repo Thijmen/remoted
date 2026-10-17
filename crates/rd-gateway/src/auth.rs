@@ -73,7 +73,8 @@ pub struct AgentAuth {
     clock: DefaultClock,
     /// IPs that exhausted their failure budget, until when. Checked before the token so a
     /// blocked client cannot keep guessing.
-    blocked: Mutex<HashMap<IpAddr, Instant>>,
+    /// Blocked IPs: until when, and whether the block has been logged yet.
+    blocked: Mutex<HashMap<IpAddr, (Instant, bool)>>,
 }
 
 impl AgentAuth {
@@ -94,8 +95,11 @@ impl AgentAuth {
         ip: IpAddr,
         path: &str,
     ) -> Result<AgentIdentity, AuthRejection> {
-        if let Some(retry_after) = self.blocked_for(ip) {
-            warn!(%ip, path, "agent auth rejected: rate limited");
+        if let Some((retry_after, first)) = self.blocked_for(ip) {
+            // Once per block: a client hammering while blocked must not flood the logs.
+            if first {
+                warn!(%ip, path, "agent auth rejected: rate limited (further attempts not logged)");
+            }
             return Err(AuthRejection::RateLimited { retry_after });
         }
         let token = bearer_token(headers);
@@ -132,12 +136,14 @@ impl AgentAuth {
         }
     }
 
-    fn blocked_for(&self, ip: IpAddr) -> Option<Duration> {
+    /// Remaining block time, and whether this is the first rejection of the block.
+    fn blocked_for(&self, ip: IpAddr) -> Option<(Duration, bool)> {
         let mut blocked = self.blocked.lock();
-        let until = *blocked.get(&ip)?;
+        let (until, logged) = blocked.get_mut(&ip)?;
         let now = Instant::now();
-        if until > now {
-            Some(until - now)
+        if *until > now {
+            let first = !std::mem::replace(logged, true);
+            Some((*until - now, first))
         } else {
             blocked.remove(&ip);
             None
@@ -155,9 +161,9 @@ impl AgentAuth {
                 let now = Instant::now();
                 let mut blocked = self.blocked.lock();
                 if blocked.len() > LIMITER_PRUNE_AT {
-                    blocked.retain(|_, until| *until > now);
+                    blocked.retain(|_, (until, _)| *until > now);
                 }
-                blocked.insert(ip, now + retry_after);
+                blocked.insert(ip, (now + retry_after, false));
                 warn!(%ip, retry_after_s = retry_after.as_secs(), "agent auth: rate limit engaged");
                 AuthRejection::RateLimited { retry_after }
             }
@@ -185,6 +191,8 @@ fn machine_of(token: &str) -> Option<&str> {
 #[derive(Debug, Clone)]
 pub struct ViewerIdentity {
     pub user: String,
+    /// `X-authentik-uid`, if Authentik sent one (never in dev mode).
+    pub uid: Option<String>,
     pub ip: IpAddr,
 }
 
@@ -200,32 +208,54 @@ pub async fn viewer_auth(
     next: Next,
 ) -> Response {
     let ip = client_ip(req.headers(), peer);
-    let user = if st.cfg.dev {
-        DEV_USER.to_owned()
+    let (user, uid) = if st.cfg.dev {
+        (DEV_USER.to_owned(), None)
     } else {
         match check_viewer(&st, &req) {
-            Ok(user) => user,
+            Ok(id) => id,
             Err(reason) => {
                 st.metrics.viewer_auth_failures.inc();
-                warn!(%ip, path = req.uri().path(), reason, "viewer forbidden");
+                let h = req.headers();
+                warn!(
+                    %ip,
+                    path = req.uri().path(),
+                    reason,
+                    email = header_str(h, "x-authentik-email").unwrap_or("-"),
+                    uid = header_str(h, "x-authentik-uid").unwrap_or("-"),
+                    "viewer forbidden"
+                );
                 return (StatusCode::FORBIDDEN, "forbidden\n").into_response();
             }
         }
     };
-    req.extensions_mut().insert(ViewerIdentity { user, ip });
+    req.extensions_mut()
+        .insert(ViewerIdentity { user, uid, ip });
     next.run(req).await
 }
 
-fn check_viewer(st: &AppState, req: &Request) -> Result<String, &'static str> {
-    let email = req
-        .headers()
-        .get("x-authentik-email")
+fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(name)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.trim().to_ascii_lowercase())
+        .map(str::trim)
         .filter(|v| !v.is_empty())
+}
+
+/// Returns the viewer's (email, uid).
+fn check_viewer(st: &AppState, req: &Request) -> Result<(String, Option<String>), &'static str> {
+    let email = header_str(req.headers(), "x-authentik-email")
+        .map(str::to_ascii_lowercase)
         .ok_or("missing X-authentik-email")?;
     if !st.cfg.allowed_emails.contains(&email) {
         return Err("email not allowed");
+    }
+    let uid = header_str(req.headers(), "x-authentik-uid").map(str::to_owned);
+    if !st.cfg.allowed_uids.is_empty()
+        && !uid
+            .as_ref()
+            .is_some_and(|u| st.cfg.allowed_uids.contains(u))
+    {
+        return Err("uid not allowed");
     }
     let origin = req
         .headers()
@@ -247,7 +277,7 @@ fn check_viewer(st: &AppState, req: &Request) -> Result<String, &'static str> {
     if !safe_method && origin.is_some() && !origin_ok() {
         return Err("cross-origin request");
     }
-    Ok(email)
+    Ok((email, uid))
 }
 
 #[cfg(test)]

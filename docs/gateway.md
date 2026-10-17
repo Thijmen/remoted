@@ -26,6 +26,7 @@ Every flag can also be set through the environment variable next to it.
 | `--metrics-addr` | `RD_METRICS_ADDR` | `0.0.0.0:9090` | |
 | `--public-origin` | `RD_PUBLIC_ORIGIN` | required unless `--dev` | e.g. `https://rd.example.com` (case-insensitive, trailing `/` ignored) |
 | `--allowed-emails` | `RD_ALLOWED_EMAILS` | required unless `--dev` | comma separated, case-insensitive |
+| `--allowed-uids` | `RD_ALLOWED_UIDS` | optional | comma separated `X-authentik-uid` values; when set, a viewer must match both lists (the uid is immutable, the email is not) |
 | `--agent-tokens-dir` | `RD_AGENT_TOKENS_DIR` | `/etc/rd/agents` | one file per machine holding the hex SHA-256 of that agent's token; re-read on every auth, so rotation needs no restart |
 | `--machines-file` | `RD_MACHINES_FILE` | – | `[{"machine":"mbp","name":"MacBook Pro","recovery":[{"label":"…","url":"…"}]}]`; these machines are listed even while offline. Machine ids are `[A-Za-z0-9_-]{1,64}`. |
 | `--session-idle-timeout` | `RD_SESSION_IDLE_TIMEOUT` | `3600` | seconds without viewer input → close 4008 |
@@ -92,7 +93,7 @@ Every response on the viewer port carries the CSP, COOP (`same-origin`), COEP
 | `/`, `/m/{machine}`, `/probe`, `/latency-target`, `/keytest` | `index.html`, `viewer.html`, `probe.html`, `latency.html`, `keytest.html` with `Cache-Control: no-cache` (and an `ETag` when embedded). A page missing from the build gets a 503 placeholder that explains how to build the viewer. |
 | `/assets/*` | hashed Vite output, `Cache-Control: public, max-age=31536000, immutable` |
 | other `GET /<file>` | other top-level files of the build (favicon, …), `no-cache`; else 404 |
-| `GET /api/me` | `{"email":"…","dev":false}` |
+| `GET /api/me` | `{"email":"…","uid":"…","dev":false}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`) |
 | `GET /api/machines` | see below |
 | `GET /ws/view/{machine}` | viewer session |
 | `GET /ws/probe`, `GET /api/probe/down`, `POST /api/probe/up`, `POST /api/probe/report` | network probe (`protocol.md`); the report is logged as one `probe_report {…}` line (≤ 1 MiB, else 413) |

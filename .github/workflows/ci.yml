@@ -33,7 +33,7 @@ jobs:
 
   macos:
     name: Rust (macOS agent)
-    runs-on: macos-15
+    runs-on: macos-26  # screencapturekit's Swift bridge (apple-metal) needs the macOS 26 SDK
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

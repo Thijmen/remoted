@@ -19,7 +19,7 @@ use crate::state::AppState;
 
 const REPORT_MAX_BYTES: usize = 1 << 20;
 
-const CSP: &str = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:";
+const CSP: &str = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'";
 
 pub fn viewer_router(st: Arc<AppState>) -> Router {
     Router::new()
@@ -86,6 +86,8 @@ async fn security_headers(mut res: Response) -> Response {
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
+    // No framing: a page that embeds the viewer could steer remote input (clickjacking).
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     res
 }
 
@@ -137,7 +139,7 @@ async fn api_me(
     Extension(viewer): Extension<ViewerIdentity>,
 ) -> Response {
     no_store(Json(
-        serde_json::json!({ "email": viewer.user, "dev": st.cfg.dev }),
+        serde_json::json!({ "email": viewer.user, "uid": viewer.uid, "dev": st.cfg.dev }),
     ))
 }
 

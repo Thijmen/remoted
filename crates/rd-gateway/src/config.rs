@@ -36,6 +36,10 @@ pub struct Cli {
     /// Comma-separated allowlist for `X-authentik-email` (case-insensitive).
     #[arg(long, env = "RD_ALLOWED_EMAILS", value_delimiter = ',')]
     pub allowed_emails: Vec<String>,
+    /// Optional comma-separated allowlist for `X-authentik-uid`. When set, a viewer must match
+    /// both lists: unlike the email, Authentik's uid is unique and cannot be edited by the user.
+    #[arg(long, env = "RD_ALLOWED_UIDS", value_delimiter = ',')]
+    pub allowed_uids: Vec<String>,
     /// Directory with one file per machine holding the hex SHA-256 of its agent token.
     #[arg(long, env = "RD_AGENT_TOKENS_DIR", default_value = "/etc/rd/agents")]
     pub agent_tokens_dir: PathBuf,
@@ -108,6 +112,8 @@ pub struct Config {
     pub public_origin: Option<String>,
     /// Lower-cased emails.
     pub allowed_emails: HashSet<String>,
+    /// Authentik uids; empty = not checked.
+    pub allowed_uids: HashSet<String>,
     pub agent_tokens_dir: PathBuf,
     pub machines: Vec<MachineConfig>,
     pub assets_dir: Option<PathBuf>,
@@ -127,6 +133,7 @@ impl Config {
             metrics_addr: lo(0),
             public_origin: None,
             allowed_emails: HashSet::new(),
+            allowed_uids: HashSet::new(),
             agent_tokens_dir: PathBuf::from("/etc/rd/agents"),
             machines: Vec::new(),
             assets_dir: None,
@@ -149,6 +156,12 @@ impl Config {
             .iter()
             .map(|e| e.trim().to_ascii_lowercase())
             .filter(|e| !e.is_empty())
+            .collect();
+        let allowed_uids: HashSet<String> = cli
+            .allowed_uids
+            .iter()
+            .map(|u| u.trim().to_owned())
+            .filter(|u| !u.is_empty())
             .collect();
         let public_origin = cli
             .public_origin
@@ -185,6 +198,7 @@ impl Config {
             metrics_addr: addr(cli.metrics_addr, 9090),
             public_origin,
             allowed_emails,
+            allowed_uids,
             agent_tokens_dir: cli.agent_tokens_dir,
             machines,
             assets_dir: cli.assets_dir,

@@ -130,7 +130,7 @@ fn assert_security_headers(r: &HttpResponse) {
     assert_eq!(
         r.header("content-security-policy"),
         Some(
-            "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+            "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
         )
     );
     assert_eq!(r.header("cross-origin-opener-policy"), Some("same-origin"));
@@ -140,6 +140,7 @@ fn assert_security_headers(r: &HttpResponse) {
     );
     assert_eq!(r.header("x-content-type-options"), Some("nosniff"));
     assert_eq!(r.header("referrer-policy"), Some("no-referrer"));
+    assert_eq!(r.header("x-frame-options"), Some("DENY"));
 }
 
 #[tokio::test]
@@ -169,7 +170,7 @@ async fn viewer_403_without_allowlisted_email_or_origin() {
     assert_eq!(r.header("cache-control"), Some("no-store"));
     assert_eq!(
         r.json(),
-        serde_json::json!({ "email": "me@example.test", "dev": false })
+        serde_json::json!({ "email": "me@example.test", "uid": null, "dev": false })
     );
 
     // WebSocket upgrades also need the exact public Origin.
@@ -212,5 +213,25 @@ async fn viewer_403_without_allowlisted_email_or_origin() {
     let metrics = get(gw.metrics, "/metrics", &[]).await;
     let text = String::from_utf8(metrics.body).unwrap();
     assert!(text.contains("rd_viewer_auth_failures_total 7"), "{text}");
+    gw.shutdown().await;
+}
+
+#[tokio::test]
+async fn viewer_uid_allowlist_is_checked_when_set() {
+    let tokens = TokenDir::new("uid");
+    let mut cfg = prod_config(&tokens);
+    cfg.allowed_uids = ["uid-owner".to_owned()].into();
+    let gw = TestGateway::start(cfg).await;
+    let email = ("x-authentik-email", EMAIL);
+
+    // The right email alone is not enough once uids are configured.
+    assert_eq!(get(gw.viewer, "/api/me", &[email]).await.status, 403);
+    let other = ("x-authentik-uid", "uid-someone-else");
+    assert_eq!(get(gw.viewer, "/api/me", &[email, other]).await.status, 403);
+
+    let owner = ("x-authentik-uid", "uid-owner");
+    let r = get(gw.viewer, "/api/me", &[email, owner]).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.json()["uid"], "uid-owner");
     gw.shutdown().await;
 }

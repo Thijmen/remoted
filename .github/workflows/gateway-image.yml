@@ -2,8 +2,8 @@
 # that touches the gateway, protocol, flow control or viewer, then open a PR on
 # the GitOps repo (repository variable GITOPS_REPO) bumping k8s/services/rd/app/values.yaml (image.tag).
 #
-# Requires the INFRA_ARGOCD_PAT secret (contents + pull-requests write on
-# the GitOps repo (repository variable GITOPS_REPO)). GITHUB_TOKEN covers the GHCR push.
+# The bump PR needs the INFRA_ARGOCD_PAT secret (contents + pull-requests write on
+# the GitOps repo (repository variable GITOPS_REPO)) and is skipped without it. GITHUB_TOKEN covers the GHCR push.
 name: Gateway image
 
 on:
@@ -30,7 +30,13 @@ jobs:
       packages: write
     outputs:
       version: ${{ steps.version.outputs.version }}
+      has_infra_pat: ${{ steps.pat.outputs.present }}
     steps:
+      - name: Check for the GitOps token
+        id: pat
+        env:
+          PAT: ${{ secrets.INFRA_ARGOCD_PAT }}
+        run: echo "present=$([ -n "$PAT" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -67,6 +73,7 @@ jobs:
   update_infra:
     runs-on: ubuntu-latest
     needs: build
+    if: needs.build.outputs.has_infra_pat == 'true'
     steps:
       - uses: actions/checkout@v4
         with:

@@ -57,6 +57,12 @@ fn main() -> ExitCode {
 /// JSON lines in production, human-readable output with `--dev`. `RUST_LOG` defaults to `info`.
 fn init_logging(dev: bool) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // The audit trail must survive a targeted RUST_LOG such as `rd_gateway=debug`.
+    let filter = ["audit=info", "probe_report=info"]
+        .into_iter()
+        .fold(filter, |f, d| {
+            f.add_directive(d.parse().expect("static directive"))
+        });
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
     if dev {
         builder

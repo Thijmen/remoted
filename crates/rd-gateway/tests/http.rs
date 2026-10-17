@@ -104,7 +104,7 @@ async fn pages_assets_and_cache_headers() {
     let r = get(gw.viewer, "/api/me", &[]).await;
     assert_eq!(
         r.json(),
-        serde_json::json!({ "email": "dev@localhost", "dev": true })
+        serde_json::json!({ "email": "dev@localhost", "uid": null, "dev": true })
     );
 
     let r = get(gw.metrics, "/healthz", &[]).await;
