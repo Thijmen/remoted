@@ -45,6 +45,11 @@ describe('sanitizeSettings', () => {
       volume: 0,
     });
   });
+  it('accepts 30, 60 and 120 fps (default 60)', () => {
+    expect(d.fps).toBe(60);
+    for (const fps of [30, 60, 120]) expect(sanitizeSettings({ fps }, d).fps).toBe(fps);
+    expect(sanitizeSettings({ fps: 90 }, d).fps).toBe(60);
+  });
   it('survives garbage', () => {
     expect(sanitizeSettings('nope', d)).toEqual(d);
     expect(sanitizeSettings(null, d)).toEqual(d);

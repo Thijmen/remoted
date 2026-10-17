@@ -83,6 +83,7 @@ export function settingsPanel(initial: Settings, onChange: (s: Settings) => void
       select(
         id('fps'),
         [
+          { value: 120, label: '120 fps (only visible on a 120 Hz screen)' },
           { value: 60, label: '60 fps' },
           { value: 30, label: '30 fps' },
         ] as const,

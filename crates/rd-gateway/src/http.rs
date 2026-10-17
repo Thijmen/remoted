@@ -19,7 +19,9 @@ use crate::state::AppState;
 
 const REPORT_MAX_BYTES: usize = 1 << 20;
 
-const CSP: &str = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'";
+/// `connect-src` also allows the Tauri v2 IPC endpoints (`ipc:` on macOS/Linux, `http://ipc.localhost` on
+/// Windows) so the page can call the desktop app (docs/desktop-client.md); browsers have no such endpoints.
+const CSP: &str = "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'";
 
 pub fn viewer_router(st: Arc<AppState>) -> Router {
     Router::new()

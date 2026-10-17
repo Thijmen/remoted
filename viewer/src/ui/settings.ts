@@ -14,7 +14,7 @@ export const PRESETS: ReadonlyArray<{ value: ResolutionPreset; label: string }> 
 
 export interface Settings {
   preset: ResolutionPreset;
-  fps: 30 | 60;
+  fps: 30 | 60 | 120;
   maxKbps: number;
   adaptive: boolean;
   audio: boolean;
@@ -61,7 +61,7 @@ export function sanitizeSettings(raw: unknown, defaults: Settings): Settings {
       PRESETS.map((p) => p.value),
       defaults.preset,
     ),
-    fps: pick(o.fps, [30, 60] as const, defaults.fps),
+    fps: pick(o.fps, [30, 60, 120] as const, defaults.fps),
     maxKbps: Math.round(Math.min(MAX_KBPS_LIMIT, Math.max(MIN_KBPS, kbps))),
     adaptive: bool('adaptive'),
     audio: bool('audio'),

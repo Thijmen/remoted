@@ -14,6 +14,8 @@ const HID = {
   AltLeft: 0x000700e2,
   AltRight: 0x000700e6,
   MetaLeft: 0x000700e3,
+  MetaRight: 0x000700e7,
+  Tab: 0x0007002b,
 } as const;
 
 interface EvOpts {
@@ -344,5 +346,162 @@ describe('macOS viewer', () => {
     kb.handle(ev('KeyA'), true, true);
     kb.handle(ev('MetaLeft'), false, true);
     expect(take()).toEqual([down(HID.MetaLeft), down(HID.KeyA), up(HID.MetaLeft), up(HID.KeyA)]);
+  });
+});
+
+describe('Alt+Tab → Cmd+Tab (windows-to-mac)', () => {
+  const rep = (hid: number) => `repeat 0x${hid.toString(16)}`;
+  const altTab = [down(HID.AltLeft), up(HID.AltLeft), down(HID.MetaLeft), down(HID.Tab)];
+
+  it('turns the held left Alt into Cmd at the first Tab, for the rest of the hold', () => {
+    const { kb, take } = setup({ windows: true }, 'windows-to-mac');
+    kb.handle(ev('AltLeft', { alt: true }), true, true);
+    expect(take()).toEqual([down(HID.AltLeft)]);
+    kb.handle(ev('Tab', { alt: true }), true, true);
+    kb.handle(ev('Tab', { alt: true }), false, true);
+    expect(take()).toEqual([up(HID.AltLeft), down(HID.MetaLeft), down(HID.Tab), up(HID.Tab)]);
+    // Further Tabs (and Alt autorepeat) while Alt stays down: Cmd is already held.
+    kb.handle(ev('AltLeft', { alt: true, repeat: true }), true, true);
+    kb.handle(ev('Tab', { alt: true }), true, true);
+    kb.handle(ev('Tab', { alt: true, repeat: true }), true, true);
+    kb.handle(ev('Tab', { alt: true }), false, true);
+    kb.handle(ev('AltLeft'), false, true);
+    expect(take()).toEqual([rep(HID.MetaLeft), down(HID.Tab), rep(HID.Tab), up(HID.Tab), up(HID.MetaLeft)]);
+    // The next Alt is Option again.
+    kb.handle(ev('AltLeft', { alt: true }), true, true);
+    kb.handle(ev('KeyE', { alt: true }), true, true);
+    expect(take()).toEqual([down(HID.AltLeft), down(HID.KeyE)]);
+  });
+
+  it('Shift+Alt+Tab → Shift+Cmd+Tab, whichever modifier came first', () => {
+    const a = setup({ windows: true }, 'windows-to-mac');
+    a.kb.handle(ev('AltLeft', { alt: true }), true, true);
+    a.kb.handle(ev('ShiftLeft', { alt: true, shift: true }), true, true);
+    a.kb.handle(ev('Tab', { alt: true, shift: true }), true, true);
+    expect(a.take()).toEqual([
+      down(HID.AltLeft),
+      down(HID.ShiftLeft),
+      up(HID.AltLeft),
+      down(HID.MetaLeft),
+      down(HID.Tab),
+    ]);
+
+    const b = setup({ windows: true }, 'windows-to-mac');
+    b.kb.handle(ev('ShiftLeft', { shift: true }), true, true);
+    b.kb.handle(ev('AltLeft', { alt: true, shift: true }), true, true);
+    b.kb.handle(ev('Tab', { alt: true, shift: true }), true, true);
+    b.kb.handle(ev('Tab', { alt: true, shift: true }), false, true);
+    b.kb.handle(ev('ShiftLeft', { alt: true }), false, true);
+    b.kb.handle(ev('Tab', { alt: true }), true, true);
+    b.kb.handle(ev('AltLeft'), false, true);
+    expect(b.take()).toEqual([
+      down(HID.ShiftLeft),
+      down(HID.AltLeft),
+      up(HID.AltLeft),
+      down(HID.MetaLeft),
+      down(HID.Tab),
+      up(HID.Tab),
+      up(HID.ShiftLeft),
+      down(HID.Tab),
+      up(HID.MetaLeft),
+    ]);
+  });
+
+  it('leaves passthrough, Right Alt, a plain Tab and Ctrl+Alt+Tab (Cmd already held) alone', () => {
+    const pass = setup({ windows: true }, 'passthrough');
+    pass.kb.handle(ev('AltLeft', { alt: true }), true, true);
+    pass.kb.handle(ev('Tab', { alt: true }), true, true);
+    pass.kb.handle(ev('AltLeft'), false, true);
+    expect(pass.take()).toEqual([down(HID.AltLeft), down(HID.Tab), up(HID.AltLeft)]);
+
+    const right = setup({ windows: true }, 'windows-to-mac');
+    right.kb.handle(ev('AltRight', { alt: true }), true, true);
+    right.kb.handle(ev('Tab', { alt: true }), true, true);
+    right.kb.handle(ev('AltRight'), false, true);
+    expect(right.take()).toEqual([down(HID.AltRight), down(HID.Tab), up(HID.AltRight)]);
+
+    const plain = setup({ windows: true }, 'windows-to-mac');
+    plain.kb.handle(ev('Tab'), true, true);
+    plain.kb.handle(ev('AltLeft', { alt: true }), true, true);
+    plain.kb.handle(ev('Tab', { alt: true }), false, true);
+    expect(plain.take()).toEqual([down(HID.Tab), down(HID.AltLeft), up(HID.Tab)]);
+
+    const ctrl = setup({ mac: false }, 'windows-to-mac');
+    ctrl.kb.handle(ev('ControlLeft', { ctrl: true }), true, true);
+    ctrl.kb.handle(ev('AltLeft', { ctrl: true, alt: true }), true, true);
+    ctrl.kb.handle(ev('Tab', { ctrl: true, alt: true }), true, true);
+    ctrl.kb.handle(ev('AltLeft', { ctrl: true }), false, true);
+    expect(ctrl.take()).toEqual([down(HID.MetaLeft), down(HID.AltLeft), down(HID.Tab), up(HID.AltLeft)]);
+  });
+
+  it('releases Cmd (not Option) even if the mapping changes during the hold', () => {
+    let mapping: ModifierMapping = 'windows-to-mac';
+    const wire: string[] = [];
+    const kb = new KeyboardForwarder(
+      {
+        send: (b) => {
+          const m = parse(b);
+          if (m.type === 'key') wire.push(`${m.down ? 'down' : 'up'} 0x${m.hid.toString(16)}`);
+          return true;
+        },
+        chord: () => {},
+        mapping: () => mapping,
+      },
+      { windows: true, mac: false },
+    );
+    kb.handle(ev('AltLeft', { alt: true }), true, true);
+    kb.handle(ev('Tab', { alt: true }), true, true);
+    mapping = 'passthrough';
+    kb.handle(ev('AltLeft'), false, true);
+    expect(wire).toEqual([...altTab, up(HID.MetaLeft)]);
+  });
+
+  it('RELEASE_ALL / blur (forget) ends the switch: the stale Alt keyup sends nothing, the next Alt+Tab works', () => {
+    const { kb, take } = setup({ windows: true }, 'windows-to-mac');
+    kb.handle(ev('AltLeft', { alt: true }), true, true);
+    kb.handle(ev('Tab', { alt: true }), true, true);
+    expect(take()).toEqual(altTab);
+    kb.forget(); // the agent released Cmd and Tab
+    expect(kb.handle(ev('Tab', { alt: true }), false, true)).toBe('consume');
+    expect(kb.handle(ev('AltLeft'), false, true)).toBe('consume');
+    expect(take()).toEqual([]);
+    kb.handle(ev('AltLeft', { alt: true }), true, true);
+    kb.handle(ev('Tab', { alt: true }), true, true);
+    kb.handle(ev('AltLeft'), false, true);
+    expect(take()).toEqual([...altTab, up(HID.MetaLeft)]);
+  });
+
+  it('syncs Caps Lock first, also after forget() cleared the remote lock', () => {
+    const { kb, take } = setup({ windows: true }, 'windows-to-mac');
+    kb.handle(ev('AltLeft', { alt: true }), true, true);
+    kb.handle(ev('Tab', { alt: true, caps: true }), true, true);
+    expect(take()).toEqual([down(HID.AltLeft), ...capsTap, up(HID.AltLeft), down(HID.MetaLeft), down(HID.Tab)]);
+    kb.forget();
+    kb.handle(ev('AltLeft', { alt: true, caps: true }), true, true);
+    kb.handle(ev('Tab', { alt: true, caps: true }), true, true);
+    kb.handle(ev('AltLeft', { caps: true }), false, true);
+    expect(take()).toEqual([...capsTap, ...altTab, up(HID.MetaLeft)]);
+  });
+
+  it('does not disturb the AltGr filter or the chords', () => {
+    vi.useFakeTimers();
+    try {
+      const { kb, take, chords } = setup({ windows: true }, 'windows-to-mac');
+      // AltGr (fake Ctrl + Right Alt) + Tab: Right Alt stays Option, the fake Ctrl never goes out.
+      kb.handle(ev('ControlLeft', { t: 0, ctrl: true }), true, true);
+      kb.handle(ev('AltRight', { key: 'AltGraph', t: 1, ctrl: true, alt: true, altGraph: true }), true, true);
+      kb.handle(ev('Tab', { t: 20, ctrl: true, alt: true, altGraph: true }), true, true);
+      expect(take()).toEqual([down(HID.AltRight), down(HID.Tab)]);
+      kb.forget();
+      // Ctrl+Alt+Shift+T still runs the latency test.
+      const all = { ctrl: true, alt: true, shift: true };
+      kb.handle(ev('ControlLeft', { t: 100, ctrl: true }), true, true);
+      kb.handle(ev('AltLeft', { t: 300, ctrl: true, alt: true }), true, true);
+      kb.handle(ev('ShiftLeft', { t: 320, ...all }), true, true);
+      kb.handle(ev('KeyT', { t: 340, ...all }), true, true);
+      expect(chords).toEqual(['latency-test']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

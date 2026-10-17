@@ -11,8 +11,10 @@ import {
 } from '../proto/bin';
 import type { ChordAction } from './chords';
 import { type Rect, normalizePoint } from './coords';
+import { DesktopBridge } from './desktop-bridge';
 import { KeyboardForwarder } from './keyboard';
 import { type ModifierMapping, isMacViewer, isWindowsViewer } from './modifiers';
+import { NativeKeys } from './native-keys';
 import { WheelNormalizer } from './wheel';
 
 export interface InputSink {
@@ -59,6 +61,9 @@ export class InputController {
   private buttons = 0;
   private domButtons = 0;
   private readonly keys: KeyboardForwarder;
+  /** Keys from the desktop app's keyboard hook (docs/desktop-client.md), and the grab it is told about. */
+  private readonly native: NativeKeys;
+  private readonly bridge: DesktopBridge;
   /** Local Caps Lock as of the last key or pointer event anywhere on the page (null: not seen yet). */
   private localCaps: boolean | null = null;
   private pos = { x: 0x8000, y: 0x8000 };
@@ -84,6 +89,15 @@ export class InputController {
       { send: (b) => this.sink.send(b), chord: (a) => this.cb.chord(a), mapping: () => this.opts.mapping },
       { windows: isWindowsViewer(navigator), mac: isMacViewer(navigator) },
     );
+    this.native = new NativeKeys({
+      held: (code) => this.keys.isPressed(code),
+      localCaps: () => this.localCaps ?? false,
+      now: () => performance.now(),
+    });
+    this.bridge = new DesktopBridge(window, {
+      key: (code, down, repeat) => this.onNativeKey(code, down, repeat),
+      release: () => this.onNativeRelease(),
+    });
     this.wheel = new WheelNormalizer(window.devicePixelRatio, opts.invertScroll);
     new ResizeObserver(() => this.updateRect()).observe(surface);
     this.attach();
@@ -96,6 +110,7 @@ export class InputController {
     this.enabled = on;
     // A new session's agent starts with Caps Lock off; match the local lock right away.
     if (enabling && this.localCaps !== null) this.keys.syncCaps(this.localCaps);
+    this.updateGrab();
   }
 
   setOptions(opts: InputOptions): void {
@@ -179,9 +194,31 @@ export class InputController {
       capture: true,
       passive: true,
     });
-    window.addEventListener('blur', () => this.enabled && this.releaseAll());
-    document.addEventListener('visibilitychange', () => document.hidden && this.enabled && this.releaseAll());
+    window.addEventListener('blur', () => {
+      if (this.enabled) this.releaseAll();
+      this.updateGrab();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.enabled) this.releaseAll();
+      this.updateGrab();
+    });
+    window.addEventListener('focus', () => this.updateGrab());
+    document.addEventListener('focusin', () => this.updateGrab());
+    document.addEventListener('focusout', () => this.updateGrab());
+    window.addEventListener('pageshow', () => this.updateGrab());
+    window.addEventListener('pagehide', () => this.bridge.setActive(false));
     document.addEventListener('pointerlockchange', () => this.onPointerLockChange());
+  }
+
+  /**
+   * Keys go to the remote machine: streaming, page visible and focused, and no viewer control has focus. The
+   * desktop app grabs the keyboard (system shortcuts included) exactly while this holds.
+   */
+  private updateGrab(): void {
+    const on = this.enabled && !document.hidden && document.hasFocus() && this.forwardsKeysFrom(document.activeElement);
+    if (on === this.bridge.active) return;
+    this.native.reset();
+    this.bridge.setActive(on);
   }
 
   /** Keys typed into viewer UI (settings, banner buttons) stay local. */
@@ -238,7 +275,7 @@ export class InputController {
       this.pos = this.normalize(e);
       this.pendingMove = this.pos;
     }
-    this.keys.syncCaps(e.getModifierState('CapsLock'));
+    this.keys.syncCaps(this.native.caps(e.getModifierState('CapsLock')));
     this.syncButtons(e.buttons);
   }
 
@@ -352,10 +389,23 @@ export class InputController {
 
   private onKey(e: KeyboardEvent, down: boolean): void {
     this.localCaps = e.getModifierState('CapsLock');
-    if (!this.enabled) return;
+    // While the desktop app grabs the keyboard its hook delivers every key (rdNative.key): never send twice.
+    if (!this.enabled || this.bridge.grabbing) return;
     if (this.keys.handle(e, down, this.forwardsKeysFrom(e.target)) === 'consume') {
       e.preventDefault();
       e.stopPropagation();
     }
+  }
+
+  /** A key from the desktop app: the same path as a DOM key event aimed at the video. */
+  private onNativeKey(code: string, down: boolean, repeat: boolean): void {
+    const e = this.native.event(code, down, repeat);
+    if (this.enabled) this.keys.handle(e, down, this.bridge.active);
+  }
+
+  /** The app stopped grabbing on its own: like a window blur. */
+  private onNativeRelease(): void {
+    this.native.reset();
+    if (this.enabled) this.releaseAll();
   }
 }

@@ -130,7 +130,7 @@ fn assert_security_headers(r: &HttpResponse) {
     assert_eq!(
         r.header("content-security-policy"),
         Some(
-            "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+            "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
         )
     );
     assert_eq!(r.header("cross-origin-opener-policy"), Some("same-origin"));

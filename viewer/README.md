@@ -46,5 +46,28 @@ chord. The viewer sends F13 and measures how long it takes for the box flip to b
   Windows sends with it is dropped; to tell the two apart, a left Ctrl press is held back until the next key, click
   or scroll (at most 100 ms). A Shift keyup releases both Shifts (Windows omits one when both were down).
 - A key released after focus moved to the menu or a banner is still released on the host.
+- Windows keyboard → Mac: Alt+Tab becomes Cmd+Tab. At the first Tab while the left Alt is held, that Alt turns
+  into Cmd until it is released, so Shift+Alt+Tab, repeated Tabs and releasing Alt behave like the Mac app
+  switcher. Right Alt is never switched (AltGr).
 - A session socket that cannot open within 10 s is retried. If it is refused because the sign-in expired (or the
   user is not allowed), the viewer stops and asks for a page reload instead of retrying forever.
+
+## Desktop app bridge
+
+The rd Desktop app (`docs/desktop-client.md`, bridge contract version 1) loads this viewer in a Tauri webview and
+grabs the keys a browser tab never sees (Alt+Tab, the Windows key, …). The page's half is
+`src/input/desktop-bridge.ts`, wired up in `src/input/controller.ts`:
+
+- `window.rdNative = { version: 1, key(code, down, repeat), release() }` is always defined on the viewer page (unused
+  in a browser).
+- Inside the app (`window.__TAURI_INTERNALS__`), the page calls `invoke('rd_set_grab', { active })` whenever "keys go
+  to the remote" changes: streaming, page visible, document focused, and the video (not a viewer control) focused.
+  A failing invoke is logged once and otherwise ignored.
+- Once the app has answered `rd_set_grab(true)`, DOM key events are ignored and keys arrive through
+  `rdNative.key`. They take the same path as DOM keys (modifier mapping, Alt+Tab → Cmd+Tab, chords, the AltGr
+  filter, Caps Lock). The modifier and lock state a DOM event would carry is derived in `src/input/native-keys.ts`
+  from the keys the app reported down. The hook swallows CapsLock, so the local lock does not change; each
+  CapsLock press during a grab toggles the remote lock, and after the grab the remote lock follows the local one
+  again.
+- `rdNative.release()` is handled like a window blur: `RELEASE_ALL`, and pressed keys are forgotten.
+- The gateway CSP allows the Tauri IPC endpoints (`connect-src ipc: http://ipc.localhost`).

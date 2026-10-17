@@ -173,7 +173,8 @@ pipeline, releases all keys/buttons and drops the keep-awake guard.
 | `POST /api/probe/up` | streamed request body; → `{"bytes":N,"elapsed_ms":N}` |
 
 HTML pages are served with `Cache-Control: no-cache`. All responses on 8080 carry
-`Content-Security-Policy: default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'`, `X-Frame-Options: DENY`,
+`Content-Security-Policy: default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'`
+(`ipc:` / `http://ipc.localhost`: Tauri v2 IPC for the desktop app, see `docs/desktop-client.md`), `X-Frame-Options: DENY`,
 `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
 

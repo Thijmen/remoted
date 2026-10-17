@@ -4,6 +4,9 @@ import { hidForCode } from './keymap.gen';
 import { type ModifierMapping, isModifierCode, mapCode } from './modifiers';
 
 export const HID_CAPS_LOCK = 0x00070039;
+const HID_ALT_LEFT = 0x000700e2;
+const HID_META_LEFT = 0x000700e3;
+const HID_META_RIGHT = 0x000700e7;
 
 /**
  * Windows sends a fake ControlLeft right before AltRight on AltGr layouts; both carry (nearly) the same
@@ -23,6 +26,11 @@ export interface KeyInput {
   readonly altKey: boolean;
   readonly shiftKey: boolean;
   getModifierState(key: string): boolean;
+  /**
+   * From the desktop app's keyboard hook (`window.rdNative.key`), not the DOM: every press and release is
+   * reported, so the workarounds for keyups the browser loses (second Shift, keys under Cmd) are off.
+   */
+  readonly native?: boolean;
 }
 
 export interface KeyboardDeps {
@@ -50,8 +58,9 @@ const SHIFTS = ['ShiftLeft', 'ShiftRight'] as const;
 const isShift = (code: string) => code === 'ShiftLeft' || code === 'ShiftRight';
 
 /**
- * Keyboard state between the DOM and the wire: which physical keys are down on the remote side, the
- * remote Caps Lock state, viewer chords, and the Windows quirks (AltGr's fake Ctrl, missing Shift keyups).
+ * Keyboard state between the DOM (or the desktop app's hook) and the wire: which physical keys are down on the
+ * remote side, the remote Caps Lock state, viewer chords, Alt+Tab → Cmd+Tab, and the Windows quirks (AltGr's
+ * fake Ctrl, missing Shift keyups).
  */
 export class KeyboardForwarder {
   /** Physical code → HID sent on keydown, so keyup releases the same key even if the mapping changed. */
@@ -89,6 +98,11 @@ export class KeyboardForwarder {
     if (!this.deps.send(encodeKey(true, false, HID_CAPS_LOCK))) return;
     this.deps.send(encodeKey(false, false, HID_CAPS_LOCK));
     this.remoteCaps = on;
+  }
+
+  /** The key is held down on the remote side (pressed through this forwarder and not released yet). */
+  isPressed(code: string): boolean {
+    return this.pressed.has(code);
   }
 
   /** Send a held-back Ctrl now (before mouse buttons and wheel, so Ctrl+click works). */
@@ -148,6 +162,7 @@ export class KeyboardForwarder {
     }
     if (hidForCode(mapCode(e.code, this.deps.mapping())) === undefined && !this.pressed.has(e.code)) return 'ignore';
     this.syncCaps(e.getModifierState('CapsLock'));
+    if (e.code === 'Tab') this.altTabToCmdTab();
     this.press(e.code, e.repeat);
     return 'consume';
   }
@@ -167,14 +182,35 @@ export class KeyboardForwarder {
     }
     this.syncCaps(e.getModifierState('CapsLock'));
     this.release(e.code);
-    if (isShift(e.code)) {
+    // The desktop app's hook reports every keyup; browsers lose some.
+    if (!e.native) this.releaseLostKeyups(e.code);
+    return local ? 'consume' : 'released';
+  }
+
+  /** Keys whose keyup a browser never delivers once `code` is released. */
+  private releaseLostKeyups(code: string): void {
+    if (isShift(code)) {
       // Windows: when both Shifts were down, only the last one released sends a keyup.
       if (this.platform.windows) this.releaseShifts();
-    } else if (this.platform.mac && (e.code === 'MetaLeft' || e.code === 'MetaRight')) {
+    } else if (this.platform.mac && (code === 'MetaLeft' || code === 'MetaRight')) {
       // Chrome on macOS swallows keyups of keys released while Cmd is held.
       this.releaseNonModifiers();
     }
-    return local ? 'consume' : 'released';
+  }
+
+  /**
+   * windows-to-mac: Alt+Tab switches apps on Windows, Cmd+Tab does on the Mac. When Tab is pressed while the
+   * left Alt is held as Option, that Alt becomes Cmd until it is released (Option up, Cmd down, then the Tab),
+   * so Shift+Alt+Tab and further Tabs work like Cmd+Tab and releasing Alt picks the app. Right Alt (AltGr on
+   * many layouts) stays Option, and a Cmd already held (Ctrl+Alt+Tab) leaves Alt alone.
+   */
+  private altTabToCmdTab(): void {
+    if (this.deps.mapping() !== 'windows-to-mac' || this.pressed.get('AltLeft') !== HID_ALT_LEFT) return;
+    for (const hid of this.pressed.values()) if (hid === HID_META_LEFT || hid === HID_META_RIGHT) return;
+    this.deps.send(encodeKey(false, false, HID_ALT_LEFT));
+    this.deps.send(encodeKey(true, false, HID_META_LEFT));
+    // The keyup (and autorepeat) of AltLeft now go to Cmd; forget() drops this with everything else.
+    this.pressed.set('AltLeft', HID_META_LEFT);
   }
 
   /** Send a key-down for a physical code (autorepeat if it is already down). */
