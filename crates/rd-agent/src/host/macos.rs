@@ -53,14 +53,83 @@ pub fn store_token(token: &str) -> anyhow::Result<()> {
     keychain::store_token(token)
 }
 
-/// Current grants of this process (never prompts).
-pub fn permissions() -> anyhow::Result<Perms> {
-    Ok(session::permissions())
+/// The app bundle this executable lives in (`.../RD Agent.app`), if any.
+pub fn app_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app")
+        .then(|| bundle.to_owned())
 }
 
-/// Shows the system permission prompts (only `setup`, run in person).
-pub fn request_permissions() -> anyhow::Result<Perms> {
-    Ok(session::request_permissions())
+/// The permissions of RD Agent.app itself: runs `rd-agent permissions` in a fresh instance of
+/// the app started by LaunchServices (`open -n`), which macOS attributes to the app. With
+/// `request`, that instance shows the standard system prompts for whatever is missing.
+pub fn app_permissions(request: bool) -> anyhow::Result<Perms> {
+    let bundle = app_bundle().context(
+        "not running from inside RD Agent.app; use /Applications/RD Agent.app/Contents/MacOS/rd-agent \
+         so permissions are granted to the app and not to this terminal",
+    )?;
+    let report = std::env::temp_dir().join(format!("rd-agent-perms-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&report);
+    let mut open = std::process::Command::new("/usr/bin/open");
+    open.arg("-n")
+        .arg(&bundle)
+        .args(["--args", "permissions", "--report"])
+        .arg(&report);
+    if request {
+        open.arg("--request");
+    }
+    // Not `open -W`: it fails when the instance exits before open starts watching it. Poll
+    // for the report instead, which the instance writes atomically.
+    let status = open
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("running /usr/bin/open")?;
+    anyhow::ensure!(
+        status.success(),
+        "open {} failed: {status}",
+        bundle.display()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let json = loop {
+        match std::fs::read(&report) {
+            Ok(json) => break json,
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("the app wrote no permission report to {}", report.display())
+                });
+            }
+        }
+    };
+    let _ = std::fs::remove_file(&report);
+    serde_json::from_slice(&json).context("parsing the permission report")
+}
+
+/// `rd-agent permissions`: check (and with `request`, ask for) this process's permissions and
+/// write them to `report`.
+pub fn report_permissions(request: bool, report: &std::path::Path) -> anyhow::Result<()> {
+    let mut perms = session::permissions();
+    if request && !(perms.screen && perms.input) {
+        let asked = session::request_permissions();
+        perms = Perms {
+            screen: perms.screen || asked.screen,
+            input: perms.input || asked.input,
+        };
+        // Give the system a moment to put up its prompts before this instance exits.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    // Written then renamed, so the caller never reads a partial file.
+    let tmp = report.with_extension("tmp");
+    std::fs::write(&tmp, serde_json::to_vec(&perms)?)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, report).with_context(|| format!("writing {}", report.display()))
 }
 
 /// Blocks for the duration of the test.

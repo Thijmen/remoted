@@ -64,22 +64,33 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         .with_context(|| format!("writing {}", path.display()))?;
     println!("wrote {}", path.display());
 
+    // Asked for by a fresh instance of the app (via LaunchServices), so the grants go to
+    // RD Agent.app and not to the terminal this runs in.
     println!(
-        "requesting the Screen Recording and Accessibility permissions; approve them in the \
+        "asking macOS for Screen Recording and Accessibility for RD Agent; approve them in the \
          dialogs / System Settings > Privacy & Security"
     );
-    let perms = host::request_permissions()?;
+    let mut perms = host::app_permissions(true)?;
+    while !(perms.screen && perms.input) {
+        println!(
+            "screen recording: {}, accessibility: {}",
+            granted(perms.screen),
+            granted(perms.input)
+        );
+        print!(
+            "enable \"RD Agent\" under System Settings > Privacy & Security > Screen & System \
+             Audio Recording and > Accessibility, then press Enter to re-check (or type skip): "
+        );
+        if read_line()?.eq_ignore_ascii_case("skip") {
+            break;
+        }
+        perms = host::app_permissions(false)?;
+    }
     println!(
         "screen recording: {}, accessibility: {}",
         granted(perms.screen),
         granted(perms.input)
     );
-    if !(perms.screen && perms.input) {
-        println!(
-            "grants made in System Settings may only apply after the agent restarts; check with \
-             `rd-agent status`"
-        );
-    }
 
     if args.no_launch_agent {
         println!("skipping the LaunchAgent (--no-launch-agent)");

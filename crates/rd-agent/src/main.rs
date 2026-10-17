@@ -42,6 +42,21 @@ enum Command {
     Status(ConfigArg),
     /// Capture/encode benchmark with SPS/VUI assertions.
     Selftest(SelftestArgs),
+    /// Internal: report (and with --request, ask for) this app's permissions. `setup` and
+    /// `status` start it through LaunchServices so macOS attributes it to RD Agent.app rather
+    /// than to the terminal.
+    #[command(hide = true)]
+    Permissions(PermissionsArgs),
+}
+
+#[derive(Args)]
+struct PermissionsArgs {
+    /// Show the standard system prompts for missing permissions.
+    #[arg(long)]
+    request: bool,
+    /// Write the result here as JSON.
+    #[arg(long, value_name = "PATH")]
+    report: PathBuf,
 }
 
 #[derive(Args)]
@@ -150,6 +165,10 @@ fn main() -> ExitCode {
         Command::Status(args) => {
             logging::init_cli();
             status::run(args.config.as_deref())
+        }
+        Command::Permissions(args) => {
+            logging::init_cli();
+            host::report_permissions(args.request, &args.report)
         }
         Command::Selftest(args) => {
             logging::init_cli_verbose();

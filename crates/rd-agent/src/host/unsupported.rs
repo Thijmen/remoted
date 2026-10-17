@@ -31,11 +31,11 @@ pub fn store_token(_token: &str) -> anyhow::Result<()> {
     bail!(UNSUPPORTED)
 }
 
-pub fn permissions() -> anyhow::Result<Perms> {
+pub fn app_permissions(_request: bool) -> anyhow::Result<Perms> {
     bail!(UNSUPPORTED)
 }
 
-pub fn request_permissions() -> anyhow::Result<Perms> {
+pub fn report_permissions(_request: bool, _report: &std::path::Path) -> anyhow::Result<()> {
     bail!(UNSUPPORTED)
 }
 

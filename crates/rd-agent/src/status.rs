@@ -45,9 +45,11 @@ pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
         }
     );
 
-    match host::permissions() {
+    // Checked in a fresh instance of the app: from a terminal, this process's own grants would
+    // be the terminal's.
+    match host::app_permissions(false) {
         Ok(p) => println!(
-            "permissions:  screen recording {}, accessibility {} (for this executable)",
+            "permissions:  screen recording {}, accessibility {} (RD Agent.app)",
             yes_no(p.screen),
             yes_no(p.input)
         ),
