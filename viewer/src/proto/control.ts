@@ -90,6 +90,8 @@ export interface AgentStats {
   inflight_bytes: number;
   window_frames: number;
   window_bytes: number;
+  /** Encode time counted in the window horizon (0 from agents that predate it). */
+  window_enc_ms: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +291,7 @@ function statsFrom(o: Obj): AgentStats {
     inflight_bytes: num(o, 'inflight_bytes'),
     window_frames: num(o, 'window_frames'),
     window_bytes: num(o, 'window_bytes'),
+    window_enc_ms: num(o, 'window_enc_ms'),
   };
 }
 

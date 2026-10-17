@@ -91,7 +91,7 @@ function render(s: HudSnapshot, src: HudSources): string {
     `c→p   p50 ${fmt(s.c2pP50Ms, 1)}  p95 ${fmt(s.c2pP95Ms, 1)} ms`,
     `dec   ${fmt(s.decodeP50Ms, 2)} ms  queue ${v.decodeQueue}${a ? `   enc p50 ${fmt(a.enc_ms_p50, 1)} p99 ${fmt(a.enc_ms_p99, 1)} ms` : ''}`,
     `drops discarded ${v.discarded}  skipped ${v.skippedDraws}${a ? `  window ${a.drop_window}/s  post ${a.drop_post}` : ''}`,
-    `fly   ${a ? `${a.inflight_frames}/${a.window_frames} frames  ${formatBytes(a.inflight_bytes)}/${formatBytes(a.window_bytes)}` : '–'}  ws buf ${formatBytes(src.bufferedAmount)}`,
+    `fly   ${a ? `${a.inflight_frames}/${a.window_frames} frames  ${formatBytes(a.inflight_bytes)}/${formatBytes(a.window_bytes)}  enc ${fmt(a.window_enc_ms, 1)} ms` : '–'}  ws buf ${formatBytes(src.bufferedAmount)}`,
   ];
   if (au) {
     const w = au.worklet;
