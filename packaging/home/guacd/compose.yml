@@ -1,0 +1,13 @@
+# guacd for the rd recovery path. Run on an always-on home box (home-server).
+# Binds ONLY to the box's Tailscale IP: guacd has no authentication, so it must not
+# be reachable from the LAN or the internet. Restrict it further with a Tailscale
+# ACL/grant: only tag:k3s-private -> home-server:4822.
+services:
+  guacd:
+    image: guacamole/guacd:1.6.0
+    container_name: guacd-home
+    restart: unless-stopped
+    ports:
+      - "100.64.0.10:4822:4822"
+    environment:
+      GUACD_LOG_LEVEL: info
