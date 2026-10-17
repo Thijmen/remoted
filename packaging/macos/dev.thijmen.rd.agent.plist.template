@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchAgent for RD Agent. Rendered by install.sh into ~/Library/LaunchAgents
+     (@HOME@ = the user's home directory; launchd does not expand "~"). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.thijmen.rd.agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/RD Agent.app/Contents/MacOS/rd-agent</string>
+		<string>run</string>
+	</array>
+	<!-- Only in the logged-in GUI session: capture and input need the window server. -->
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<!-- Attributes the agent to the app in System Settings > General > Login Items. -->
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>dev.thijmen.rd.agent</string>
+	</array>
+	<key>StandardOutPath</key>
+	<string>@HOME@/Library/Logs/rd-agent/launchd.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/Library/Logs/rd-agent/launchd.log</string>
+</dict>
+</plist>

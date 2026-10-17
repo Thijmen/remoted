@@ -1,0 +1,3 @@
+# Build outputs and dependency trees never belong in the image build context.
+target*
+**/node_modules

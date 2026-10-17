@@ -92,9 +92,12 @@ pub trait InputInjector: Send {
     fn release_all(&mut self);
 }
 
+/// Receives captured audio: `sink(samples, capture_us)`, 48 kHz stereo interleaved f32.
+pub type AudioSink = Box<dyn FnMut(&[f32], u64) + Send>;
+
 /// System audio capture. `sink(samples, capture_us)` receives 48 kHz stereo interleaved f32.
 pub trait AudioSource: Send {
-    fn start(&mut self, sink: Box<dyn FnMut(&[f32], u64) + Send>) -> anyhow::Result<()>;
+    fn start(&mut self, sink: AudioSink) -> anyhow::Result<()>;
     fn stop(&mut self);
 }
 

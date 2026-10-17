@@ -1,0 +1,386 @@
+//! The control connection (`/ws/agent`): register, report state changes, receive
+//! `session_request` / `session_end`, reconnect with backoff. Sessions are managed here but run
+//! on their own sockets, so they survive control reconnects.
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures_util::{SinkExt as _, StreamExt as _};
+use rd_proto::GW_PROTO_VERSION;
+use rd_proto::close;
+use rd_proto::control::{AgentToGateway, GatewayToAgent};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{Instant, sleep_until, timeout};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tracing::{debug, error, info, warn};
+
+use super::backoff::Backoff;
+use super::net::{DialError, WsStream, valid_session_id};
+use super::session::{self, Ended, StopReason};
+use super::task::TaskGuard;
+use super::{AGENT_VERSION, Ctx};
+
+/// Largest control message we accept (the gateway's limit is 64 KiB too).
+pub(crate) const MAX_MESSAGE: usize = 64 << 10;
+/// A control write that takes longer means the connection is dead.
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long shutdown waits for the current session to end cleanly.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+/// Runs the control connection until `shutdown` resolves. Shutting down ends the current
+/// session first (reported with `session_end` while still connected), then closes the control
+/// socket.
+pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
+    let mut sessions = Sessions::new(ctx.clone());
+    let mut backoff = Backoff::new(ctx.timings.backoff_min, ctx.timings.backoff_max);
+    let mut shutdown = std::pin::pin!(shutdown);
+    loop {
+        // `shutdown` is never polled again once it resolved: every path that sees it breaks.
+        let delay = match connect_and_serve(&ctx, &mut sessions, shutdown.as_mut()).await {
+            Outcome::Shutdown => break,
+            Outcome::Lost { registered: true } => {
+                backoff.reset();
+                backoff.next_delay()
+            }
+            Outcome::Lost { registered: false } | Outcome::Failed => backoff.next_delay(),
+            Outcome::Refused => backoff.max_delay(),
+        };
+        info!(
+            delay_ms = delay.as_millis(),
+            "reconnecting to the gateway after a delay"
+        );
+        tokio::select! {
+            () = &mut shutdown => break,
+            () = tokio::time::sleep(delay) => {}
+        }
+    }
+    sessions.shutdown().await;
+}
+
+/// How a control connection attempt ended.
+enum Outcome {
+    /// Could not connect (network, TLS, timeout).
+    Failed,
+    /// Connected; the connection was lost later.
+    Lost { registered: bool },
+    /// The gateway does not want us (bad token, rate limited, wrong machine, replaced by
+    /// another agent): retrying fast won't help.
+    Refused,
+    /// The runtime is shutting down.
+    Shutdown,
+}
+
+async fn connect_and_serve<F: Future<Output = ()>>(
+    ctx: &Arc<Ctx>,
+    sessions: &mut Sessions,
+    mut shutdown: Pin<&mut F>,
+) -> Outcome {
+    let url = ctx.gateway.control_url();
+    let dial = timeout(
+        ctx.timings.dial_timeout,
+        ctx.gateway.dial(&url, MAX_MESSAGE),
+    );
+    let dialed = tokio::select! {
+        () = &mut shutdown => return Outcome::Shutdown,
+        dialed = dial => dialed,
+    };
+    let ws = match dialed {
+        Ok(Ok(ws)) => ws,
+        Ok(Err(DialError::Refused(status))) => {
+            error!(%status, url, "the gateway refused the agent; check the token");
+            return Outcome::Refused;
+        }
+        Ok(Err(DialError::Failed(e))) => {
+            warn!("connecting to the gateway failed: {e:#}");
+            return Outcome::Failed;
+        }
+        Err(_) => {
+            warn!(url, "connecting to the gateway timed out");
+            return Outcome::Failed;
+        }
+    };
+    debug!(url, "control connection open");
+    Control {
+        ctx,
+        sessions,
+        ws,
+        registered: false,
+    }
+    .serve(shutdown)
+    .await
+}
+
+struct Control<'a> {
+    ctx: &'a Arc<Ctx>,
+    sessions: &'a mut Sessions,
+    ws: WsStream,
+    registered: bool,
+}
+
+impl Control<'_> {
+    async fn serve<F: Future<Output = ()>>(mut self, mut shutdown: Pin<&mut F>) -> Outcome {
+        let mut state = self.ctx.state.subscribe();
+        let register = AgentToGateway::Register {
+            machine: self.ctx.cfg.machine.clone(),
+            agent_version: AGENT_VERSION.into(),
+            os: self.ctx.platform.os_description(),
+            gw_proto: GW_PROTO_VERSION,
+            state: *state.borrow_and_update(),
+        };
+        if !self.send(&register).await {
+            return self.lost();
+        }
+        // Sessions that ended while we were disconnected: the gateway saw their sockets close.
+        self.sessions.discard_ended();
+        let mut last_rx = Instant::now();
+        loop {
+            // Biased: a session's `session_end` goes out before the state change it causes.
+            tokio::select! {
+                biased;
+                () = &mut shutdown => return self.shut_down().await,
+                msg = self.ws.next() => {
+                    last_rx = Instant::now();
+                    match msg {
+                        Some(Ok(Message::Text(text))) => self.on_text(text.as_str()),
+                        Some(Ok(Message::Close(frame))) => {
+                            let code = frame.as_ref().map(|f| u16::from(f.code));
+                            let reason = frame.as_ref().map(|f| f.reason.to_string());
+                            return self.on_close(code, reason.as_deref().unwrap_or(""));
+                        }
+                        // Pings are answered by tungstenite.
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => {
+                            warn!("control connection failed: {e}");
+                            return self.lost();
+                        }
+                        None => {
+                            warn!("control connection closed");
+                            return self.lost();
+                        }
+                    }
+                }
+                () = sleep_until(last_rx + self.ctx.timings.idle_timeout) => {
+                    warn!(
+                        idle_s = self.ctx.timings.idle_timeout.as_secs_f32(),
+                        "nothing received from the gateway; reconnecting"
+                    );
+                    return self.lost();
+                }
+                Some(ended) = self.sessions.next_ended() => {
+                    let msg = AgentToGateway::SessionEnd {
+                        session: ended.session,
+                        reason: ended.reason.into(),
+                    };
+                    if !self.send(&msg).await {
+                        return self.lost();
+                    }
+                }
+                Ok(()) = state.changed() => {
+                    let s = *state.borrow_and_update();
+                    debug!(?s, "agent state changed");
+                    if !self.send(&AgentToGateway::State(s)).await {
+                        return self.lost();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ends the session, reports it and hangs up politely.
+    async fn shut_down(mut self) -> Outcome {
+        self.sessions.shutdown().await;
+        while let Some(ended) = self.sessions.try_ended() {
+            let msg = AgentToGateway::SessionEnd {
+                session: ended.session,
+                reason: ended.reason.into(),
+            };
+            if !self.send(&msg).await {
+                return Outcome::Shutdown;
+            }
+        }
+        let frame = CloseFrame {
+            code: CloseCode::Away,
+            reason: "agent shutting down".into(),
+        };
+        if timeout(SEND_TIMEOUT, self.ws.close(Some(frame)))
+            .await
+            .is_err()
+        {
+            debug!("closing the control connection timed out");
+        }
+        Outcome::Shutdown
+    }
+
+    fn on_text(&mut self, text: &str) {
+        match serde_json::from_str::<GatewayToAgent>(text) {
+            Ok(GatewayToAgent::Registered { gw_proto }) => {
+                info!(
+                    gw_proto,
+                    machine = self.ctx.cfg.machine,
+                    "registered with the gateway"
+                );
+                self.registered = true;
+            }
+            Ok(GatewayToAgent::SessionRequest {
+                session,
+                user,
+                client_ip,
+            }) => {
+                if valid_session_id(&session) {
+                    info!(session, user, client_ip, "session requested");
+                    self.sessions.start(session, user);
+                } else {
+                    warn!(session, "ignoring a session request with an invalid id");
+                }
+            }
+            Ok(GatewayToAgent::SessionEnd { session, reason }) => {
+                self.sessions.end(&session, reason);
+            }
+            Ok(GatewayToAgent::Unknown) => debug!("unknown gateway message ignored"),
+            Err(e) => warn!("unparseable gateway message ignored: {e}"),
+        }
+    }
+
+    fn on_close(&self, code: Option<u16>, reason: &str) -> Outcome {
+        match code {
+            Some(close::REPLACED) => {
+                warn!(
+                    reason,
+                    "another agent registered as this machine; backing off"
+                );
+                Outcome::Refused
+            }
+            Some(close::FORBIDDEN) => {
+                error!(reason, "the gateway rejected this machine id for the token");
+                Outcome::Refused
+            }
+            _ => {
+                info!(code, reason, "the gateway closed the control connection");
+                self.lost()
+            }
+        }
+    }
+
+    fn lost(&self) -> Outcome {
+        Outcome::Lost {
+            registered: self.registered,
+        }
+    }
+
+    /// False if the connection is unusable.
+    async fn send(&mut self, msg: &AgentToGateway) -> bool {
+        let text = match serde_json::to_string(msg) {
+            Ok(text) => text,
+            Err(e) => {
+                error!("serializing a control message: {e}");
+                return true;
+            }
+        };
+        match timeout(SEND_TIMEOUT, self.ws.send(Message::Text(text.into()))).await {
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                warn!("control connection write failed: {e}");
+                false
+            }
+            Err(_) => {
+                warn!("control connection write timed out");
+                false
+            }
+        }
+    }
+}
+
+/// The current session (at most one).
+struct Sessions {
+    ctx: Arc<Ctx>,
+    current: Option<Running>,
+    ended_tx: mpsc::UnboundedSender<Ended>,
+    ended_rx: mpsc::UnboundedReceiver<Ended>,
+}
+
+struct Running {
+    id: String,
+    stop: Option<oneshot::Sender<StopReason>>,
+    task: TaskGuard<()>,
+}
+
+impl Running {
+    fn stop(&mut self, reason: StopReason) {
+        if let Some(stop) = self.stop.take() {
+            // Fails if the session already ended by itself.
+            let _ = stop.send(reason);
+        }
+    }
+}
+
+impl Sessions {
+    fn new(ctx: Arc<Ctx>) -> Self {
+        let (ended_tx, ended_rx) = mpsc::unbounded_channel();
+        Sessions {
+            ctx,
+            current: None,
+            ended_tx,
+            ended_rx,
+        }
+    }
+
+    /// Starts a session; a running one is stopped and the new one waits for its cleanup.
+    fn start(&mut self, id: String, user: String) {
+        let predecessor = self.current.take().map(|mut old| {
+            if old.stop.is_some() {
+                info!(old = old.id, "replacing the current session");
+            }
+            old.stop(StopReason::Replaced);
+            old.task
+        });
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let task = TaskGuard::spawn(session::run(
+            self.ctx.clone(),
+            id.clone(),
+            user,
+            stop_rx,
+            predecessor,
+            self.ended_tx.clone(),
+        ));
+        self.current = Some(Running {
+            id,
+            stop: Some(stop_tx),
+            task,
+        });
+    }
+
+    /// The gateway ended session `id`.
+    fn end(&mut self, id: &str, reason: String) {
+        match self.current.as_mut() {
+            Some(current) if current.id == id => current.stop(StopReason::Gateway(reason)),
+            _ => debug!(session = id, "session_end for an unknown session ignored"),
+        }
+    }
+
+    async fn next_ended(&mut self) -> Option<Ended> {
+        self.ended_rx.recv().await
+    }
+
+    fn try_ended(&mut self) -> Option<Ended> {
+        self.ended_rx.try_recv().ok()
+    }
+
+    fn discard_ended(&mut self) {
+        while self.try_ended().is_some() {}
+    }
+
+    /// Stops the current session and waits (bounded) for it to clean up. Idempotent.
+    async fn shutdown(&mut self) {
+        let Some(mut current) = self.current.take() else {
+            return;
+        };
+        current.stop(StopReason::Shutdown);
+        if timeout(SHUTDOWN_GRACE, &mut current.task).await.is_err() {
+            warn!("the session did not end in time; aborting it");
+        }
+    }
+}

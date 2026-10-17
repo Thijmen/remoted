@@ -17,7 +17,8 @@
 //!   nothing is in flight (so a large keyframe can never deadlock the window).
 //!
 //! Sequence numbers are `u32`, start at 1, and increase by one per admitted frame for the
-//! lifetime of a session (across epochs). Comparisons use wrapping arithmetic.
+//! lifetime of a session (across epochs). Comparisons use wrapping arithmetic; 0 is skipped on
+//! wrap-around, so a seq is never 0.
 
 mod bitrate;
 mod gate;
