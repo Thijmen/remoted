@@ -52,6 +52,7 @@ const isApp = variant !== 'edge';
 /** Windows set-1 scan codes. */
 const SC = { A: 0x1e, ALT: 0x38, TAB: 0x0f } as const;
 const EXPECT_TYPE = ['d:70004', 'u:70004'];
+const RACE_ROUNDS = 10;
 /** windows-to-mac: Option down, Option up, Cmd down, Tab down/up, Cmd up. */
 const EXPECT_ALTTAB = ['d:700e2', 'u:700e2', 'd:700e3', 'd:7002b', 'u:7002b', 'u:700e3'];
 
@@ -217,9 +218,10 @@ function keyFrames(xs: InputRecord[]): string[] {
   return xs.filter((x) => x.type !== 'mouse_btn').map(describe);
 }
 
+/** LL hook events as `<scan code hex>[e]<d|u>[*]` (e: extended, *: injected) `@<helper ms>`. */
 function hookEvents(r: any): string[] {
   return (r?.keys ?? []).map(
-    (k: any) => `${Number(k.sc).toString(16)}${k.ext ? 'e' : ''}${k.up ? 'u' : 'd'}${k.injected ? '*' : ''}`,
+    (k: any) => `${Number(k.sc).toString(16)}${k.ext ? 'e' : ''}${k.up ? 'u' : 'd'}${k.injected ? '*' : ''}@${k.t}`,
   );
 }
 
@@ -503,23 +505,37 @@ async function main(): Promise<void> {
   }
 
   if (variant === 'race') {
-    step('race: 5 x 100 focus changes (rd_set_grab false/true pairs)');
+    // rd_set_grab is async: Tauri runs each call as its own task, so a quick false/true pair can
+    // reach the hook thread as true/false and leave the hook off while the page, whose last call
+    // (true) resolved, believes it grabs. Each round ends on the video, so the page wants the grab:
+    // count the rounds after which the app's last word was "off".
+    step(`race: ${RACE_ROUNDS} rounds of 100 focus changes (rd_set_grab false/true pairs)`);
     const before = grabLines().length;
-    const r = await agent.command('race', { rounds: 5, n: 100, pauseMs: 150 }, 60_000);
-    await sleep(1500);
+    const rounds: string[] = [];
+    for (let k = 0; k < RACE_ROUNDS; k++) {
+      const r = await agent.command('race', { rounds: 1, n: 100, pauseMs: 0 }, 60_000);
+      await sleep(700); // let the app finish the round's calls
+      const last = grabLines().filter((l) => /keyboard grab (on|off)/.test(l)).pop() ?? '';
+      const m = /keyboard grab (on|off(?: \(\w+\))?)/.exec(last);
+      rounds.push(`${m ? m[1] : '?'}${r.activeIsCanvas ? '' : ' (video not focused)'}`);
+    }
+    await sleep(1000);
     const lines = grabLines().slice(before);
     summary.race = {
-      active_is_canvas: r.activeIsCanvas,
+      rounds,
+      hook_off_while_page_wants_it: rounds.filter((r) => r.startsWith('off')).length,
       set_grab_lines: lines.filter((l) => l.includes('rd_set_grab')).length,
       grab_on: lines.filter((l) => l.includes('keyboard grab on')).length,
       grab_off: lines.filter((l) => l.includes('keyboard grab off')).length,
-      last_grab_line: lines.filter((l) => /keyboard grab (on|off)/.test(l)).pop() ?? null,
       last_lines: lines.slice(-6),
     };
     log('race:', summary.race);
   }
 
-  await win.call('hook'); // drop earlier events
+  // A second LL hook, installed now (after the app's): it runs before the app's hook and sees every
+  // event, while the helper's first one (installed before the app started) runs after it.
+  summary.late_hook = await win.call('hookStart', { name: 'late' });
+  cleanups.push(() => win.call('hookStop', { name: 'late' }).then(() => undefined));
   const frames: Record<string, any> = {};
   summary.frames = frames;
 
@@ -529,6 +545,7 @@ async function main(): Promise<void> {
     const fgBefore = await isForeground(win, hwnd);
     const mark = agent.inputs.length;
     const cdpMark = cdp?.sentInput.length ?? 0;
+    for (const name of ['early', 'late']) await win.call('hook', { name }); // drop earlier events
     await win.call('keys', { seq, gapMs: 60 });
     await sleep(settleMs);
     const after = await isForeground(win, hwnd);
@@ -541,7 +558,8 @@ async function main(): Promise<void> {
       page_rdnative: since(pre.nat, post.nat),
       page_sent: since(pre.sent, post.sent).filter((x: string) => !x.startsWith('btn:')),
       page_sent_cdp: cdp ? cdp.sentInput.slice(cdpMark).map(describeSent) : undefined,
-      passed_rd_hook: hookEvents(await win.call('hook')),
+      ll_hook_first: hookEvents(await win.call('hook', { name: 'late' })),
+      ll_hook_after_rd: hookEvents(await win.call('hook', { name: 'early' })),
       foreground_after: after.ok,
       foreground_window_after: after.ok ? undefined : after.fg,
       page_after: { hasFocus: post.hasFocus, active: post.active },
@@ -584,6 +602,8 @@ function verdict(): { pass: boolean; problems: string[] } {
   if (!f.type) problems.push('no typing phase');
   else if (!same(f.type.agent, EXPECT_TYPE))
     problems.push(`typing a: agent got [${f.type.agent.join(' ')}], expected [${EXPECT_TYPE.join(' ')}]`);
+  if (variant === 'race' && summary.race?.hook_off_while_page_wants_it)
+    problems.push(`race: hook off after ${summary.race.hook_off_while_page_wants_it}/${RACE_ROUNDS} rounds that ended on the video`);
   if (variant === 'grab') {
     if (!f.alttab) problems.push('no Alt+Tab phase');
     else if (!same(f.alttab.agent, EXPECT_ALTTAB))
@@ -603,7 +623,8 @@ function report(v: { pass: boolean; problems: string[] }): void {
     if (!p) continue;
     lines.push(
       `  ${phase.padEnd(6)} agent=[${p.agent.join(' ')}] page_sent=[${p.page_sent.join(' ')}] dom=[${p.page_dom.join(' ')}] rdNative=[${p.page_rdnative.join(' ')}]`,
-      `         passed_rd_hook=[${p.passed_rd_hook.join(' ')}] foreground before=${p.foreground_before} after=${p.foreground_after}${p.foreground_window_after ? ` (now: ${p.foreground_window_after.process} "${p.foreground_window_after.title}")` : ''}`,
+      `         ll_hook_first=[${p.ll_hook_first.join(' ')}] ll_hook_after_rd=[${p.ll_hook_after_rd.join(' ')}]`,
+      `         foreground before=${p.foreground_before} after=${p.foreground_after}${p.foreground_window_after ? ` (now: ${p.foreground_window_after.process} "${p.foreground_window_after.title}")` : ''}`,
     );
   }
   if (summary.race) lines.push(`  race   ${JSON.stringify(summary.race)}`);

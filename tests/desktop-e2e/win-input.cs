@@ -593,6 +593,7 @@ namespace RdE2E
             var clock = Stopwatch.StartNew();
             var probe = new HookProbe(clock);
             probe.Start();
+            probes["early"] = probe;
             var json = new JavaScriptSerializer();
             json.MaxJsonLength = int.MaxValue;
             var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
@@ -632,6 +633,16 @@ namespace RdE2E
                 if (cmd == "exit") break;
             }
             probe.Stop();
+        }
+
+        private static readonly Dictionary<string, HookProbe> probes = new Dictionary<string, HookProbe>();
+
+        private static HookProbe Probe(Dictionary<string, object> c)
+        {
+            string name = S(c, "name") ?? "early";
+            HookProbe p;
+            if (!probes.TryGetValue(name, out p)) throw new ArgumentException("no hook probe " + name);
+            return p;
         }
 
         private static object Dispatch(Dictionary<string, object> c, HookProbe probe, Stopwatch clock)
@@ -694,11 +705,32 @@ namespace RdE2E
                     }
                 case "hook":
                     {
+                        // "early": installed when this helper started (before the app's hook, so it
+                        // runs after it); others: hookStart'ed later (they run before it).
+                        var p = Probe(c);
                         var d = new Dictionary<string, object>();
-                        d["keys"] = probe.Take();
-                        d["mouse_buttons"] = probe.MouseButtons;
-                        d["error"] = probe.Error;
+                        d["keys"] = p.Take();
+                        d["mouse_buttons"] = p.MouseButtons;
+                        d["error"] = p.Error;
+                        d["now"] = clock.ElapsedMilliseconds;
                         return d;
+                    }
+                case "hookStart":
+                    {
+                        string name = S(c, "name");
+                        HookProbe old;
+                        if (probes.TryGetValue(name, out old)) old.Stop();
+                        var p = new HookProbe(clock);
+                        p.Start();
+                        probes[name] = p;
+                        return p.Error;
+                    }
+                case "hookStop":
+                    {
+                        string name = S(c, "name");
+                        HookProbe old;
+                        if (probes.TryGetValue(name, out old)) { old.Stop(); probes.Remove(name); }
+                        return true;
                     }
                 case "screenshot":
                     return Win.Screenshot(S(c, "path"));
