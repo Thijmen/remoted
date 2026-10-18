@@ -33,6 +33,8 @@ pub const SESSION_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 pub const SESSION_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 /// Every wait in the tests is bounded by this.
 pub const WAIT: Duration = Duration::from_secs(5);
+/// Overall limit for `expect`, which skips unrelated messages (video keeps arriving).
+pub const EXPECT_WAIT: Duration = Duration::from_secs(15);
 /// Fake avcC: version 1, profile 0x64, compat 0, level 0x33.
 pub const AVCC: &[u8] = &[1, 0x64, 0, 0x33, 0xff, 0xe1, 0, 0];
 
@@ -71,6 +73,8 @@ pub struct FakePlatform {
     capture_fps: u32,
     /// What `VideoPipeline::failure` reports.
     capture_failure: Arc<Mutex<Option<String>>>,
+    /// When set, `VideoPipeline::start` fails with this message.
+    start_failure: Arc<Mutex<Option<String>>>,
     /// Nothing changes on screen: after its first frame the pipeline only captures when the
     /// gate wants a refresh (like ScreenCaptureKit, which delivers no frame for an idle screen).
     static_screen: Arc<AtomicBool>,
@@ -87,12 +91,17 @@ impl FakePlatform {
             events: Arc::default(),
             capture_fps,
             capture_failure: Arc::default(),
+            start_failure: Arc::default(),
             static_screen: Arc::default(),
         })
     }
 
     pub fn set_capture_failure(&self, reason: Option<&str>) {
         *self.capture_failure.lock() = reason.map(str::to_owned);
+    }
+
+    pub fn set_start_failure(&self, reason: Option<&str>) {
+        *self.start_failure.lock() = reason.map(str::to_owned);
     }
 
     pub fn set_static_screen(&self, on: bool) {
@@ -173,6 +182,7 @@ impl Platform for FakePlatform {
             events: self.events.clone(),
             capture_fps: self.capture_fps,
             failure: self.capture_failure.clone(),
+            start_failure: self.start_failure.clone(),
             static_screen: self.static_screen.clone(),
             running: None,
             gate: None,
@@ -209,6 +219,7 @@ struct FakePipeline {
     events: Arc<Mutex<Vec<Event>>>,
     capture_fps: u32,
     failure: Arc<Mutex<Option<String>>>,
+    start_failure: Arc<Mutex<Option<String>>>,
     static_screen: Arc<AtomicBool>,
     running: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
     gate: Option<Arc<dyn FrameGate>>,
@@ -283,6 +294,9 @@ impl VideoPipeline for FakePipeline {
         sink: FrameSink,
     ) -> anyhow::Result<()> {
         self.halt();
+        if let Some(reason) = self.start_failure.lock().clone() {
+            anyhow::bail!("{reason}");
+        }
         self.events.lock().push(Event::PipelineStart(cfg));
         self.gate = Some(gate);
         self.sink = Some(sink);
@@ -546,13 +560,18 @@ pub struct Control {
 impl Control {
     /// Next JSON message of type `t` (others are skipped).
     pub async fn expect(&mut self, t: &str) -> Value {
-        loop {
-            match recv(&mut self.ws).await {
-                Msg::Json(v) if v["t"] == t => return v,
-                Msg::Json(_) | Msg::Bin(_) => {}
-                Msg::Close(code) => panic!("control closed ({code:?}) while waiting for {t}"),
+        let wait = async {
+            loop {
+                match recv(&mut self.ws).await {
+                    Msg::Json(v) if v["t"] == t => return v,
+                    Msg::Json(_) | Msg::Bin(_) => {}
+                    Msg::Close(code) => panic!("control closed ({code:?}) while waiting for {t}"),
+                }
             }
-        }
+        };
+        tokio::time::timeout(EXPECT_WAIT, wait)
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {t} on the control socket"))
     }
 
     /// Next `state` message matching `pred`.
@@ -669,28 +688,41 @@ impl Viewer {
 
     /// Skips to the next JSON message of type `t`.
     pub async fn expect(&mut self, t: &str) -> Value {
-        loop {
-            match self.next().await {
-                Msg::Json(v) if v["t"] == t => return v,
-                Msg::Close(code) => panic!("session closed ({code:?}) while waiting for {t}"),
-                _ => {}
+        let wait = async {
+            loop {
+                match self.next().await {
+                    Msg::Json(v) if v["t"] == t => return v,
+                    Msg::Close(code) => panic!("session closed ({code:?}) while waiting for {t}"),
+                    _ => {}
+                }
             }
-        }
+        };
+        // `next` alone never times out while video keeps arriving.
+        tokio::time::timeout(EXPECT_WAIT, wait)
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {t} on the session"))
     }
 
     /// Skips to the next VIDEO frame.
     pub async fn next_video(&mut self) -> VideoHeader {
-        loop {
-            match self.next().await {
-                msg @ Msg::Bin(_) => {
-                    if let Some(h) = msg.video() {
-                        return h;
+        let wait = async {
+            loop {
+                match self.next().await {
+                    msg @ Msg::Bin(_) => {
+                        if let Some(h) = msg.video() {
+                            return h;
+                        }
                     }
+                    Msg::Close(code) => {
+                        panic!("session closed ({code:?}) while waiting for video")
+                    }
+                    Msg::Json(_) => {}
                 }
-                Msg::Close(code) => panic!("session closed ({code:?}) while waiting for video"),
-                Msg::Json(_) => {}
             }
-        }
+        };
+        tokio::time::timeout(EXPECT_WAIT, wait)
+            .await
+            .expect("timed out waiting for video")
     }
 
     /// Collects the JSON messages (except `stats`) received in the next `d`.

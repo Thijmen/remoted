@@ -500,6 +500,8 @@ impl Session {
             }
             return;
         }
+        // The preflight can say no while capture works (it caches a stale answer), so it only
+        // decides how a failed start is reported.
         let screen_ok = self.ctx.platform.permissions().screen;
         if !screen_ok {
             warn!("Screen Recording preflight says no; trying capture anyway");
@@ -509,6 +511,10 @@ impl Session {
                 self.stream = Some(stream);
                 self.timers.restart();
             }
+            Err(e) if !screen_ok => self.out.error(
+                "tcc_screen",
+                format!("the agent has no Screen Recording permission ({e:#})"),
+            ),
             Err(e) => self.out.error("internal", format!("starting video: {e:#}")),
         }
     }

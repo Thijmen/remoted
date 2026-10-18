@@ -504,6 +504,8 @@ async fn start_without_screen_permission_reports_tcc_screen() {
         screen: false,
         input: false,
     });
+    // Without the permission ScreenCaptureKit refuses to start.
+    platform.set_start_failure(Some("the user declined TCCs"));
     let mut s = setup_with(platform, common::timings()).await;
     let mut viewer = s.open_session(SESSION_A).await;
     let err = viewer.expect("error").await;
@@ -514,6 +516,28 @@ async fn start_without_screen_permission_reports_tcc_screen() {
     assert_eq!(
         s.platform.count(|e| matches!(e, Event::PipelineStart(_))),
         0
+    );
+
+    s.agent.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn start_streams_when_the_screen_preflight_is_wrong() {
+    // The preflight says no, but capture works: the agent streams anyway.
+    let platform = FakePlatform::new(100);
+    platform.set_perms(Perms {
+        screen: false,
+        input: true,
+    });
+    let mut s = setup_with(platform, common::timings()).await;
+    let mut viewer = s.open_session(SESSION_A).await;
+    viewer.start(1728, 1118).await;
+    viewer.expect("video_config").await;
+    let first = viewer.next_video().await;
+    assert!(first.is_key());
+    assert_eq!(
+        s.platform.count(|e| matches!(e, Event::PipelineStart(_))),
+        1
     );
 
     s.agent.stop().await;

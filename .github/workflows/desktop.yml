@@ -20,6 +20,7 @@ jobs:
   windows:
     name: Windows (exe + NSIS installer)
     runs-on: windows-latest
+    timeout-minutes: 45
     permissions:
       contents: write # gh release create (tags only)
     defaults:
