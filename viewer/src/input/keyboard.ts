@@ -156,7 +156,8 @@ export class KeyboardForwarder {
       this.syncCaps(e.getModifierState('CapsLock'));
       return 'consume';
     }
-    if (this.platform.windows && e.code === 'ControlLeft' && !this.pressed.has('ControlLeft')) {
+    // The desktop app's hook drops AltGr's fake Ctrl itself, so a native ControlLeft is always a real one.
+    if (this.platform.windows && !e.native && e.code === 'ControlLeft' && !this.pressed.has('ControlLeft')) {
       this.pendingCtrl = { timeStamp: e.timeStamp, timer: setTimeout(() => this.flushPending(), ALTGR_HOLD_MS) };
       return 'consume';
     }

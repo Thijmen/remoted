@@ -64,6 +64,7 @@ export class InputController {
   /** Keys from the desktop app's keyboard hook (docs/desktop-client.md), and the grab it is told about. */
   private readonly native: NativeKeys;
   private readonly bridge: DesktopBridge;
+  private grabCheckQueued = false;
   /** Local Caps Lock as of the last key or pointer event anywhere on the page (null: not seen yet). */
   private localCaps: boolean | null = null;
   private pos = { x: 0x8000, y: 0x8000 };
@@ -215,10 +216,18 @@ export class InputController {
    * desktop app grabs the keyboard (system shortcuts included) exactly while this holds.
    */
   private updateGrab(): void {
-    const on = this.enabled && !document.hidden && document.hasFocus() && this.forwardsKeysFrom(document.activeElement);
-    if (on === this.bridge.active) return;
-    this.native.reset();
-    this.bridge.setActive(on);
+    // Focus moving between two elements fires focusout (activeElement = body) and focusin in one go: decide once
+    // it has settled, so the app is not asked to grab and release in the same instant.
+    if (this.grabCheckQueued) return;
+    this.grabCheckQueued = true;
+    queueMicrotask(() => {
+      this.grabCheckQueued = false;
+      const on =
+        this.enabled && !document.hidden && document.hasFocus() && this.forwardsKeysFrom(document.activeElement);
+      if (on === this.bridge.active) return;
+      this.native.reset();
+      this.bridge.setActive(on);
+    });
   }
 
   /** Keys typed into viewer UI (settings, banner buttons) stay local. */
@@ -267,6 +276,8 @@ export class InputController {
     if (e.type === 'pointerdown') {
       e.preventDefault();
       this.surface.focus({ preventScroll: true });
+      // A grab the app refused (e.g. its window was not in front yet) is asked for again.
+      this.bridge.retry();
       if (!this.locked) this.surface.setPointerCapture(e.pointerId);
     } else {
       e.preventDefault();
@@ -390,15 +401,21 @@ export class InputController {
   private onKey(e: KeyboardEvent, down: boolean): void {
     this.localCaps = e.getModifierState('CapsLock');
     if (!this.enabled) return;
-    // While the desktop app grabs the keyboard its hook delivers every key (rdNative.key): never send twice.
     if (this.bridge.grabbing) {
-      // Except Caps Lock on macOS: the system toggles the lock before any hook sees the key, so the app lets it
-      // through and the remote lock follows the local one.
+      // The desktop app swallows every key it forwards (rdNative.key), so a DOM key here is one its hook did not
+      // forward: input other programs inject, keys held from before the grab, or a hook that Windows dropped or
+      // other software blocks. Handle it like any DOM key rather than losing it.
       if (e.code === 'CapsLock') {
+        // macOS toggles the lock before any hook sees the key, so the app lets it through on purpose and the
+        // remote lock follows the local one.
         this.keys.syncCaps(this.native.caps(this.localCaps));
         e.preventDefault();
+        return;
       }
-      return;
+      // macOS: the shortcuts the app leaves to the system on purpose (lock screen, Force Quit).
+      if (isLocalMacShortcut(e)) return;
+      // A fresh press means the hook missed it: have the app install a new one.
+      if (down && !e.repeat && !this.keys.isPressed(e.code)) this.bridge.reassert(performance.now());
     }
     if (this.keys.handle(e, down, this.forwardsKeysFrom(e.target)) === 'consume') {
       e.preventDefault();
@@ -412,9 +429,15 @@ export class InputController {
     if (this.enabled) this.keys.handle(e, down, this.bridge.active);
   }
 
-  /** The app stopped grabbing on its own: like a window blur. */
+  /** The app stopped grabbing on its own: like a window blur. Ask again if the keys should still be grabbed. */
   private onNativeRelease(): void {
     this.native.reset();
     if (this.enabled) this.releaseAll();
+    this.updateGrab();
   }
+}
+
+/** Ctrl+Cmd+Q (lock screen) and Cmd+Option+Esc (Force Quit): the macOS app never grabs them. */
+function isLocalMacShortcut(e: KeyboardEvent): boolean {
+  return (e.code === 'KeyQ' && e.ctrlKey && e.metaKey) || (e.code === 'Escape' && e.metaKey && e.altKey);
 }

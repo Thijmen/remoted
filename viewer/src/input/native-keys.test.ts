@@ -124,16 +124,19 @@ describe('native keys through the forwarder', () => {
     expect(take()).toEqual([down(HID.MetaLeft), down(HID.AltLeft), down(HID.ShiftLeft)]);
   });
 
-  it('drops the fake Ctrl Windows puts in front of AltGr', () => {
-    const { key, take, chords } = setup();
+  it("sends a native left Ctrl at once (the hook drops AltGr's fake Ctrl itself)", () => {
+    const { key, take, chords } = setup('passthrough');
     key('ControlLeft', true, { at: 1000 });
-    key('AltRight', true, { at: 1001 });
-    key('ShiftLeft', true, { at: 1050 });
-    key('KeyD', true, { at: 1100 }); // AltGr+Shift+D types; it is not the disconnect chord
-    key('KeyD', false, { at: 1150 });
-    key('ShiftLeft', false, { at: 1160 });
-    key('ControlLeft', false, { at: 1200 });
-    key('AltRight', false, { at: 1200 });
+    expect(take()).toEqual([down(HID.ControlLeft)]);
+    key('ControlLeft', false, { at: 1010 });
+    expect(take()).toEqual([up(HID.ControlLeft)]);
+    // AltGr arrives as AltRight alone: AltGr+Shift+D types, it is not the disconnect chord.
+    key('AltRight', true, { at: 1100 });
+    key('ShiftLeft', true, { at: 1150 });
+    key('KeyD', true, { at: 1200 });
+    key('KeyD', false, { at: 1250 });
+    key('ShiftLeft', false, { at: 1260 });
+    key('AltRight', false, { at: 1300 });
     expect(chords).toEqual([]);
     expect(take()).toEqual([
       down(HID.AltRight),

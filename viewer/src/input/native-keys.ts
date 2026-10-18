@@ -54,7 +54,8 @@ export class NativeKeys {
     const mods: Record<string, boolean> = {};
     for (const [name, [left, right]] of Object.entries(SIDES)) mods[name] = isDown(left) || isDown(right);
     mods.CapsLock = this.caps(this.deps.localCaps());
-    // Windows reports AltGr as left Ctrl + right Alt (its fake Ctrl comes through the hook as well).
+    // The Windows hook drops AltGr's fake left Ctrl, so this is only set by a real Ctrl held with AltGr; the
+    // forwarder's fake-Ctrl filter is off for native keys anyway.
     mods.AltGraph = isDown('AltRight') && isDown('ControlLeft');
     return {
       code,

@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { BRIDGE_VERSION, type BridgeHost, DesktopBridge } from './desktop-bridge';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  BRIDGE_VERSION,
+  type BridgeHost,
+  DesktopBridge,
+  INVOKE_TIMEOUT_MS,
+  REASSERT_INTERVAL_MS,
+} from './desktop-bridge';
 
 interface Call {
   cmd: string;
@@ -66,7 +72,9 @@ describe('window.rdNative', () => {
 });
 
 describe('rd_set_grab', () => {
-  it('is invoked on every transition, not on repeats', () => {
+  const sent = (calls: Call[]) => calls.map((c) => c.args?.active);
+
+  it('sends one request at a time, numbered, and only the latest wanted state', async () => {
     const { host, calls } = fakeTauri();
     const { bridge } = setup(host);
     bridge.setActive(false);
@@ -75,14 +83,21 @@ describe('rd_set_grab', () => {
     bridge.setActive(true);
     bridge.setActive(false);
     bridge.setActive(true);
-    expect(calls.map((c) => [c.cmd, c.args])).toEqual([
-      ['rd_set_grab', { active: true }],
-      ['rd_set_grab', { active: false }],
-      ['rd_set_grab', { active: true }],
-    ]);
+    bridge.setActive(false);
+    // One in flight; the burst behind it collapses to its final state.
+    expect(sent(calls)).toEqual([true]);
+    calls[0]!.resolve();
+    await flush();
+    expect(sent(calls)).toEqual([true, false]);
+    calls[1]!.resolve();
+    await flush();
+    expect(sent(calls)).toEqual([true, false]);
+    expect(calls.map((c) => c.cmd)).toEqual(['rd_set_grab', 'rd_set_grab']);
+    const seqs = calls.map((c) => c.args?.seq as number);
+    expect(seqs[1]).toBeGreaterThan(seqs[0]!);
   });
 
-  it('ignores DOM keys once the app accepted the grab, until it ends', async () => {
+  it('confirms once the app accepted `true` and the page still wants it', async () => {
     const { host, calls } = fakeTauri();
     const { bridge } = setup(host);
     bridge.setActive(true);
@@ -97,7 +112,7 @@ describe('rd_set_grab', () => {
     expect(bridge.grabbing).toBe(false);
   });
 
-  it('a late answer does not confirm a grab that already ended', async () => {
+  it('a burst that ends where it started needs no extra request', async () => {
     const { host, calls } = fakeTauri();
     const { bridge } = setup(host);
     bridge.setActive(true);
@@ -105,13 +120,11 @@ describe('rd_set_grab', () => {
     bridge.setActive(true);
     calls[0]!.resolve();
     await flush();
-    expect(bridge.grabbing).toBe(false);
-    calls[2]!.resolve();
-    await flush();
+    expect(sent(calls)).toEqual([true]);
     expect(bridge.grabbing).toBe(true);
   });
 
-  it('release() from the app gives the keys back to the page', async () => {
+  it('release() from the app gives the keys back and the next eligible state asks again', async () => {
     const { host, calls } = fakeTauri();
     const { bridge, releases } = setup(host);
     bridge.setActive(true);
@@ -120,36 +133,78 @@ describe('rd_set_grab', () => {
     host.rdNative!.release();
     expect(releases()).toBe(1);
     expect(bridge.grabbing).toBe(false);
-    expect(bridge.active).toBe(true);
-    // An answer still on its way when the app released does not count either.
-    bridge.setActive(false);
+    expect(bridge.active).toBe(false);
     bridge.setActive(true);
-    host.rdNative!.release();
-    calls[2]!.resolve();
-    await flush();
-    expect(bridge.grabbing).toBe(false);
-    // The next transition asks again.
-    bridge.setActive(false);
-    bridge.setActive(true);
-    calls[4]!.resolve();
+    expect(sent(calls)).toEqual([true, true]);
+    calls[1]!.resolve();
     await flush();
     expect(bridge.grabbing).toBe(true);
   });
 
-  it('logs a failing invoke once and keeps the DOM keys', async () => {
+  it('does not repeat a refused request until a change or retry()', async () => {
     const { host, calls } = fakeTauri();
     const { bridge, warnings } = setup(host);
     bridge.setActive(true);
-    calls[0]!.reject(new Error('command rd_set_grab not found'));
+    calls[0]!.reject(new Error('the rd window is not the foreground window'));
     await flush();
     expect(bridge.grabbing).toBe(false);
+    expect(sent(calls)).toEqual([true]);
+    bridge.retry();
+    expect(sent(calls)).toEqual([true, true]);
+    calls[1]!.resolve();
+    await flush();
+    expect(bridge.grabbing).toBe(true);
+    bridge.retry(); // nothing to retry while grabbing
     bridge.setActive(false);
-    bridge.setActive(true);
-    calls[1]!.reject(new Error('again'));
     calls[2]!.reject(new Error('again'));
     await flush();
+    bridge.setActive(true);
+    calls[3]!.reject(new Error('again'));
+    await flush();
+    expect(sent(calls)).toEqual([true, true, false, true]);
     expect(warnings).toHaveLength(1);
+  });
+
+  it('treats a request without an answer as refused', async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, calls } = fakeTauri();
+      const { bridge } = setup(host);
+      bridge.setActive(true);
+      vi.advanceTimersByTime(INVOKE_TIMEOUT_MS + 1);
+      expect(bridge.grabbing).toBe(false);
+      // The late answer is ignored; a click asks again.
+      calls[0]!.resolve();
+      await vi.runAllTimersAsync();
+      expect(bridge.grabbing).toBe(false);
+      bridge.retry();
+      expect(sent(calls)).toEqual([true, true]);
+      calls[1]!.resolve();
+      await vi.runAllTimersAsync();
+      expect(bridge.grabbing).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reassert() re-installs the hook (false, then true), at most every few seconds', async () => {
+    const { host, calls } = fakeTauri();
+    const { bridge, warnings } = setup(host);
+    bridge.setActive(true);
+    calls[0]!.resolve();
+    await flush();
+    bridge.reassert(10_000);
     expect(bridge.grabbing).toBe(false);
+    expect(sent(calls)).toEqual([true, false]);
+    calls[1]!.resolve();
+    await flush();
+    expect(sent(calls)).toEqual([true, false, true]);
+    calls[2]!.resolve();
+    await flush();
+    expect(bridge.grabbing).toBe(true);
+    bridge.reassert(10_000 + REASSERT_INTERVAL_MS - 1);
+    expect(sent(calls)).toHaveLength(3);
+    expect(warnings).toHaveLength(1);
   });
 
   it('survives an invoke that throws or returns a non-promise', async () => {

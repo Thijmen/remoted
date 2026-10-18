@@ -553,8 +553,9 @@ export class ViewerApp {
         return;
       }
       await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
-      // Keyboard Lock (fullscreen only) lets Esc, Win, Alt+Tab etc. reach the host.
-      await keyboardLock()?.lock();
+      // Keyboard Lock (fullscreen only) lets Esc, Win, Alt+Tab etc. reach the host. Not in the desktop app: it
+      // grabs the keyboard itself, and Chromium's own hook would get in its way.
+      if (!window.__TAURI_INTERNALS__) await keyboardLock()?.lock();
     } catch {
       // Fullscreen refused (no user activation) or Keyboard Lock unsupported.
     }

@@ -24,16 +24,18 @@ const MAIN: &str = "main";
 
 /// Page -> app: does a session have the keyboard? (bridge contract v1). For `active: true`
 /// it resolves only once keys come through `rdNative.key`; an error means they do not.
+/// `seq` (optional, increasing per page) orders the calls, which Tauri runs concurrently.
 #[tauri::command]
 async fn rd_set_grab(
     active: bool,
+    seq: Option<u64>,
     webview: tauri::Webview,
     grab: tauri::State<'_, grab::Grab>,
 ) -> Result<(), String> {
     if webview.label() != MAIN {
         return Err("not the main window".into());
     }
-    grab.set_active(active).await
+    grab.set_active(active, seq).await
 }
 
 fn main() {

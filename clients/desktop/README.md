@@ -191,9 +191,11 @@ the generated `android/`, `ios/`, `Square*`, `StoreLogo.png` and `64x64.png`.
   fullscreen. The Ctrl+Alt+Shift+F chord during a grab arrives as forwarded keys without a
   user gesture, so WebView2 may refuse `requestFullscreen` (untested on Windows). Maximize
   the window, or use the viewer's controls, instead.
-- Windows silently drops a low-level hook that is too slow (`LowLevelHooksTimeout`); the hook
-  only does a channel send, but if keys ever start going to Windows again mid-session, click
-  outside the window and back in.
+- Windows silently drops a low-level hook that is too slow (`LowLevelHooksTimeout`), and some
+  security or input software (key remappers, software KVMs, anti-keyloggers) can bypass or block
+  it. Typing keeps working then (the page handles the keys that reach it, and asks the app to
+  install a fresh hook), but Alt+Tab and the Windows key act locally. The log line at the end of
+  each grab shows how many keys the hook forwarded and how many passed it.
 - With Num Lock on and **Right** Shift held, the fake Right Shift around the navigation keys may
   not be told apart from the real one.
 - Unsigned (see SmartScreen above); on macOS ad-hoc signed, not notarized (see Open Anyway

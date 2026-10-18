@@ -94,10 +94,15 @@ impl HookThread {
         })
     }
 
-    /// Resolves once the hook is installed (`true`) or removed (`false`).
-    pub async fn set_page_active(&self, active: bool) -> Result<(), String> {
+    /// Queues a grab change for the hook thread (in call order); [`HookThread::wait`] gives the
+    /// answer: the hook is installed (`true`) or removed (`false`).
+    pub fn request(&self, active: bool) -> Result<Receiver<Result<(), String>>, String> {
         let (reply, answer) = mpsc::sync_channel(1);
         self.send(Command::SetGrab { active, reply })?;
+        Ok(answer)
+    }
+
+    pub async fn wait(answer: Receiver<Result<(), String>>) -> Result<(), String> {
         tauri::async_runtime::spawn_blocking(move || answer.recv_timeout(Duration::from_secs(2)))
             .await
             .map_err(|e| e.to_string())?
@@ -142,6 +147,32 @@ struct HookState {
     /// release pass through, or Windows would keep them stuck down after the grab.
     preheld: [bool; 256],
     events: Sender<Event>,
+    /// Debug builds, `RD_DESKTOP_GRAB_INJECTED=1`: grab injected keys too (for tests driving
+    /// the app with `SendInput`).
+    grab_injected: bool,
+    /// For the log line when the grab ends (counts only, never which keys).
+    counts: Counts,
+}
+
+/// What the hook did with the key events of one grab.
+#[derive(Clone, Copy, Debug, Default)]
+struct Counts {
+    /// Swallowed and forwarded to the page.
+    forwarded: u32,
+    /// Passed to Windows (and so to the page as DOM keys): injected by another program, while
+    /// the window was not in front, held from before the grab, or without a DOM code.
+    injected: u32,
+    background: u32,
+    preheld: u32,
+    no_code: u32,
+}
+
+/// Debug builds only, read once.
+fn grab_injected() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        cfg!(debug_assertions) && std::env::var_os("RD_DESKTOP_GRAB_INJECTED").is_some()
+    })
 }
 
 thread_local! {
@@ -273,12 +304,15 @@ impl Controller {
             // SAFETY: plain FFI call. High bit set = down.
             *held = unsafe { GetAsyncKeyState(vk as i32) } < 0;
         }
+        let grab_injected = grab_injected();
         HOOK.with_borrow_mut(|h| {
             *h = Some(HookState {
                 hwnd: self.hwnd,
                 down: [false; keys::SLOTS],
                 preheld,
                 events: self.events.clone(),
+                grab_injected,
+                counts: Counts::default(),
             })
         });
         // SAFETY: the hook procedure lives in this executable; LL hooks run on this thread.
@@ -291,7 +325,11 @@ impl Controller {
         match installed {
             Ok(h) => {
                 self.hook = Some(h);
-                log::debug!("keyboard grab on");
+                if grab_injected {
+                    log::info!("keyboard grab on (injected keys too)");
+                } else {
+                    log::info!("keyboard grab on");
+                }
                 Ok(())
             }
             Err(e) => {
@@ -311,8 +349,23 @@ impl Controller {
         if let Err(e) = unsafe { UnhookWindowsHookEx(h) } {
             log::warn!("keyboard grab: UnhookWindowsHookEx failed: {e}");
         }
-        HOOK.with_borrow_mut(|h| *h = None);
-        log::debug!("keyboard grab off ({why:?})");
+        let c = HOOK
+            .with_borrow_mut(|h| h.take().map(|state| state.counts))
+            .unwrap_or_default();
+        log::info!(
+            "keyboard grab off ({why:?}): {} key events forwarded; passed to Windows: {} injected, \
+             {} while not in front, {} held from before, {} without a key code",
+            c.forwarded,
+            c.injected,
+            c.background,
+            c.preheld,
+            c.no_code
+        );
+        if c.forwarded == 0 && c.injected + c.background + c.preheld + c.no_code > 0 {
+            log::warn!(
+                "keyboard grab: the hook forwarded no keys; other software may inject or intercept them"
+            );
+        }
         if why != Why::Page {
             let _ = self.events.send(Event::Release);
         }
@@ -356,14 +409,20 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
 /// Decide about one key event; `true` swallows it. Must stay fast and must not panic.
 fn swallow(kb: &KBDLLHOOKSTRUCT) -> bool {
-    // Synthesized input (SendInput from any app) passes through untouched.
-    if kb.flags.contains(LLKHF_INJECTED) {
-        return false;
-    }
     HOOK.try_with(|cell| {
         cell.try_borrow_mut()
             .ok()
-            .and_then(|mut guard| guard.as_mut().map(|state| state.on_key(kb)))
+            .and_then(|mut guard| {
+                guard.as_mut().map(|state| {
+                    // Synthesized input (SendInput from any app) passes through untouched; the
+                    // page handles what reaches it as DOM keys.
+                    if kb.flags.contains(LLKHF_INJECTED) && !state.grab_injected {
+                        state.counts.injected += 1;
+                        return false;
+                    }
+                    state.on_key(kb)
+                })
+            })
             .unwrap_or(false)
     })
     .unwrap_or(false)
@@ -374,6 +433,7 @@ impl HookState {
         // The hook comes off when the window loses the foreground, but that notification is
         // asynchronous.
         if !is_foreground(self.hwnd) {
+            self.counts.background += 1;
             return false;
         }
         let up = kb.flags.contains(LLKHF_UP);
@@ -387,12 +447,18 @@ impl HookState {
                 *held = false;
                 self.send(sc, false, false);
             }
+            self.counts.preheld += 1;
             return false;
         }
         // Not a physical key of its own (fake shift, AltGr's fake LCtrl): swallow quietly.
         let Some(sc) = sc else {
             return true;
         };
+        // A key the page has no code for (some OEM keys): leave it to Windows rather than lose it.
+        if keys::code(sc).is_none() {
+            self.counts.no_code += 1;
+            return false;
+        }
         let Some(down) = self.down.get_mut(keys::slot(sc)) else {
             return true;
         };
@@ -407,8 +473,9 @@ impl HookState {
         }
     }
 
-    fn send(&self, sc: Option<u16>, down: bool, repeat: bool) {
+    fn send(&mut self, sc: Option<u16>, down: bool, repeat: bool) {
         if let Some(code) = sc.and_then(keys::code) {
+            self.counts.forwarded += 1;
             let _ = self.events.send(Event::Key { code, down, repeat });
         }
     }

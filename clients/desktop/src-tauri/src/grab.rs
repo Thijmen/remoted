@@ -60,10 +60,49 @@ fn forward(window: WebviewWindow, rx: Receiver<Event>) {
     }
 }
 
+/// Applies `rd_set_grab` calls in the page's order. Tauri runs each call as its own task, so a
+/// quick `true`, `false`, `true` from the page can otherwise reach the hook in any order and leave
+/// it off while the page believes it is on.
+#[derive(Default)]
+pub struct Order {
+    last: Mutex<u64>,
+}
+
+impl Order {
+    /// Runs `apply` unless a newer call was already applied; holds the lock meanwhile, so calls
+    /// are applied (on Windows: queued to the hook thread) in sequence order. Calls without a
+    /// number (older pages, the selftest) are always applied. A repeated number is applied
+    /// again: that is the latest state, and applying it twice is harmless.
+    pub fn admit<T>(
+        &self,
+        seq: Option<u64>,
+        apply: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(seq) = seq {
+            if seq < *last {
+                return Err(format!(
+                    "superseded (call {seq}, already applied {})",
+                    *last
+                ));
+            }
+            *last = seq;
+        }
+        apply()
+    }
+
+    /// A new page numbers its calls from the start again.
+    pub fn reset(&self) {
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+    }
+}
+
 #[derive(Default)]
 pub struct Grab {
     /// Last value the page sent (only to log transitions, not every repeat).
     last: Mutex<Option<bool>>,
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+    order: std::sync::Arc<Order>,
     hook: OnceLock<Platform>,
 }
 
@@ -86,7 +125,7 @@ impl Grab {
 
     /// The page's `rd_set_grab({ active })`. `Ok` for `true` means the keys now come through
     /// `rdNative.key`; an error means they do not (the page keeps its DOM listeners).
-    pub async fn set_active(&self, active: bool) -> Result<(), String> {
+    pub async fn set_active(&self, active: bool, seq: Option<u64>) -> Result<(), String> {
         {
             let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
             if *last != Some(active) {
@@ -98,12 +137,23 @@ impl Grab {
             }
             *last = Some(active);
         }
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(windows)]
         let result = match self.hook.get() {
-            Some(hook) => hook.set_page_active(active).await,
+            Some(hook) => match self.order.admit(seq, || hook.request(active)) {
+                Ok(answer) => crate::grab_windows::HookThread::wait(answer).await,
+                Err(e) => Err(e),
+            },
             None if active => Err("keyboard grab unavailable".to_string()),
             None => Ok(()),
         };
+        #[cfg(target_os = "macos")]
+        let result = match self.hook.get() {
+            Some(hook) => hook.set_page_active(active, seq, self.order.clone()).await,
+            None if active => Err("keyboard grab unavailable".to_string()),
+            None => Ok(()),
+        };
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let _ = seq;
         #[cfg(not(any(windows, target_os = "macos")))]
         let result = if active {
             log::debug!("keyboard grab is only implemented on Windows and macOS; refusing");
@@ -125,6 +175,7 @@ impl Grab {
     /// `active: false` may never arrive).
     pub fn page_changed(&self) {
         self.forget_last();
+        self.order.reset();
         #[cfg(any(windows, target_os = "macos"))]
         if let Some(hook) = self.hook.get() {
             hook.navigation();

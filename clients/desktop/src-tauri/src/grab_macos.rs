@@ -277,16 +277,24 @@ impl TapGrab {
         })
     }
 
-    /// Resolves once the tap is installed (`true`) or removed (`false`).
-    pub async fn set_page_active(&self, active: bool) -> Result<(), String> {
+    /// Resolves once the tap is installed (`true`) or removed (`false`). Calls are applied in
+    /// `seq` order (see [`crate::grab::Order`]).
+    pub async fn set_page_active(
+        &self,
+        active: bool,
+        seq: Option<u64>,
+        order: std::sync::Arc<crate::grab::Order>,
+    ) -> Result<(), String> {
         let inner = self.inner.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            if active {
-                inner.install()
-            } else {
-                inner.remove(Why::Page);
-                Ok(())
-            }
+            order.admit(seq, || {
+                if active {
+                    inner.install()
+                } else {
+                    inner.remove(Why::Page);
+                    Ok(())
+                }
+            })
         })
         .await
         .map_err(|e| e.to_string())?
