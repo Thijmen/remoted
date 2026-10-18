@@ -36,6 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PCWSTR;
 
+use crate::grab::Event;
 use crate::keys;
 
 /// Posted to the hook thread after each [`Command`] (wakes its message loop).
@@ -53,16 +54,6 @@ enum Command {
     Navigation,
     /// The window is closing: remove the hook, end the thread.
     Stop,
-}
-
-/// Hook thread -> forwarder thread.
-enum Event {
-    Key {
-        code: &'static str,
-        down: bool,
-        repeat: bool,
-    },
-    Release,
 }
 
 /// Why the hook comes off.
@@ -87,12 +78,7 @@ impl HookThread {
             .hwnd()
             .map_err(|e| format!("no window handle: {e}"))?
             .0 as isize;
-        let (events_tx, events_rx) = mpsc::channel();
-        let target = window.clone();
-        std::thread::Builder::new()
-            .name("rd-kbd-forward".into())
-            .spawn(move || forward(target, events_rx))
-            .map_err(|e| e.to_string())?;
+        let events_tx = crate::grab::spawn_forwarder(window)?;
         let (commands, commands_rx) = mpsc::channel();
         let (id_tx, id_rx) = mpsc::sync_channel(1);
         std::thread::Builder::new()
@@ -136,25 +122,6 @@ impl HookThread {
         // SAFETY: plain FFI call; a thread that has exited only makes it fail.
         unsafe { PostThreadMessageW(self.thread_id, WM_RD_COMMAND, WPARAM(0), LPARAM(0)) }
             .map_err(|_| gone())
-    }
-}
-
-/// Runs the page calls on the webview, in order. Never logs the script (it names keys).
-fn forward(window: WebviewWindow, rx: Receiver<Event>) {
-    for event in rx {
-        let js = match event {
-            Event::Key { code, down, repeat } => {
-                // Codes come from the static key table; JSON-escape them anyway.
-                let Ok(code) = serde_json::to_string(code) else {
-                    continue;
-                };
-                format!("window.rdNative&&window.rdNative.key({code},{down},{repeat})")
-            }
-            Event::Release => "window.rdNative&&window.rdNative.release()".to_string(),
-        };
-        if let Err(e) = window.eval(js) {
-            log::warn!("keyboard grab: cannot reach the page: {e}");
-        }
     }
 }
 

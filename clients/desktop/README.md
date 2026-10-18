@@ -1,17 +1,24 @@
 # rd Desktop
 
-The normal rd viewer (`https://rd.example.com`) in its own window, for Windows. While a
-session has the keyboard it also gets the shortcuts a browser tab never sees: Alt+Tab, the
-Windows key, Alt+Esc, Ctrl+Esc, Alt+F4, Caps Lock, … all go to the remote machine.
+The normal rd viewer (`https://rd.example.com`) in its own window, for Windows and
+macOS. While a session has the keyboard it also gets the shortcuts a browser tab never sees:
+
+- Windows: Alt+Tab, the Windows key, Alt+Esc, Ctrl+Esc, Alt+F4, Caps Lock, …
+- macOS: Cmd+Tab, Cmd+Space, Cmd+Q, Cmd+H, Ctrl+arrows (Spaces), Mission Control, …
+
+all go to the remote machine.
 
 Everything else (Authentik login, portal, video, settings) is the web viewer, loaded from the
 gateway, so the app needs no update when the viewer changes. Design and the page ⇄ app bridge:
 [docs/desktop-client.md](../../docs/desktop-client.md).
 
-## Install (Windows 10/11)
+## Install
 
 Download from the [GitHub Releases](https://github.com/Thijmen/remoted/releases) (tags
-`desktop-v*`), or from the artifacts of a run of the **Desktop** workflow:
+`desktop-v*`; the repository is private, so sign in to GitHub first), or from the artifacts of
+a run of the **Desktop** workflow.
+
+### Windows 10/11
 
 | File | |
 |---|---|
@@ -25,6 +32,21 @@ programs outright; the app cannot work around that.)
 The app uses the WebView2 runtime that ships with Windows 10/11 (the installer fetches it if it
 is missing).
 
+### macOS 12+ (Apple silicon and Intel)
+
+`rd-desktop-<version>-macos-universal.dmg`: open it and drag **rd Desktop** to Applications.
+
+- The app is not signed by an Apple developer account, so the first start is blocked ("Apple
+  could not verify…"): click **Done**, then System Settings → Privacy & Security → scroll down →
+  **Open Anyway** next to rd Desktop.
+- The first time a session takes the keyboard, macOS asks to let rd Desktop "control this
+  computer using accessibility features": **Open System Settings** → switch on **rd Desktop**
+  under Accessibility. Click outside the rd window and back in (or reconnect) to start the grab.
+  Until then the app works like a browser tab (Cmd+Tab stays on this Mac).
+- After installing a **new version**, macOS no longer matches the old permission (each build
+  has its own ad-hoc signature): in Settings → Accessibility select rd Desktop, remove it with
+  **−**, and allow it again when asked.
+
 ## Use
 
 Start **rd Desktop**, sign in with Authentik in the window, pick a machine and connect. When you
@@ -32,14 +54,24 @@ click into the remote screen, the keyboard belongs to the remote machine, shortc
 To get out, click outside the window (or a viewer control such as the settings menu): the grab
 ends at once, and keys work locally again.
 
-- Ctrl+Alt+Del and Win+L always stay with Windows (it reserves them).
-- Media and volume keys also go to the remote while the grab is on.
+- Windows: Ctrl+Alt+Del and Win+L always stay with Windows (it reserves them). Media and volume
+  keys also go to the remote while the grab is on.
+- macOS: **Ctrl+Cmd+Q** (lock screen) and **Cmd+Option+Esc** (Force Quit) always stay on this
+  Mac, so you can never lock the remote Mac by accident or get stuck. Media, volume and
+  brightness keys stay local too. Caps Lock is this Mac's: the remote lock follows it.
+- Modifier mapping (settings menu): from Windows the default is "Windows keyboard → Mac" (Ctrl
+  acts as Cmd, Alt+Tab as Cmd+Tab); from a Mac it is passthrough (Cmd is Cmd).
 - Links to other sites open in your normal browser. Only the gateway and
   `*.example.com` (Authentik) load inside the window.
 
-Data lives in `%LOCALAPPDATA%\dev.thijmen.rd.desktop` (the WebView2 profile with the login
-cookies, and `logs\rd-desktop.log`). Delete that folder to sign out completely. Keys are never
-logged.
+Data (the web profile with the login cookies) and the log `rd-desktop.log`:
+
+- Windows: `%LOCALAPPDATA%\dev.thijmen.rd.desktop` (log in `logs\`).
+- macOS: `~/Library/WebKit/dev.thijmen.rd.desktop` and
+  `~/Library/Caches/dev.thijmen.rd.desktop`; log in `~/Library/Logs/dev.thijmen.rd.desktop/`.
+
+Delete those to sign out completely. Keys are never logged; each grab logs only how many key
+events it forwarded.
 
 ## Options
 
@@ -50,7 +82,7 @@ logged.
 
 ## Local testing
 
-Against a dev gateway and the synthetic agent (works on macOS too, as a plain wrapper):
+Against a dev gateway and the synthetic agent:
 
 ```sh
 (cd viewer && bun run build) && cargo build --release -p rd-gateway -p rd-agent
@@ -67,6 +99,19 @@ Debug builds log every grab change at `info`. `RD_DESKTOP_SELFTEST=1 cargo run -
 also makes the loaded page call `rd_set_grab(true)`/`(false)` itself and logs the outcome
 (and whether `window.rdNative` exists and which IPC transport Tauri used).
 
+On macOS the grab needs the Accessibility permission for the app bundle. Sign local builds
+with a stable identity so one grant survives rebuilds (ad-hoc signatures change every build),
+and start the bundle, not the bare binary (that would be attributed to your terminal):
+
+```sh
+APPLE_SIGNING_IDENTITY="RD Local Code Signing" bun run tauri build --debug --bundles app
+open -n "src-tauri/target/debug/bundle/macos/rd Desktop.app" --env RD_DESKTOP_SELFTEST=1 \
+  --args --url http://127.0.0.1:18580/m/mbp
+```
+
+`RD_DESKTOP_GRAB_INJECTED=1` (debug builds) also grabs synthesized keys, which the grab
+normally lets through, e.g. to drive it with keys posted by an agent on the same Mac.
+
 ## Build
 
 The Tauri CLI version is pinned in `package.json` (`bun.lock`); the Rust crate has its own
@@ -76,21 +121,22 @@ CI need no WebView dependencies.
 ```sh
 cd clients/desktop
 bun install --frozen-lockfile
-bun run tauri build --bundles nsis   # Windows: src-tauri/target/release/rd-desktop.exe + bundle/nsis/*-setup.exe
-bun run tauri build --bundles app    # macOS: src-tauri/target/release/bundle/macos/rd Desktop.app
+bun run tauri build --bundles nsis      # Windows: src-tauri/target/release/rd-desktop.exe + bundle/nsis/*-setup.exe
+bun run tauri build --bundles app,dmg  # macOS: src-tauri/target/release/bundle/{macos,dmg}/
 cd src-tauri && cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-CI (`.github/workflows/desktop.yml`) builds on `windows-latest` for pushes to `main` that touch
-`clients/desktop/**` or `crates/rd-proto/**`, and on demand. To release: bump `version` in
-`src-tauri/Cargo.toml`, commit, then
+CI (`.github/workflows/desktop.yml`) builds on `windows-latest` and `macos-15` (a universal
+arm64 + x86_64 app, ad-hoc signed) for pushes to `main` that touch `clients/desktop/**` or
+`crates/rd-proto/**`, and on demand. To release: bump `version` in `src-tauri/Cargo.toml`,
+commit, then
 
 ```sh
-git tag desktop-v0.1.0 && git push origin desktop-v0.1.0
+git tag desktop-v0.2.0 && git push origin desktop-v0.2.0
 ```
 
-The workflow checks that the tag matches the version and publishes both exes (plus
-`SHA256SUMS.txt`) as a GitHub Release.
+The workflow checks that the tag matches the version and publishes both exes, the .dmg and
+`SHA256SUMS.txt` as a GitHub Release.
 
 Icons: `icon.svg` is the source; `bun run tauri icon icon.svg -o src-tauri/icons`, then delete
 the generated `android/`, `ios/`, `Square*`, `StoreLogo.png` and `64x64.png`.
@@ -113,6 +159,20 @@ the generated `android/`, `ios/`, `Square*`, `StoreLogo.png` and `64x64.png`.
   out), which calls `window.rdNative && window.rdNative.key(code, down, repeat)` on the
   webview. Keys already held when the hook went on pass through until released, so Windows
   never keeps them stuck.
+- `src/grab_macos.rs`: per grab, a thread with its own run loop owning a `CGEventTap` at the
+  HID level (session level if that is refused), placed first. It needs the Accessibility
+  permission: without it the grab is refused and macOS's prompt is shown once per launch. It
+  is installed when the page asks while the window is the key window, and comes off when the
+  page says so, the window stops being the key window, a new page loads, the window closes,
+  or macOS disables the tap (then the page gets `rdNative.release()`). Keys from other
+  processes (`CGEventPost`: an agent on the same Mac, remapping tools) pass through, so an
+  agent here cannot feed its own keys back. Refused while Secure Keyboard Entry is on (macOS
+  hides keys from every tap then).
+- `src/keys_mac.rs`: virtual keycode → DOM code via `rd_proto::keymap::by_mac_keycode`;
+  modifier presses from `FlagsChanged` and the device-dependent side bits; keys held before the
+  grab; Caps Lock passes through (macOS toggles it before any tap); Ctrl+Cmd+Q and
+  Cmd+Option+Esc stay local (Q matched by character, so it works on any layout). Unit tested
+  on every platform.
 - `src/keys.rs`: scan code (+`0xE000` for `LLKHF_EXTENDED`) → DOM code via
   `rd_proto::keymap::by_win_scancode`, with the quirks: Right Shift is reported extended,
   NumLock (`E0 45`) vs Pause (`45`), Break (`E0 46`) and SysRq (`54`) map to Pause/PrintScreen,
@@ -121,8 +181,10 @@ the generated `android/`, `ios/`, `Square*`, `StoreLogo.png` and `64x64.png`.
 
 ## Limits
 
-- Windows only: on macOS (and Linux) the app is a plain wrapper and refuses `rd_set_grab`
-  (`keyboard grab not supported on this platform`), so the page keeps using DOM keys.
+- Linux: the app is a plain wrapper and refuses `rd_set_grab` (`keyboard grab not supported on
+  this platform`), so the page keeps using DOM keys.
+- macOS: Touch ID / the lock key and the power button act before any tap and stay local. Keys
+  arrive through the tap only while no app has Secure Keyboard Entry on.
 - On macOS, WKWebView also asks the navigation policy about iframes: an iframe from another
   site would be opened in the browser instead. The viewer has none.
 - Fullscreen: when the page enters fullscreen (e.g. from a click), Tauri makes the window
@@ -134,4 +196,5 @@ the generated `android/`, `ios/`, `Square*`, `StoreLogo.png` and `64x64.png`.
   outside the window and back in.
 - With Num Lock on and **Right** Shift held, the fake Right Shift around the navigation keys may
   not be told apart from the real one.
-- Unsigned (see SmartScreen above).
+- Unsigned (see SmartScreen above); on macOS ad-hoc signed, not notarized (see Open Anyway
+  above), so the Accessibility grant has to be renewed after each update.

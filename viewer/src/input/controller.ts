@@ -389,8 +389,17 @@ export class InputController {
 
   private onKey(e: KeyboardEvent, down: boolean): void {
     this.localCaps = e.getModifierState('CapsLock');
+    if (!this.enabled) return;
     // While the desktop app grabs the keyboard its hook delivers every key (rdNative.key): never send twice.
-    if (!this.enabled || this.bridge.grabbing) return;
+    if (this.bridge.grabbing) {
+      // Except Caps Lock on macOS: the system toggles the lock before any hook sees the key, so the app lets it
+      // through and the remote lock follows the local one.
+      if (e.code === 'CapsLock') {
+        this.keys.syncCaps(this.native.caps(this.localCaps));
+        e.preventDefault();
+      }
+      return;
+    }
     if (this.keys.handle(e, down, this.forwardsKeysFrom(e.target)) === 'consume') {
       e.preventDefault();
       e.stopPropagation();

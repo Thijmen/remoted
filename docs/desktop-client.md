@@ -2,16 +2,18 @@
 
 A small Tauri app that opens the normal viewer (`https://rd.example.com`) in its own
 window. It exists for one reason: a browser tab cannot see the shortcuts the operating system
-keeps for itself (Alt+Tab, the Windows key, Alt+Esc, Ctrl+Esc, …) unless it is fullscreen with
-Keyboard Lock. The desktop app grabs them with a low-level keyboard hook while you are in a
-session and hands them to the page, which sends them to the remote machine like any other key.
+keeps for itself (Windows: Alt+Tab, the Windows key, Alt+Esc, Ctrl+Esc, …; macOS: Cmd+Tab,
+Cmd+Space, Ctrl+arrows, …) unless it is fullscreen with Keyboard Lock (Chrome and Edge only;
+macOS never passes Cmd+Tab to a page). The desktop app grabs them while you are in a session
+(Windows: a low-level keyboard hook; macOS: an event tap) and hands them to the page, which
+sends them to the remote machine like any other key.
 
 Everything else — login (Authentik), the portal, video, input, settings — is the same web
 viewer, loaded from the gateway. The app has no copy of the viewer and needs no update when the
 viewer changes.
 
-Target: Windows 10/11 (WebView2, preinstalled). Per-user, no admin rights. A macOS build works
-as a plain wrapper (no keyboard grab yet).
+Targets: Windows 10/11 (WebView2, preinstalled; per-user, no admin rights) and macOS 12+
+(WKWebView; universal app; the grab needs the Accessibility permission).
 
 The app: [clients/desktop](../clients/desktop/README.md) (install, options, build, release).
 
@@ -37,8 +39,8 @@ window.__TAURI_INTERNALS__.invoke('rd_set_grab', { active: true | false })
 
 ### App → page: keys
 
-While the grab is active **and** the app window is the foreground window, the app's low-level
-keyboard hook swallows every key (so Windows does not act on it) and forwards it with
+While the grab is active **and** the app window is the foreground (macOS: key) window, the app
+swallows every key (so the OS does not act on it) and forwards it with
 
 ```js
 window.rdNative.key(code, down, repeat)
@@ -51,7 +53,10 @@ window.rdNative.key(code, down, repeat)
   key the hook already saw down).
 - The page treats these exactly like DOM keyboard events (modifier mapping, Caps Lock sync,
   chords such as Ctrl+Alt+Shift+D), and ignores real DOM key events while the grab is active (so
-  nothing is sent twice).
+  nothing is sent twice), except `CapsLock`: macOS toggles the lock before any tap sees the key,
+  so the macOS app lets Caps Lock through and the page syncs the remote lock from that DOM
+  event. (The Windows hook swallows Caps Lock and reports it through `rdNative.key`; the local
+  lock does not change during a grab there.)
 
 ```js
 window.rdNative.release()
@@ -65,21 +70,25 @@ app calls it with `eval` on the webview, which works whatever the page's CSP is.
 
 ### What can never be grabbed
 
-Ctrl+Alt+Del and Win+L (Windows reserves them). A mouse click outside the window also ends the
-grab, so you can never get stuck.
+- Windows: Ctrl+Alt+Del and Win+L (Windows reserves them).
+- macOS: Ctrl+Cmd+Q (lock screen) and Cmd+Option+Esc (Force Quit) are let through on purpose;
+  Touch ID, the power button and media/brightness keys are not key events.
+
+A mouse click outside the window also ends the grab, so you can never get stuck.
 
 ## Security notes
 
 - The app only loads the configured gateway origin; navigation elsewhere opens the system
   browser. The remote capability that allows `rd_set_grab` is limited to that origin.
-- The hook is installed only while the grab is active and the window is foreground; it never
-  logs keys.
+- The hook/tap is installed only while the grab is active and the window is foreground; it
+  never logs keys (only how many it forwarded).
 - The gateway CSP allows the Tauri IPC endpoints (`ipc:` and `http://ipc.localhost`) in
   `connect-src`; normal browsers have no such endpoints.
 
 ## Implementation notes (rd Desktop)
 
-How the app behaves within the contract above:
+How the app behaves within the contract above (Windows unless noted; the macOS differences
+follow):
 
 - `rd_set_grab({ active: true })` resolves only once the hook is installed. It is rejected when
   the window is not the foreground window, when the hook cannot be installed, and always on
@@ -95,3 +104,19 @@ How the app behaves within the contract above:
   only. Fake shifts (`E0 2A` / `E0 36`) are dropped too.
 - Calls are `window.rdNative && window.rdNative.key(...)` (guarded; `rdNative` exists only on
   session pages), one `eval` per event, in order.
+
+macOS:
+
+- `rd_set_grab({ active: true })` is also rejected without the Accessibility permission (macOS's
+  prompt is shown once per launch), while Secure Keyboard Entry is on, and when macOS refuses
+  the tap. The tap sits at the HID level, falling back to the session level.
+- `release()` also follows the window losing key status and macOS disabling the tap (timeout or
+  user input).
+- Keys posted by other processes (`kCGEventSourceUnixProcessID` ≠ 0) pass through: an rd agent
+  on the same Mac, remapping tools. Hardware keys, including Karabiner's virtual keyboard, are
+  grabbed.
+- Caps Lock passes through (see above). Ctrl+Cmd+Q and Cmd+Option+Esc pass through and are not
+  forwarded; Q is matched by the character it types, so this holds on any layout.
+- Modifiers come from `FlagsChanged` events and the device-dependent flag bits (left/right).
+  Keys already down when the grab starts pass through until released; their release is
+  forwarded.

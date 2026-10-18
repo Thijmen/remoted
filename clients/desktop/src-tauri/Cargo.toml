@@ -1,10 +1,10 @@
 [package]
 name = "rd-desktop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.90"
 publish = false
-description = "rd Desktop: the rd web viewer in a window, with a keyboard grab on Windows"
+description = "rd Desktop: the rd web viewer in a window, with a keyboard grab on Windows and macOS"
 
 [build-dependencies]
 tauri-build = { version = "2.7.1", features = [] }

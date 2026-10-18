@@ -1,15 +1,18 @@
-//! rd Desktop: the rd web viewer (loaded from the gateway) in its own window. On Windows it
-//! grabs the keys a browser tab cannot see (Alt+Tab, the Windows key, …) while a session has
-//! the keyboard. Bridge contract: docs/desktop-client.md.
+//! rd Desktop: the rd web viewer (loaded from the gateway) in its own window. It grabs the keys
+//! a browser tab cannot see (Windows: Alt+Tab, the Windows key, …; macOS: Cmd+Tab, Cmd+Space,
+//! …) while a session has the keyboard. Bridge contract: docs/desktop-client.md.
 
 // Release builds are GUI apps on Windows (no console window); tests keep the console.
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
 
 mod config;
 mod grab;
+#[cfg(target_os = "macos")]
+mod grab_macos;
 #[cfg(windows)]
 mod grab_windows;
 mod keys;
+mod keys_mac;
 
 use tauri::ipc::CapabilityBuilder;
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
@@ -130,7 +133,7 @@ fn setup(app: &mut tauri::App, gateway: Url) -> Result<(), Box<dyn std::error::E
     window.on_window_event(move |event| {
         let grab = handle.state::<grab::Grab>();
         match event {
-            WindowEvent::Focused(_) => grab.focus_changed(),
+            WindowEvent::Focused(focused) => grab.focus_changed(*focused),
             WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => grab.shutdown(),
             _ => {}
         }

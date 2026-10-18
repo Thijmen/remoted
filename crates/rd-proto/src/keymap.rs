@@ -63,6 +63,12 @@ pub fn by_win_scancode(scancode: u16) -> Option<&'static KeyEntry> {
     KEYS.iter().find(|k| k.win == Some(scancode))
 }
 
+/// The table row for a macOS virtual keycode (`kVK_*`, a `CGEvent`'s
+/// `kCGKeyboardEventKeycode`).
+pub fn by_mac_keycode(keycode: u16) -> Option<&'static KeyEntry> {
+    KEYS.iter().find(|k| k.mac == Some(keycode))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +86,35 @@ mod tests {
         for k in KEYS.iter().filter(|k| k.win.is_some()) {
             assert_eq!(
                 by_win_scancode(k.win.unwrap()).unwrap().hid,
+                k.hid,
+                "{}",
+                k.code
+            );
+        }
+    }
+
+    #[test]
+    fn mac_keycodes_map_back_to_codes() {
+        let code = |kc| by_mac_keycode(kc).map(|k| k.code);
+        assert_eq!(code(0x00), Some("KeyA")); // kVK_ANSI_A
+        assert_eq!(code(0x30), Some("Tab")); // kVK_Tab
+        assert_eq!(code(0x37), Some("MetaLeft")); // kVK_Command
+        assert_eq!(code(0x36), Some("MetaRight")); // kVK_RightCommand
+        assert_eq!(code(0x3a), Some("AltLeft")); // kVK_Option
+        assert_eq!(code(0x3d), Some("AltRight")); // kVK_RightOption
+        assert_eq!(code(0x3b), Some("ControlLeft")); // kVK_Control
+        assert_eq!(code(0x3e), Some("ControlRight")); // kVK_RightControl
+        assert_eq!(code(0x38), Some("ShiftLeft")); // kVK_Shift
+        assert_eq!(code(0x3c), Some("ShiftRight")); // kVK_RightShift
+        assert_eq!(code(0x39), Some("CapsLock")); // kVK_CapsLock
+        assert_eq!(code(0x31), Some("Space")); // kVK_Space
+        assert_eq!(code(0x7e), Some("ArrowUp")); // kVK_UpArrow
+        assert_eq!(code(0x35), Some("Escape")); // kVK_Escape
+        assert_eq!(code(0x0a), Some("IntlBackslash")); // kVK_ISO_Section
+        // Every keycode in the table is unique.
+        for k in KEYS.iter().filter(|k| k.mac.is_some()) {
+            assert_eq!(
+                by_mac_keycode(k.mac.unwrap()).unwrap().hid,
                 k.hid,
                 "{}",
                 k.code
