@@ -96,21 +96,18 @@ jobs:
         if: ${{ !cancelled() && steps.desktop.outcome == 'success' }}
         run: bun tests/desktop-e2e/run.ts --variant edge
 
-      # The next three reproduce the reported bug on current main (keys typed while the grab is
-      # on never reach the agent); remove continue-on-error once the fix is in.
+      # These three reproduced the bug of rd Desktop 0.2.0 (keys typed while the grab was on never
+      # reached the agent; the race left the hook off while the page relied on it).
       - name: "e2e: grab (hook path, RD_DESKTOP_GRAB_INJECTED=1)"
         if: ${{ !cancelled() && steps.desktop.outcome == 'success' }}
-        continue-on-error: true
         run: bun tests/desktop-e2e/run.ts --variant grab
 
       - name: "e2e: injected (SendInput keys pass the hook, as from KVM/remapping tools)"
         if: ${{ !cancelled() && steps.desktop.outcome == 'success' }}
-        continue-on-error: true
         run: bun tests/desktop-e2e/run.ts --variant injected
 
       - name: "e2e: race (rd_set_grab false/true ordering)"
         if: ${{ !cancelled() && steps.desktop.outcome == 'success' }}
-        continue-on-error: true
         run: bun tests/desktop-e2e/run.ts --variant race
 
       - name: Results
