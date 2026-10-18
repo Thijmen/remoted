@@ -187,10 +187,10 @@ the generated `android/`, `ios/`, `Square*`, `StoreLogo.png` and `64x64.png`.
   arrive through the tap only while no app has Secure Keyboard Entry on.
 - On macOS, WKWebView also asks the navigation policy about iframes: an iframe from another
   site would be opened in the browser instead. The viewer has none.
-- Fullscreen: when the page enters fullscreen (e.g. from a click), Tauri makes the window
-  fullscreen. The Ctrl+Alt+Shift+F chord during a grab arrives as forwarded keys without a
-  user gesture, so WebView2 may refuse `requestFullscreen` (untested on Windows). Maximize
-  the window, or use the viewer's controls, instead.
+- Fullscreen: when the page enters fullscreen (its Fullscreen button), Tauri makes the window
+  fullscreen. During a grab, Ctrl+Alt+Shift+F would reach the page without a user gesture
+  (WebView2 then refuses `requestFullscreen`), so the app handles that chord itself: it toggles
+  the window's fullscreen and does not pass the F to the page.
 - Windows silently drops a low-level hook that is too slow (`LowLevelHooksTimeout`), and some
   security or input software (key remappers, software KVMs, anti-keyloggers) can bypass or block
   it. Typing keeps working then (the page handles the keys that reach it, and asks the app to
