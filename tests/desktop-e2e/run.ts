@@ -52,7 +52,7 @@ const isApp = variant !== 'edge';
 /** Windows set-1 scan codes. */
 const SC = { A: 0x1e, ALT: 0x38, TAB: 0x0f } as const;
 const EXPECT_TYPE = ['d:70004', 'u:70004'];
-const RACE_ROUNDS = 10;
+const RACE_ROUNDS = 20;
 /** windows-to-mac: Option down, Option up, Cmd down, Tab down/up, Cmd up. */
 const EXPECT_ALTTAB = ['d:700e2', 'u:700e2', 'd:700e3', 'd:7002b', 'u:7002b', 'u:700e3'];
 
