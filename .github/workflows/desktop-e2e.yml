@@ -1,0 +1,121 @@
+name: Desktop e2e (Windows keyboard)
+
+# A real end-to-end test of the rd Desktop keyboard grab on a GitHub-hosted Windows runner
+# (tests/desktop-e2e/run.ts): the debug app, a dev-mode rd-gateway and a fake agent, driven with
+# SendInput clicks and scan-code keys; the fake agent records the KEY frames that reach the "Mac".
+# The canary step first checks that the runner's session can take synthetic input at all.
+#
+# Code under test: the pushed commit, or (workflow_dispatch) any `ref`. The harness itself
+# (tests/desktop-e2e) always comes from this workflow's own commit, so it can test another branch.
+on:
+  push:
+    branches: [main, windows-e2e, windows-grab-fix]
+    paths:
+      - "clients/desktop/**"
+      - "viewer/src/input/**"
+      - "viewer/src/ui/viewer-app.ts"
+      - "tests/desktop-e2e/**"
+      - ".github/workflows/desktop-e2e.yml"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Code under test (branch, tag or SHA). Empty: this workflow's commit."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  keyboard:
+    name: Windows keyboard grab
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Harness from this workflow's commit
+        if: inputs.ref != ''
+        run: |
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout "$GITHUB_SHA" -- tests/desktop-e2e
+          echo "code under test: $(git rev-parse HEAD) ($INPUT_REF); harness: $GITHUB_SHA"
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+
+      - name: Canary (interactive desktop, foreground, SendInput, low-level hook)
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/desktop-e2e/win-input.ps1 -Mode canary -Out out/canary
+
+      - name: WebView2 runtime
+        shell: pwsh
+        run: |
+          $k = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          if (Test-Path $k) { "WebView2 $((Get-ItemProperty $k).pv)" } else {
+            'WebView2 runtime missing: installing'
+            Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile "$env:RUNNER_TEMP\wv2.exe"
+            Start-Process "$env:RUNNER_TEMP\wv2.exe" -ArgumentList '/silent', '/install' -Wait
+            if (Test-Path $k) { "WebView2 $((Get-ItemProperty $k).pv)" } else { throw 'WebView2 install failed' }
+          }
+          $edge = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+          "Edge $((Get-Item $edge).VersionInfo.ProductVersion)"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            clients/desktop/src-tauri -> target
+          # The e2e steps may fail (that is the point); keep the build cache anyway.
+          cache-on-failure: true
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Viewer
+        working-directory: viewer
+        run: bun install --frozen-lockfile && bun run build
+
+      - name: Gateway (debug)
+        run: cargo build --locked -p rd-gateway
+
+      - name: rd Desktop (debug)
+        id: desktop
+        working-directory: clients/desktop/src-tauri
+        run: cargo build --locked
+
+      - name: "e2e: edge (control: Edge --app, DOM keys, no app)"
+        if: ${{ !cancelled() && steps.desktop.outcome == 'success' }}
+        run: bun tests/desktop-e2e/run.ts --variant edge
+
+      # The next three reproduce the reported bug on current main (keys typed while the grab is
+      # on never reach the agent); remove continue-on-error once the fix is in.
+      - name: "e2e: grab (hook path, RD_DESKTOP_GRAB_INJECTED=1)"
+        if: ${{ !cancelled() && steps.desktop.outcome == 'success' }}
+        continue-on-error: true
+        run: bun tests/desktop-e2e/run.ts --variant grab
+
+      - name: "e2e: injected (SendInput keys pass the hook, as from KVM/remapping tools)"
+        if: ${{ !cancelled() && steps.desktop.outcome == 'success' }}
+        continue-on-error: true
+        run: bun tests/desktop-e2e/run.ts --variant injected
+
+      - name: "e2e: race (rd_set_grab false/true ordering)"
+        if: ${{ !cancelled() && steps.desktop.outcome == 'success' }}
+        continue-on-error: true
+        run: bun tests/desktop-e2e/run.ts --variant race
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-e2e
+          path: out/
+          if-no-files-found: warn
