@@ -33,6 +33,10 @@ export class FakeAgent {
   sessions = 0;
   viewerUa = '';
   private control: WebSocket | null = null;
+  /** The current session socket (page probe commands go over it). */
+  private session: WebSocket | null = null;
+  private commandId = 0;
+  private readonly waiting = new Map<number, (r: any) => void>();
   private readonly sockets: WebSocket[] = [];
   private readonly timers: ReturnType<typeof setInterval>[] = [];
 
@@ -83,6 +87,7 @@ export class FakeAgent {
     const w = new WebSocket(`${this.gw}/ws/agent/session/${session}`, AUTH as never);
     w.binaryType = 'arraybuffer';
     this.sockets.push(w);
+    this.session = w;
     let pingId = 0;
     w.onopen = () => {
       this.log(`session ${session} open`);
@@ -92,6 +97,13 @@ export class FakeAgent {
     w.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
         const m = JSON.parse(ev.data);
+        if (m.t === 'rd_e2e_report') {
+          // From tests/desktop-e2e/page-probe.js, relayed by the gateway like any text frame.
+          this.log(`probe report ${m.id} (${m.cmd})`);
+          this.waiting.get(m.id)?.(m);
+          this.waiting.delete(m.id);
+          return;
+        }
         this.log(`session <- ${ev.data.slice(0, 400)}`);
         if (m.t === 'hello') {
           this.viewerUa = String(m.viewer?.ua ?? '');
@@ -132,6 +144,24 @@ export class FakeAgent {
       }
     };
     w.onclose = (ev) => this.log(`session ${session} closed ${ev.code} ${ev.reason}`);
+  }
+
+  /** Ask the page probe (page-probe.js) for its state, or to run the focus race first. */
+  command(cmd: 'report' | 'race', args: Record<string, unknown> = {}, timeoutMs = 15_000): Promise<any> {
+    const w = this.session;
+    if (!w || w.readyState !== WebSocket.OPEN) return Promise.reject(new Error('fake agent: no open session'));
+    const id = ++this.commandId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiting.delete(id);
+        reject(new Error(`page probe: no answer to ${cmd} within ${timeoutMs} ms`));
+      }, timeoutMs);
+      this.waiting.set(id, (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
+      w.send(JSON.stringify({ t: 'rd_e2e', cmd, id, ...args }));
+    });
   }
 
   private record(x: InputRecord): void {

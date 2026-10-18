@@ -15,11 +15,15 @@
  *   edge      Edge --app on the same page (no app, DOM keys): the control for the harness itself.
  *   race      As grab, after 5x100 quick focus changes (rd_set_grab false/true pairs).
  *
+ * The page is the normal viewer build plus page-probe.js (records DOM keys, rdNative calls and sent
+ * input frames; reports over the session socket via the fake agent), because rd Desktop's WebView2
+ * has no DevTools port. Edge additionally gets DevTools (console, sent frames).
+ *
  * Needs (built beforehand): target/debug/rd-gateway.exe, viewer/dist,
  * clients/desktop/src-tauri/target/debug/rd-desktop.exe. Writes out/<variant>/ (logs, screenshots,
  * summary.json); exit code 1 when the variant's expectation fails.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Cdp, describeSent } from './cdp';
 import { FakeAgent, type InputRecord, describe } from './fake-agent';
@@ -41,7 +45,6 @@ const EDGE_EXE = process.env.RD_E2E_EDGE ?? 'C:\\Program Files (x86)\\Microsoft\
 const VIEWER = 'http://127.0.0.1:18580';
 const PAGE_URL = `${VIEWER}/m/mbp`;
 const CDP_PORT = 9222;
-const WV2_POLICY = 'HKCU\\Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments';
 /** Browser profiles: kept out of out/ (the uploaded artifact). */
 const PROFILES = resolve(ROOT, 'out-profiles', variant);
 const isApp = variant !== 'edge';
@@ -232,7 +235,7 @@ function appLog(): string {
 function grabLines(): string[] {
   return appLog()
     .split(/\r?\n/)
-    .filter((l) => /rd_set_grab|keyboard grab|gateway overridden|loading http|cannot reach the page|panicked|selftest/.test(l));
+    .filter((l) => /rd_set_grab|keyboard grab|gateway overridden|loading http|cannot reach the page|panicked/.test(l));
 }
 
 async function waitUntil(what: string, timeoutMs: number, f: () => boolean | Promise<boolean>): Promise<void> {
@@ -276,6 +279,31 @@ async function portOpen(url: string): Promise<boolean> {
   }
 }
 
+/** viewer/dist plus page-probe.js, loaded before the viewer's module (see page-probe.js). */
+function instrumentedViewer(): string {
+  const dist = join(PROFILES, 'dist');
+  cpSync(join(ROOT, 'viewer', 'dist'), dist, { recursive: true });
+  cpSync(join(import.meta.dir, 'page-probe.js'), join(dist, 'assets', 'rd-e2e-probe.js'));
+  const page = join(dist, 'viewer.html');
+  const html = readFileSync(page, 'utf8');
+  const patched = html.replace('<script type="module"', '<script src="/assets/rd-e2e-probe.js"></script>\n    <script type="module"');
+  if (patched === html) throw new Error('viewer.html: no module script to put the probe before');
+  writeFileSync(page, patched);
+  return dist;
+}
+
+/** The probe's last layout report from the app log (debug builds log `rd-selftest …` titles). */
+function layoutFromAppLog(): any {
+  const lines = appLog().split(/\r?\n/).filter((l) => l.includes('rd-selftest {'));
+  const last = lines.pop();
+  if (!last) return null;
+  try {
+    return JSON.parse(last.slice(last.indexOf('rd-selftest {') + 'rd-selftest '.length));
+  } catch {
+    return null;
+  }
+}
+
 async function main(): Promise<void> {
   for (const [what, path] of [
     ['gateway', GATEWAY_EXE],
@@ -285,7 +313,8 @@ async function main(): Promise<void> {
     if (!existsSync(path)) throw new Error(`${what} not found: ${path}`);
   }
 
-  step('gateway');
+  step('gateway (serving viewer/dist + page-probe.js)');
+  const dist = instrumentedViewer();
   if (await portOpen(`${VIEWER}/`)) throw new Error('port 18580 is already in use');
   const gw = Bun.spawn(
     [
@@ -298,7 +327,7 @@ async function main(): Promise<void> {
       '--metrics-addr',
       '127.0.0.1:18590',
       '--assets-dir',
-      join(ROOT, 'viewer', 'dist'),
+      dist,
     ],
     { cwd: ROOT, stdout: 'pipe', stderr: 'pipe', windowsHide: true },
   );
@@ -334,17 +363,7 @@ async function main(): Promise<void> {
   await waitUntil(`port ${CDP_PORT} to be free (an earlier variant's browser process?)`, 15_000, async () => !(await portOpen(`http://127.0.0.1:${CDP_PORT}/json/version`)));
   let pid: number;
   if (isApp) {
-    // DevTools for the app's WebView2. The environment variable alone did not reach the browser
-    // process on the runner (wry sets AdditionalBrowserArguments itself), so the per-app registry
-    // policy is set too; the marker switches show which one arrived (see webview2_browser below).
-    const devtools = `--remote-debugging-port=${CDP_PORT} --remote-allow-origins=*`;
-    await exec(['reg', 'add', WV2_POLICY, '/v', 'rd-desktop.exe', '/t', 'REG_SZ', '/d', `${devtools} --rd-e2e-from-registry`, '/f']);
-    cleanups.push(() => exec(['reg', 'delete', WV2_POLICY, '/v', 'rd-desktop.exe', '/f']).then(() => undefined));
-    const env = [
-      'RD_LOG=debug',
-      `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=${devtools} --rd-e2e-from-env`,
-      `WEBVIEW2_USER_DATA_FOLDER=${join(PROFILES, 'wv2')}`,
-    ];
+    const env = ['RD_LOG=debug', `WEBVIEW2_USER_DATA_FOLDER=${join(PROFILES, 'wv2')}`];
     if (variant === 'grab' || variant === 'race') env.push('RD_DESKTOP_GRAB_INJECTED=1');
     summary.app_env = env;
     pid = await win.call<number>('launch', {
@@ -377,24 +396,23 @@ async function main(): Promise<void> {
   });
   log('pid', pid);
 
-  step('attach CDP');
-  const cdp = await Cdp.attach(CDP_PORT, (u) => u.startsWith(PAGE_URL), OUT).catch(async (e) => {
-    if (isApp) summary.webview2_browser = await webviewBrowsers();
-    throw e;
-  });
-  if (isApp) {
-    summary.webview2_browser = await webviewBrowsers();
-    log('WebView2 browser process:', summary.webview2_browser);
+  // Edge only: DevTools for the console and the sent WebSocket frames (a cross-check of the probe).
+  let cdp: Cdp | null = null;
+  if (!isApp) {
+    step('attach CDP (Edge)');
+    cdp = await Cdp.attach(CDP_PORT, (u) => u.startsWith(PAGE_URL), OUT);
+    cleanups.push(() => cdp?.close());
   }
-  cleanups.push(() => cdp.close());
-  log('target:', cdp.target.url);
 
-  step('wait for the connect screen');
-  await cdp.waitFor("(() => { const b = document.querySelector('button.primary.big'); return !!b && !b.disabled; })()", 60_000, 'an enabled Connect button');
+  /** The probe's layout report: app log (title channel) or DevTools. */
+  const layout = async (): Promise<any> => {
+    if (cdp) return cdp.eval('window.__rdE2E ? window.__rdE2E.state() : null').catch(() => null);
+    return layoutFromAppLog();
+  };
 
   step('find and place the window');
   let hwnd = 0;
-  await waitUntil('the top-level window', 30_000, async () => {
+  await waitUntil('the top-level window', 60_000, async () => {
     const ws = await win.call<any[]>('windows', { pid });
     let w = ws.filter((x) => (isApp ? x.title === 'rd' : x.class === 'Chrome_WidgetWin_1' && x.title));
     if (!isApp && w.length === 0) {
@@ -410,41 +428,43 @@ async function main(): Promise<void> {
   });
   log('window:', summary.window);
   await win.call('place', { hwnd, x: 0, y: 0, w: 1000, h: 700 });
-  await sleep(800);
+  if (isApp) summary.webview2_browser = await webviewBrowsers();
 
-  /** Screen point (physical pixels) of an element's centre. */
-  const screenPoint = async (selector: string): Promise<{ x: number; y: number; how: string }> => {
-    const p = await cdp.eval<any>(`(() => {
-      const e = document.querySelector(${JSON.stringify(selector)});
-      if (!e) return null;
-      const r = e.getBoundingClientRect();
-      return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, iw: innerWidth, ih: innerHeight, dpr: devicePixelRatio };
-    })()`);
-    if (!p) throw new Error(`no element ${selector}`);
+  /** Where the page's (0,0) is on screen, given the page's inner size. */
+  const pageOrigin = async (l: any): Promise<{ x: number; y: number; how: string } | null> => {
     const content = await win.call<{ client: Rect; widgets: Array<Rect & { visible: boolean }> }>('content', { hwnd });
-    const want = { w: Math.round(p.iw * p.dpr), h: Math.round(p.ih * p.dpr) };
+    const want = { w: Math.round(l.inner[0] * l.dpr), h: Math.round(l.inner[1] * l.dpr) };
     const widget = content.widgets.find((w) => w.visible && Math.abs(w.w - want.w) <= 4 && Math.abs(w.h - want.h) <= 4);
     const c = content.client;
-    const origin = widget
-      ? { x: widget.x, y: widget.y, how: 'render widget' }
-      : { x: c.x + Math.round((c.w - want.w) / 2), y: c.y + (c.h - want.h), how: 'client area, page bottom-aligned' };
-    summary.geometry = { page: p, content, origin };
-    return { x: Math.round(origin.x + p.cx * p.dpr), y: Math.round(origin.y + p.cy * p.dpr), how: origin.how };
+    summary.geometry = { inner: l.inner, dpr: l.dpr, content };
+    if (widget) return { x: widget.x, y: widget.y, how: 'render widget' };
+    // The page fills the client area's width and sits at its bottom (Edge draws its title bar inside).
+    if (Math.abs(c.w - want.w) <= 4 && c.h >= want.h) return { x: c.x, y: c.y + (c.h - want.h), how: 'client area' };
+    return null; // not laid out for the new window size yet
   };
+  const screenPoint = (o: { x: number; y: number }, r: any, dpr: number) => ({
+    x: Math.round(o.x + (r.x + r.w / 2) * dpr),
+    y: Math.round(o.y + (r.y + r.h / 2) * dpr),
+  });
 
-  const isForeground = async () => {
-    const fg = await win.call<any>('foreground');
-    return { ok: fg.hwnd === hwnd, fg };
-  };
-
-  step('click Connect');
-  const connectAt = await screenPoint('button.primary.big');
-  summary.connect_click = { ...connectAt, window_at: await win.call('at', connectAt) };
+  step('wait for the connect screen (probe layout)');
+  let connectAt: { x: number; y: number } | null = null;
+  await waitUntil('an enabled Connect button laid out for the placed window', 60_000, async () => {
+    const l = await layout();
+    if (!l?.connect || l.connect.disabled || l.connect.hidden) return false;
+    const o = await pageOrigin(l);
+    if (!o) return false;
+    connectAt = screenPoint(o, l.connect, l.dpr);
+    summary.connect_layout = { layout: l, origin: o, at: connectAt };
+    return true;
+  });
+  summary.connect_click = { ...connectAt!, window_at: await win.call('at', connectAt!) };
   log('connect click at', summary.connect_click);
   await win.call('screenshot', { path: join(OUT, '1-connect-screen.png') });
-  await win.call('click', connectAt);
+
+  step('click Connect');
+  await win.call('click', connectAt!);
   await waitUntil('the viewer to stream (fake agent got `start`)', 30_000, () => agent.started).catch(async (e) => {
-    // A click that did not land (foreground lock, wrong point): say what was there, then retry once.
     log('no session yet:', String(e), await win.call('foreground'));
     await win.call('screenshot', { path: join(OUT, '1b-after-connect-click.png') });
     throw e;
@@ -453,30 +473,25 @@ async function main(): Promise<void> {
 
   step('click the video (OS focus into the page)');
   await sleep(500);
-  const canvasAt = await screenPoint('.stage canvas');
+  let st = (await agent.command('report')).state;
+  const origin = await pageOrigin(st);
+  if (!origin || !st.canvas) throw new Error(`no canvas/page origin: ${JSON.stringify({ origin, canvas: st.canvas })}`);
+  const canvasAt = screenPoint(origin, st.canvas, st.dpr);
+  summary.canvas_click = { ...canvasAt, window_at: await win.call('at', canvasAt) };
   await win.call('click', canvasAt);
   await sleep(700);
-  let fg = await isForeground();
+  let fg = await isForeground(win, hwnd);
   if (!fg.ok) {
     log('not foreground after the click:', fg.fg, '— SetForegroundWindow + click again');
     summary.set_foreground = await win.call('setForeground', { hwnd });
     await win.call('click', canvasAt);
     await sleep(700);
-    fg = await isForeground();
+    fg = await isForeground(win, hwnd);
   }
   summary.foreground_after_focus_click = fg.fg;
-  summary.page_before = await cdp.eval(`({
-    hasFocus: document.hasFocus(),
-    active: document.activeElement && (document.activeElement.tagName + '.' + document.activeElement.className),
-    tauri: !!window.__TAURI_INTERNALS__,
-    rdNative: typeof window.rdNative,
-    ua: navigator.userAgent,
-    platform: navigator.userAgentData ? navigator.userAgentData.platform : navigator.platform,
-    storedSettings: localStorage.getItem('rd.settings.mbp'),
-    dpr: devicePixelRatio,
-    inner: [innerWidth, innerHeight],
-  })`);
-  log('foreground ok:', fg.ok, 'page:', summary.page_before);
+  st = (await agent.command('report')).state;
+  summary.page_before = st;
+  log('foreground ok:', fg.ok, 'page:', { hasFocus: st.hasFocus, active: st.active, tauri: st.tauri, rdNative: st.rdNative, platform: st.platform });
   if (!fg.ok) throw new Error(`the window under test is not the foreground window: ${JSON.stringify(fg.fg)}`);
 
   if (isApp) {
@@ -487,41 +502,19 @@ async function main(): Promise<void> {
     await sleep(300); // the page confirms after the IPC reply
   }
 
-  step('install page probes');
-  await cdp.eval(`(() => {
-    window.__dom = [];
-    addEventListener('keydown', (e) => __dom.push('d:' + e.code), true);
-    addEventListener('keyup', (e) => __dom.push('u:' + e.code), true);
-    const o = window.rdNative;
-    window.__nat = [];
-    if (o) window.rdNative = Object.freeze({
-      version: o.version,
-      key(c, d, r) { __nat.push((d ? 'd:' : 'u:') + c + (r ? '(r)' : '')); o.key(c, d, r); },
-      release() { __nat.push('release'); o.release(); },
-    });
-    return true;
-  })()`);
-
   if (variant === 'race') {
-    step('race: 5 x 100 focus changes (rd_set_grab false/true)');
+    step('race: 5 x 100 focus changes (rd_set_grab false/true pairs)');
     const before = grabLines().length;
-    for (let k = 0; k < 5; k++) {
-      await cdp.eval(`(() => {
-        const h = document.querySelector('button.toolbar-handle'), c = document.querySelector('.stage canvas');
-        for (let i = 0; i < 100; i++) { h.focus(); c.focus(); }
-        return document.activeElement === c;
-      })()`);
-      await sleep(150);
-    }
+    const r = await agent.command('race', { rounds: 5, n: 100, pauseMs: 150 }, 60_000);
     await sleep(1500);
     const lines = grabLines().slice(before);
     summary.race = {
+      active_is_canvas: r.activeIsCanvas,
       set_grab_lines: lines.filter((l) => l.includes('rd_set_grab')).length,
       grab_on: lines.filter((l) => l.includes('keyboard grab on')).length,
       grab_off: lines.filter((l) => l.includes('keyboard grab off')).length,
       last_grab_line: lines.filter((l) => /keyboard grab (on|off)/.test(l)).pop() ?? null,
       last_lines: lines.slice(-6),
-      active_is_canvas: await cdp.eval("document.activeElement === document.querySelector('.stage canvas')"),
     };
     log('race:', summary.race);
   }
@@ -530,53 +523,57 @@ async function main(): Promise<void> {
   const frames: Record<string, any> = {};
   summary.frames = frames;
 
-  step('type a (scan code 0x1E)');
-  let fgBefore = await isForeground();
-  let mark = agent.inputs.length;
-  let sentMark = cdp.sentInput.length;
-  await win.call('keys', { seq: [{ sc: SC.A }, { sc: SC.A, up: true }], gapMs: 60 });
-  await sleep(800);
-  frames.type = {
-    foreground_before: fgBefore.ok,
-    agent: keyFrames(agent.inputs.slice(mark)),
-    page_sent: cdp.sentInput.slice(sentMark).map(describeSent),
-    passed_rd_hook: hookEvents(await win.call('hook')),
-    foreground_after: (await isForeground()).ok,
-  };
-  log('type:', frames.type);
-  await win.call('screenshot', { path: join(OUT, '2-after-typing.png') });
-
-  if (variant === 'grab' || variant === 'injected') {
-    step('Alt+Tab (scan codes 0x38, 0x0F)');
-    fgBefore = await isForeground();
-    mark = agent.inputs.length;
-    sentMark = cdp.sentInput.length;
-    await win.call('keys', {
-      seq: [{ sc: SC.ALT }, { sc: SC.TAB }, { sc: SC.TAB, up: true }, { sc: SC.ALT, up: true }],
-      gapMs: 60,
-    });
-    await sleep(1200);
-    const after = await isForeground();
-    frames.alttab = {
+  const phase = async (name: string, seq: Array<Record<string, unknown>>, settleMs: number, screenshot: string) => {
+    step(name);
+    const pre = (await agent.command('report')).state;
+    const fgBefore = await isForeground(win, hwnd);
+    const mark = agent.inputs.length;
+    const cdpMark = cdp?.sentInput.length ?? 0;
+    await win.call('keys', { seq, gapMs: 60 });
+    await sleep(settleMs);
+    const after = await isForeground(win, hwnd);
+    const post = (await agent.command('report').catch((e) => ({ state: { error: String(e) } }))).state;
+    const since = (a: string[] | undefined, b: string[] | undefined) => (b ?? []).slice((a ?? []).length);
+    const r = {
       foreground_before: fgBefore.ok,
       agent: keyFrames(agent.inputs.slice(mark)),
-      page_sent: cdp.sentInput.slice(sentMark).map(describeSent),
+      page_dom: since(pre.dom, post.dom),
+      page_rdnative: since(pre.nat, post.nat),
+      page_sent: since(pre.sent, post.sent).filter((x: string) => !x.startsWith('btn:')),
+      page_sent_cdp: cdp ? cdp.sentInput.slice(cdpMark).map(describeSent) : undefined,
       passed_rd_hook: hookEvents(await win.call('hook')),
       foreground_after: after.ok,
-      foreground_window_after: after.fg,
+      foreground_window_after: after.ok ? undefined : after.fg,
+      page_after: { hasFocus: post.hasFocus, active: post.active },
     };
-    log('alttab:', frames.alttab);
-    await win.call('screenshot', { path: join(OUT, '3-after-alt-tab.png') });
+    log(`${name}:`, r);
+    await win.call('screenshot', { path: join(OUT, screenshot) });
+    return r;
+  };
+
+  frames.type = await phase('type a (scan code 0x1E)', [{ sc: SC.A }, { sc: SC.A, up: true }], 800, '2-after-typing.png');
+  if (variant === 'grab' || variant === 'injected') {
+    frames.alttab = await phase(
+      'Alt+Tab (scan codes 0x38, 0x0F)',
+      [{ sc: SC.ALT }, { sc: SC.TAB }, { sc: SC.TAB, up: true }, { sc: SC.ALT, up: true }],
+      1200,
+      '3-after-alt-tab.png',
+    );
   }
 
   step('collect');
-  summary.page_after = await cdp
-    .eval(`({ dom: window.__dom, nat: window.__nat, hasFocus: document.hasFocus(),
-      active: document.activeElement && document.activeElement.tagName })`)
+  summary.page_after = await agent
+    .command('report')
+    .then((r) => r.state)
     .catch((e) => ({ error: String(e) }));
   summary.agent_all = agent.inputs.map(describe);
   summary.agent_other_frames = agent.otherFrames;
-  summary.page_sockets = cdp.sockets;
+  if (cdp) summary.page_sockets = cdp.sockets;
+}
+
+async function isForeground(win: Win, hwnd: number): Promise<{ ok: boolean; fg: any }> {
+  const fg = await win.call<any>('foreground');
+  return { ok: fg.hwnd === hwnd, fg };
 }
 
 function verdict(): { pass: boolean; problems: string[] } {
@@ -598,21 +595,19 @@ function verdict(): { pass: boolean; problems: string[] } {
 
 function report(v: { pass: boolean; problems: string[] }): void {
   const f = summary.frames ?? {};
-  const pa = summary.page_after ?? {};
-  const lines = [
-    `=== desktop-e2e ${variant}: ${v.pass ? 'PASS' : 'FAIL'}`,
-    ...v.problems.map((p) => `  ! ${p}`),
-  ];
+  const lines = [`=== desktop-e2e ${variant}: ${v.pass ? 'PASS' : 'FAIL'}`, ...v.problems.map((p) => `  ! ${p}`)];
+  const pb = summary.page_before;
+  if (pb) lines.push(`  page   hasFocus=${pb.hasFocus} active=${pb.active} tauri=${pb.tauri} rdNative=${pb.rdNative} platform=${pb.platform} settings=${pb.storedSettings ?? 'default'}`);
   for (const phase of ['type', 'alttab'] as const) {
     const p = f[phase];
     if (!p) continue;
     lines.push(
-      `  ${phase.padEnd(6)} agent=[${p.agent.join(' ')}] page_sent=[${p.page_sent.join(' ')}] passed_rd_hook=[${p.passed_rd_hook.join(' ')}] fg_before=${p.foreground_before} fg_after=${p.foreground_after}`,
+      `  ${phase.padEnd(6)} agent=[${p.agent.join(' ')}] page_sent=[${p.page_sent.join(' ')}] dom=[${p.page_dom.join(' ')}] rdNative=[${p.page_rdnative.join(' ')}]`,
+      `         passed_rd_hook=[${p.passed_rd_hook.join(' ')}] foreground before=${p.foreground_before} after=${p.foreground_after}${p.foreground_window_after ? ` (now: ${p.foreground_window_after.process} "${p.foreground_window_after.title}")` : ''}`,
     );
   }
-  lines.push(`  page   dom=[${(pa.dom ?? []).join(' ')}] rdNative=[${(pa.nat ?? []).join(' ')}] hasFocus=${pa.hasFocus}`);
   if (summary.race) lines.push(`  race   ${JSON.stringify(summary.race)}`);
-  if (isApp) for (const l of summary.app_grab_lines_tail ?? []) lines.push(`  app    ${l}`);
+  if (isApp) for (const l of summary.app_grab_lines_tail ?? []) lines.push(`  app    ${l.replace(/^\[[^\]]*\]\[[^\]]*\]/, '')}`);
   const text = lines.join('\n');
   console.log(text);
   writeFileSync(join(OUT, 'result.txt'), `${text}\n`);
