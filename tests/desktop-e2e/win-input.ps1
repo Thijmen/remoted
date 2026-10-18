@@ -37,8 +37,9 @@ if ($Mode -eq 'serve') {
 # canary
 $ErrorActionPreference = 'Continue'
 Write-Output '== whoami / integrity level'
-whoami
-whoami /groups | Select-String 'Mandatory Label'
+$whoami = Join-Path $env:SystemRoot 'System32\whoami.exe' # not Git's coreutils whoami from PATH
+& $whoami
+& $whoami /groups | Select-String 'Mandatory Label'
 Write-Output '== query user (the session must be Active, with a console)'
 cmd /c 'query user 2>&1'
 Write-Output '== processes in this session that own windows'

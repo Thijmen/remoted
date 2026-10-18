@@ -41,6 +41,9 @@ const EDGE_EXE = process.env.RD_E2E_EDGE ?? 'C:\\Program Files (x86)\\Microsoft\
 const VIEWER = 'http://127.0.0.1:18580';
 const PAGE_URL = `${VIEWER}/m/mbp`;
 const CDP_PORT = 9222;
+const WV2_POLICY = 'HKCU\\Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments';
+/** Browser profiles: kept out of out/ (the uploaded artifact). */
+const PROFILES = resolve(ROOT, 'out-profiles', variant);
 const isApp = variant !== 'edge';
 
 /** Windows set-1 scan codes. */
@@ -53,8 +56,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const t0 = performance.now();
 const stamp = () => ((performance.now() - t0) / 1000).toFixed(2).padStart(7);
 
-rmSync(OUT, { recursive: true, force: true });
-mkdirSync(OUT, { recursive: true });
+for (const dir of [OUT, PROFILES]) {
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+}
 
 function log(...a: unknown[]): void {
   const line = `[${stamp()}] ${a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')}`;
@@ -239,6 +244,29 @@ async function waitUntil(what: string, timeoutMs: number, f: () => boolean | Pro
   throw new Error(`timed out after ${timeoutMs} ms waiting for ${what}`);
 }
 
+/** Run a command to completion; stdout+stderr as text. */
+async function exec(cmd: string[]): Promise<string> {
+  const p = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe', windowsHide: true });
+  const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  await p.exited;
+  return `${out}${err}`.trim();
+}
+
+/** Command lines of the WebView2 browser processes (not their renderers/GPU/utility children). */
+async function webviewBrowsers(): Promise<unknown> {
+  const out = await exec([
+    'powershell.exe',
+    '-NoProfile',
+    '-Command',
+    "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'msedgewebview2.exe' -and $_.CommandLine -notmatch '--type=' } | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress",
+  ]);
+  try {
+    return JSON.parse(out);
+  } catch {
+    return out;
+  }
+}
+
 async function portOpen(url: string): Promise<boolean> {
   try {
     await fetch(url, { signal: AbortSignal.timeout(1000) });
@@ -306,10 +334,16 @@ async function main(): Promise<void> {
   await waitUntil(`port ${CDP_PORT} to be free (an earlier variant's browser process?)`, 15_000, async () => !(await portOpen(`http://127.0.0.1:${CDP_PORT}/json/version`)));
   let pid: number;
   if (isApp) {
+    // DevTools for the app's WebView2. The environment variable alone did not reach the browser
+    // process on the runner (wry sets AdditionalBrowserArguments itself), so the per-app registry
+    // policy is set too; the marker switches show which one arrived (see webview2_browser below).
+    const devtools = `--remote-debugging-port=${CDP_PORT} --remote-allow-origins=*`;
+    await exec(['reg', 'add', WV2_POLICY, '/v', 'rd-desktop.exe', '/t', 'REG_SZ', '/d', `${devtools} --rd-e2e-from-registry`, '/f']);
+    cleanups.push(() => exec(['reg', 'delete', WV2_POLICY, '/v', 'rd-desktop.exe', '/f']).then(() => undefined));
     const env = [
       'RD_LOG=debug',
-      `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=${CDP_PORT} --remote-allow-origins=*`,
-      `WEBVIEW2_USER_DATA_FOLDER=${join(OUT, 'wv2')}`,
+      `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=${devtools} --rd-e2e-from-env`,
+      `WEBVIEW2_USER_DATA_FOLDER=${join(PROFILES, 'wv2')}`,
     ];
     if (variant === 'grab' || variant === 'race') env.push('RD_DESKTOP_GRAB_INJECTED=1');
     summary.app_env = env;
@@ -325,7 +359,7 @@ async function main(): Promise<void> {
       `--app=${PAGE_URL}`,
       `--remote-debugging-port=${CDP_PORT}`,
       '--remote-allow-origins=*',
-      `--user-data-dir="${join(OUT, 'edge-profile')}"`,
+      `--user-data-dir="${join(PROFILES, 'edge')}"`,
       '--no-first-run',
       '--no-default-browser-check',
       '--window-position=0,0',
@@ -344,7 +378,14 @@ async function main(): Promise<void> {
   log('pid', pid);
 
   step('attach CDP');
-  const cdp = await Cdp.attach(CDP_PORT, (u) => u.startsWith(PAGE_URL), OUT);
+  const cdp = await Cdp.attach(CDP_PORT, (u) => u.startsWith(PAGE_URL), OUT).catch(async (e) => {
+    if (isApp) summary.webview2_browser = await webviewBrowsers();
+    throw e;
+  });
+  if (isApp) {
+    summary.webview2_browser = await webviewBrowsers();
+    log('WebView2 browser process:', summary.webview2_browser);
+  }
   cleanups.push(() => cdp.close());
   log('target:', cdp.target.url);
 
