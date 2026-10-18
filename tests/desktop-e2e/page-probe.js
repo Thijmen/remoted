@@ -129,12 +129,17 @@
       if (m.cmd === 'race') {
         // Quick focus changes between a viewer control and the video: each pair is an
         // rd_set_grab(false) + rd_set_grab(true), all in flight at once. Ends on the video.
+        // With yieldMs every change happens in its own task (like separate clicks), so the page
+        // cannot fold a pair into one decision and really sends the calls.
         const h = document.querySelector('button.toolbar-handle');
         const c = document.querySelector('.stage canvas');
+        const spread = typeof m.yieldMs === 'number';
         for (let k = 0; k < (m.rounds || 5); k++) {
           for (let i = 0; i < (m.n || 100); i++) {
             h.focus();
+            if (spread) await sleep(m.yieldMs);
             c.focus();
+            if (spread) await sleep(m.yieldMs);
           }
           await sleep(m.pauseMs || 150);
         }

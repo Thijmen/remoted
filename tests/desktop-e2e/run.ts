@@ -514,11 +514,15 @@ async function main(): Promise<void> {
     const before = grabLines().length;
     const rounds: string[] = [];
     for (let k = 0; k < RACE_ROUNDS; k++) {
-      const r = await agent.command('race', { rounds: 1, n: 100, pauseMs: 0 }, 60_000);
+      // First half: all changes in one task (a page may fold them into one decision). Second
+      // half: every change in its own task, so the calls really go out back to back.
+      const spread = k >= RACE_ROUNDS / 2;
+      const params = spread ? { rounds: 1, n: 30, pauseMs: 0, yieldMs: 0 } : { rounds: 1, n: 100, pauseMs: 0 };
+      const r = await agent.command('race', params, 60_000);
       await sleep(700); // let the app finish the round's calls
       const last = grabLines().filter((l) => /keyboard grab (on|off)/.test(l)).pop() ?? '';
       const m = /keyboard grab (on|off(?: \(\w+\))?)/.exec(last);
-      rounds.push(`${m ? m[1] : '?'}${r.activeIsCanvas ? '' : ' (video not focused)'}`);
+      rounds.push(`${m ? m[1] : '?'}${spread ? ' spread' : ''}${r.activeIsCanvas ? '' : ' (video not focused)'}`);
     }
     await sleep(1000);
     const lines = grabLines().slice(before);
@@ -605,6 +609,8 @@ function verdict(): { pass: boolean; problems: string[] } {
     problems.push(`typing a: agent got [${f.type.agent.join(' ')}], expected [${EXPECT_TYPE.join(' ')}]`);
   if (variant === 'race' && summary.race?.hook_off_while_page_wants_it)
     problems.push(`race: hook off after ${summary.race.hook_off_while_page_wants_it}/${RACE_ROUNDS} rounds that ended on the video`);
+  if (variant === 'race' && summary.race && summary.race.set_grab_lines === 0)
+    problems.push('race: no rd_set_grab calls at all, so the rounds exercised nothing');
   if (variant === 'grab') {
     if (!f.alttab) problems.push('no Alt+Tab phase');
     else if (!same(f.alttab.agent, EXPECT_ALTTAB))
