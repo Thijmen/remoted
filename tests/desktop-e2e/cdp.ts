@@ -1,6 +1,6 @@
-// Minimal Chrome DevTools Protocol client for the page under test (WebView2 inside rd Desktop via
-// WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=…, or Edge itself). Records the
-// console and the binary WebSocket frames the page sends, and evaluates probes.
+// Minimal Chrome DevTools Protocol client for the Edge control variant (msedge --app with
+// --remote-debugging-port). Records the console and the binary WebSocket frames the page sends, and
+// evaluates expressions. (rd Desktop's WebView2 has no DevTools port: see page-probe.js.)
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 

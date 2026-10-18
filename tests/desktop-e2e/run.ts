@@ -13,7 +13,8 @@
  *             AutoHotkey or remapping tools. Expects KeyA once (through the DOM). Then Alt+Tab, only
  *             to observe what happens locally.
  *   edge      Edge --app on the same page (no app, DOM keys): the control for the harness itself.
- *   race      As grab, after 5x100 quick focus changes (rd_set_grab false/true pairs).
+ *   race      As grab, after 20 rounds of 100 quick focus changes (rd_set_grab false/true pairs);
+ *             also fails when a round leaves the hook off while the page wants the grab.
  *
  * The page is the normal viewer build plus page-probe.js (records DOM keys, rdNative calls and sent
  * input frames; reports over the session socket via the fake agent), because rd Desktop's WebView2
@@ -632,6 +633,8 @@ function report(v: { pass: boolean; problems: string[] }): void {
   const text = lines.join('\n');
   console.log(text);
   writeFileSync(join(OUT, 'result.txt'), `${text}\n`);
+  // An annotation keeps a failure visible on steps marked continue-on-error.
+  if (!v.pass && process.env.GITHUB_ACTIONS) console.log(`::error title=desktop-e2e ${variant}::${v.problems.join(' | ')}`);
   const stepSummary = process.env.GITHUB_STEP_SUMMARY;
   if (stepSummary) appendFileSync(stepSummary, `\n\`\`\`\n${text}\n\`\`\`\n`);
 }
