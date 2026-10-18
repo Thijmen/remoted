@@ -43,20 +43,119 @@ pub fn spawn_forwarder(window: &WebviewWindow) -> Result<Sender<Event>, String> 
 
 /// Never logs the script (it names keys).
 fn forward(window: WebviewWindow, rx: Receiver<Event>) {
+    let mut chord = FullscreenChord::default();
     for event in rx {
         let js = match event {
             Event::Key { code, down, repeat } => {
+                match chord.key(code, down, repeat) {
+                    ChordKey::Forward => {}
+                    ChordKey::Swallow => continue,
+                    ChordKey::Toggle => {
+                        toggle_fullscreen(&window);
+                        continue;
+                    }
+                }
                 // Codes come from the static key table; JSON-escape them anyway.
                 let Ok(code) = serde_json::to_string(code) else {
                     continue;
                 };
                 format!("window.rdNative&&window.rdNative.key({code},{down},{repeat})")
             }
-            Event::Release => "window.rdNative&&window.rdNative.release()".to_string(),
+            Event::Release => {
+                chord = FullscreenChord::default();
+                "window.rdNative&&window.rdNative.release()".to_string()
+            }
         };
         if let Err(e) = window.eval(js) {
             log::warn!("keyboard grab: cannot reach the page: {e}");
         }
+    }
+}
+
+/// Ctrl+Alt+Shift+F during a grab. The page would toggle fullscreen itself, but a key that
+/// arrives through `rdNative.key` carries no user gesture, so WebView2 refuses
+/// `requestFullscreen` and nothing happens. The app toggles the window instead and keeps the
+/// F press from the page (the page swallows its chords too, so the remote side sees the same).
+#[derive(Default)]
+struct FullscreenChord {
+    /// Held modifiers, one bit per physical key (see `modifier_bit`).
+    mods: u8,
+    /// The F press that toggled is still down: its autorepeat and release are swallowed too.
+    swallowing: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum ChordKey {
+    Forward,
+    Swallow,
+    Toggle,
+}
+
+const CTRL: u8 = 0b0000_0011;
+const ALT: u8 = 0b0000_1100;
+const SHIFT: u8 = 0b0011_0000;
+
+fn modifier_bit(code: &str) -> u8 {
+    match code {
+        "ControlLeft" => 0b0000_0001,
+        "ControlRight" => 0b0000_0010,
+        "AltLeft" => 0b0000_0100,
+        "AltRight" => 0b0000_1000,
+        "ShiftLeft" => 0b0001_0000,
+        "ShiftRight" => 0b0010_0000,
+        _ => 0,
+    }
+}
+
+impl FullscreenChord {
+    fn key(&mut self, code: &str, down: bool, repeat: bool) -> ChordKey {
+        let bit = modifier_bit(code);
+        if bit != 0 {
+            if down {
+                self.mods |= bit;
+            } else {
+                self.mods &= !bit;
+            }
+            return ChordKey::Forward;
+        }
+        if code != "KeyF" {
+            return ChordKey::Forward;
+        }
+        if !down {
+            return if std::mem::take(&mut self.swallowing) {
+                ChordKey::Swallow
+            } else {
+                ChordKey::Forward
+            };
+        }
+        if self.swallowing {
+            return ChordKey::Swallow;
+        }
+        // The Windows hook already drops AltGr's fake Ctrl, so a held Ctrl here is a real one.
+        if self.mods & CTRL != 0 && self.mods & ALT != 0 && self.mods & SHIFT != 0 {
+            self.swallowing = true;
+            return if repeat {
+                ChordKey::Swallow
+            } else {
+                ChordKey::Toggle
+            };
+        }
+        ChordKey::Forward
+    }
+}
+
+fn toggle_fullscreen(window: &WebviewWindow) {
+    let on = !window.is_fullscreen().unwrap_or(false);
+    if !on {
+        // Entered from the page (its Fullscreen button): leave the page's fullscreen as well.
+        let _ = window.eval("document.fullscreenElement&&document.exitFullscreen()");
+    }
+    match window.set_fullscreen(on) {
+        Ok(()) => log::info!(
+            "fullscreen {} (Ctrl+Alt+Shift+F)",
+            if on { "on" } else { "off" }
+        ),
+        Err(e) => log::warn!("cannot change fullscreen: {e}"),
     }
 }
 
@@ -208,5 +307,69 @@ impl Grab {
 
     fn forget_last(&self) {
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChordKey, FullscreenChord};
+
+    fn keys(chord: &mut FullscreenChord, seq: &[(&str, bool, bool)]) -> Vec<ChordKey> {
+        seq.iter().map(|&(c, d, r)| chord.key(c, d, r)).collect()
+    }
+
+    #[test]
+    fn ctrl_alt_shift_f_toggles_and_hides_the_f() {
+        let mut c = FullscreenChord::default();
+        let got = keys(
+            &mut c,
+            &[
+                ("ControlLeft", true, false),
+                ("AltLeft", true, false),
+                ("ShiftRight", true, false),
+                ("KeyF", true, false),
+                ("KeyF", true, true),
+                ("KeyF", false, false),
+                ("ShiftRight", false, false),
+            ],
+        );
+        use ChordKey::*;
+        assert_eq!(
+            got,
+            [Forward, Forward, Forward, Toggle, Swallow, Swallow, Forward]
+        );
+        // Plain F afterwards types again.
+        assert_eq!(
+            keys(&mut c, &[("KeyF", true, false), ("KeyF", false, false)]),
+            [Forward, Forward]
+        );
+    }
+
+    #[test]
+    fn f_without_the_full_chord_types() {
+        let mut c = FullscreenChord::default();
+        for mods in [
+            &["ControlLeft", "AltRight"][..],
+            &["AltLeft", "ShiftLeft"],
+            &["ControlRight", "ShiftLeft"],
+        ] {
+            for m in mods {
+                assert_eq!(c.key(m, true, false), ChordKey::Forward);
+            }
+            assert_eq!(c.key("KeyF", true, false), ChordKey::Forward);
+            assert_eq!(c.key("KeyF", false, false), ChordKey::Forward);
+            for m in mods {
+                assert_eq!(c.key(m, false, false), ChordKey::Forward);
+            }
+        }
+    }
+
+    #[test]
+    fn other_chord_keys_still_reach_the_page() {
+        let mut c = FullscreenChord::default();
+        for m in ["ControlLeft", "AltLeft", "ShiftLeft"] {
+            c.key(m, true, false);
+        }
+        assert_eq!(c.key("KeyD", true, false), ChordKey::Forward);
     }
 }
