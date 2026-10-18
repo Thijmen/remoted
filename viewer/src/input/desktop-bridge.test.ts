@@ -4,6 +4,7 @@ import {
   type BridgeHost,
   DesktopBridge,
   INVOKE_TIMEOUT_MS,
+  NATIVE_RECENT_MS,
   REASSERT_INTERVAL_MS,
 } from './desktop-bridge';
 
@@ -30,12 +31,14 @@ function setup(host: BridgeHost) {
   const keys: Array<[string, boolean, boolean]> = [];
   let releases = 0;
   const warnings: unknown[] = [];
+  const clock = { now: 100_000 };
   const bridge = new DesktopBridge(
     host,
     { key: (code, down, repeat) => keys.push([code, down, repeat]), release: () => releases++ },
     (_msg, err) => warnings.push(err),
+    () => clock.now,
   );
-  return { bridge, keys, warnings, releases: () => releases };
+  return { bridge, keys, warnings, releases: () => releases, clock };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -187,13 +190,13 @@ describe('rd_set_grab', () => {
     }
   });
 
-  it('reassert() re-installs the hook (false, then true), at most every few seconds', async () => {
+  it('reassert() re-installs the hook (false, then true) when no key came through it lately, backing off', async () => {
     const { host, calls } = fakeTauri();
-    const { bridge, warnings } = setup(host);
+    const { bridge, warnings, clock } = setup(host);
     bridge.setActive(true);
     calls[0]!.resolve();
     await flush();
-    bridge.reassert(10_000);
+    bridge.reassert();
     expect(bridge.grabbing).toBe(false);
     expect(sent(calls)).toEqual([true, false]);
     calls[1]!.resolve();
@@ -202,9 +205,59 @@ describe('rd_set_grab', () => {
     calls[2]!.resolve();
     await flush();
     expect(bridge.grabbing).toBe(true);
-    bridge.reassert(10_000 + REASSERT_INTERVAL_MS - 1);
+    // Not again within the interval, then the interval doubles.
+    clock.now += REASSERT_INTERVAL_MS - 1;
+    bridge.reassert();
     expect(sent(calls)).toHaveLength(3);
+    clock.now += 1;
+    bridge.reassert();
+    expect(sent(calls)).toHaveLength(4);
+    calls[3]!.resolve();
+    await flush();
+    calls[4]!.resolve();
+    await flush();
+    clock.now += REASSERT_INTERVAL_MS;
+    bridge.reassert();
+    expect(sent(calls)).toHaveLength(5); // waiting for 2 × the interval
     expect(warnings).toHaveLength(1);
+  });
+
+  it('reassert() does nothing while keys come through the hook (DOM keys are ones it passes on purpose)', async () => {
+    const { host, calls } = fakeTauri();
+    const { bridge, clock } = setup(host);
+    bridge.setActive(true);
+    calls[0]!.resolve();
+    await flush();
+    host.rdNative!.key('KeyA', true, false);
+    clock.now += NATIVE_RECENT_MS - 1;
+    bridge.reassert();
+    expect(sent(calls)).toEqual([true]);
+    clock.now += 1;
+    bridge.reassert();
+    expect(sent(calls)).toEqual([true, false]);
+  });
+
+  it('an answer to a call sent before release() does not confirm a grab the app dropped', async () => {
+    const { host, calls } = fakeTauri();
+    const { bridge } = setup(host);
+    bridge.setActive(true);
+    // The app installs the hook, drops it on its own (e.g. desktop switch) and its release() overtakes the answer.
+    host.rdNative!.release();
+    bridge.setActive(true);
+    calls[0]!.resolve();
+    await flush();
+    expect(bridge.grabbing).toBe(false);
+    expect(sent(calls)).toEqual([true, true]); // asked again
+    calls[1]!.resolve();
+    await flush();
+    expect(bridge.grabbing).toBe(true);
+  });
+
+  it('numbers calls from the clock, so a new page outranks a late call of the old one', () => {
+    const { host, calls } = fakeTauri();
+    const { bridge } = setup(host);
+    bridge.setActive(true);
+    expect(calls[0]!.args?.seq as number).toBeGreaterThan((Date.now() - 60_000) * 1000);
   });
 
   it('survives an invoke that throws or returns a non-promise', async () => {

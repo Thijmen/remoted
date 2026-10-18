@@ -65,6 +65,7 @@ export class InputController {
   private readonly native: NativeKeys;
   private readonly bridge: DesktopBridge;
   private grabCheckQueued = false;
+  private readonly windowsViewer = isWindowsViewer(navigator);
   /** Local Caps Lock as of the last key or pointer event anywhere on the page (null: not seen yet). */
   private localCaps: boolean | null = null;
   private pos = { x: 0x8000, y: 0x8000 };
@@ -402,9 +403,6 @@ export class InputController {
     this.localCaps = e.getModifierState('CapsLock');
     if (!this.enabled) return;
     if (this.bridge.grabbing) {
-      // The desktop app swallows every key it forwards (rdNative.key), so a DOM key here is one its hook did not
-      // forward: input other programs inject, keys held from before the grab, or a hook that Windows dropped or
-      // other software blocks. Handle it like any DOM key rather than losing it.
       if (e.code === 'CapsLock') {
         // macOS toggles the lock before any hook sees the key, so the app lets it through on purpose and the
         // remote lock follows the local one.
@@ -412,12 +410,34 @@ export class InputController {
         e.preventDefault();
         return;
       }
-      // macOS: the shortcuts the app leaves to the system on purpose (lock screen, Force Quit).
-      if (isLocalMacShortcut(e)) return;
-      // A fresh press means the hook missed it: have the app install a new one.
-      if (down && !e.repeat && !this.keys.isPressed(e.code)) this.bridge.reassert(performance.now());
+      // macOS: the tap passes only what it leaves to this Mac on purpose (Ctrl+Cmd+Q, Cmd+Option+Esc) and keys
+      // other processes synthesize, including an agent on this Mac, whose keys must not loop back.
+      if (!this.windowsViewer) {
+        e.preventDefault();
+        return;
+      }
+      // Windows: the hook swallows every key it forwards (rdNative.key), so a DOM key here is one it did not
+      // forward: input other programs inject, keys held from before the grab, keys without a code, or a hook that
+      // Windows dropped or other software blocks. Handle it like any DOM key rather than losing it.
+      this.onGrabbedDomKey(e, down);
+      return;
     }
     if (this.keys.handle(e, down, this.forwardsKeysFrom(e.target)) === 'consume') {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+
+  /** A DOM key during a Windows grab, i.e. one the hook did not forward. */
+  private onGrabbedDomKey(e: KeyboardEvent, down: boolean): void {
+    if (down && !e.repeat && this.keys.isPressed(e.code)) {
+      // Already pressed through the hook (a late hook call that Windows also passed on): the same press.
+      e.preventDefault();
+      return;
+    }
+    if (down && !e.repeat) this.bridge.reassert();
+    if (!down) this.native.forget(e.code);
+    if (this.keys.handle(this.native.overlay(e), down, this.forwardsKeysFrom(e.target)) === 'consume') {
       e.preventDefault();
       e.stopPropagation();
     }
@@ -435,9 +455,4 @@ export class InputController {
     if (this.enabled) this.releaseAll();
     this.updateGrab();
   }
-}
-
-/** Ctrl+Cmd+Q (lock screen) and Cmd+Option+Esc (Force Quit): the macOS app never grabs them. */
-function isLocalMacShortcut(e: KeyboardEvent): boolean {
-  return (e.code === 'KeyQ' && e.ctrlKey && e.metaKey) || (e.code === 'Escape' && e.metaKey && e.altKey);
 }

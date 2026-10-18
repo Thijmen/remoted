@@ -37,9 +37,10 @@ window.__TAURI_INTERNALS__.invoke('rd_set_grab', { active: true | false, seq })
   in one go).
 - **One call at a time:** the page sends the next call only when the previous one is answered
   (or after 3 s without an answer), always with the latest wanted state, so the app never ends
-  up in an older state than the page. `seq` increases with every call of the page; the app
-  applies a call only if no newer one was applied (Tauri runs commands concurrently) and starts
-  over when a new page loads. Calls without `seq` (older pages) are always applied.
+  up in an older state than the page. `seq` increases with every call and starts at the clock
+  (µs), so a new page outranks late calls of the previous one; the app applies a call only if
+  no newer one was applied (Tauri runs commands concurrently). Calls without `seq` (older pages)
+  are always applied.
 - A refused `true` (e.g. the window was not in front yet) is asked again on the next transition
   or click into the video; until then DOM keys work. After `rdNative.release()` the page asks
   again as soon as the keys should be grabbed.
@@ -61,17 +62,22 @@ window.rdNative.key(code, down, repeat)
   key the hook already saw down).
 - The page treats these exactly like DOM keyboard events (modifier mapping, Caps Lock sync,
   chords such as Ctrl+Alt+Shift+D).
-- The app swallows every key it forwards, so it never also arrives as a DOM event. A DOM key the
-  page still receives during a grab is one the hook did **not** forward (input other programs
-  inject, keys held from before the grab, a key without a code, or a hook that Windows dropped
-  or other software blocks), and the page handles it like any DOM key instead of losing it.
-  Duplicates can only be releases, which are harmless. A fresh DOM key press during a grab
-  also makes the page re-install the hook (`rd_set_grab` false then true, at most every 5 s).
+- The app swallows every key it forwards, so it never also arrives as a DOM event.
+  - **Windows:** a DOM key the page still receives during a grab is one the hook did **not**
+    forward (input other programs inject, keys held from before the grab, a key without a code,
+    or a hook that Windows dropped or other software blocks). The page handles it like any DOM
+    key, with the modifiers the hook holds added (Windows never saw those), instead of losing it;
+    a press of a key already down through the hook is not sent again, and duplicates of releases
+    are harmless. If such a press arrives while no key has come through the hook for 2 s, the
+    page has the app install a fresh hook (`rd_set_grab` false then true), backing off from 5 s
+    to 60 s.
+  - **macOS:** the tap passes only what it leaves local on purpose (Ctrl+Cmd+Q, Cmd+Option+Esc,
+    and keys other processes synthesize — an agent on the same Mac included, whose keys must not
+    loop back), so the page drops DOM keys during a grab, except Caps Lock.
 - Caps Lock: macOS toggles the lock before any tap sees the key, so the macOS app lets Caps Lock
   through and the page syncs the remote lock from that DOM event. (The Windows hook swallows
   Caps Lock and reports it through `rdNative.key`; the local lock does not change during a grab
-  there.) The macOS app's local shortcuts (Ctrl+Cmd+Q, Cmd+Option+Esc) are never forwarded from
-  the DOM either.
+  there.)
 
 ```js
 window.rdNative.release()

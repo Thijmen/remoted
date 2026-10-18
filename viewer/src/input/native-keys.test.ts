@@ -279,3 +279,47 @@ describe('native Caps Lock', () => {
     expect(take()).toEqual([]);
   });
 });
+
+/** A DOM key event as Windows delivers it during a grab: without the modifiers the hook swallowed. */
+function domKey(code: string, o: { shiftKey?: boolean; ctrlKey?: boolean; repeat?: boolean } = {}): KeyInput {
+  return {
+    code,
+    key: 'x',
+    repeat: o.repeat ?? false,
+    timeStamp: 0,
+    ctrlKey: o.ctrlKey ?? false,
+    altKey: false,
+    shiftKey: o.shiftKey ?? false,
+    getModifierState: () => false,
+  };
+}
+
+describe('DOM keys during a grab (keys the hook did not forward)', () => {
+  it('carry the modifiers the hook holds, so a held Shift is not released', () => {
+    const { kb, native, key, take } = setup('passthrough');
+    key('ShiftLeft', true);
+    expect(take()).toEqual([down(HID.ShiftLeft)]);
+    // An injected key reaches the page as a DOM key without Shift: Windows never saw the swallowed Shift.
+    const e = native.overlay(domKey('KeyA'));
+    expect(e.shiftKey).toBe(true);
+    expect(e.getModifierState('Shift')).toBe(true);
+    expect(e.native).toBe(true);
+    kb.handle(e, true, true);
+    kb.handle(native.overlay(domKey('KeyA')), false, true);
+    expect(take()).toEqual([down(HID.KeyA), up(HID.KeyA)]);
+    key('ShiftLeft', false);
+    expect(take()).toEqual([up(HID.ShiftLeft)]);
+  });
+
+  it('a modifier released outside the hook is forgotten', () => {
+    const { kb, native, key, take } = setup('passthrough');
+    key('ControlLeft', true);
+    expect(take()).toEqual([down(HID.ControlLeft)]);
+    // Its release came as a DOM keyup (the hook was gone for a moment).
+    native.forget('ControlLeft');
+    kb.handle(native.overlay(domKey('ControlLeft')), false, true);
+    expect(take()).toEqual([up(HID.ControlLeft)]);
+    const e = native.event('KeyC', true, false);
+    expect(e.ctrlKey).toBe(false);
+  });
+});

@@ -36,6 +36,40 @@ export class NativeKeys {
     this.capsFlipped = false;
   }
 
+  /** The key was released outside the hook (a DOM keyup during the grab). */
+  forget(code: string): void {
+    this.down.delete(code);
+  }
+
+  /**
+   * A DOM key event during a grab (one the hook did not forward), with the modifiers the hook holds added:
+   * Windows never saw those, so the DOM event lacks them. Marked native, since the hook reports every release
+   * (no lost-keyup workarounds).
+   */
+  overlay(e: KeyInput): KeyInput {
+    const held = (name: string) => {
+      const [left, right] = SIDES[name]!;
+      return this.down.has(left) || this.down.has(right) || this.deps.held(left) || this.deps.held(right);
+    };
+    const mods: Record<string, boolean> = {
+      Shift: e.shiftKey || held('Shift'),
+      Control: e.ctrlKey || held('Control'),
+      Alt: e.altKey || held('Alt'),
+      Meta: e.getModifierState('Meta') || held('Meta'),
+    };
+    return {
+      code: e.code,
+      key: e.key,
+      repeat: e.repeat,
+      timeStamp: e.timeStamp,
+      ctrlKey: mods.Control === true,
+      altKey: mods.Alt === true,
+      shiftKey: mods.Shift === true,
+      getModifierState: (k) => (k in mods ? mods[k] === true : e.getModifierState(k)),
+      native: true,
+    };
+  }
+
   /** Caps Lock as the remote side should have it, given the local lock. */
   caps(local: boolean): boolean {
     return local !== this.capsFlipped;

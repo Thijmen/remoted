@@ -34,15 +34,18 @@ export interface BridgeHandlers {
 
 /** An answer that takes longer than this counts as a refusal (DOM keys keep working). */
 export const INVOKE_TIMEOUT_MS = 3000;
-/** At most one hook re-install per this interval when DOM keys show the hook is not delivering. */
+/** The first hook re-install when DOM keys show the hook is not delivering; doubles each time, up to the max. */
 export const REASSERT_INTERVAL_MS = 5000;
+export const REASSERT_MAX_INTERVAL_MS = 60_000;
+/** Keys came through the hook this recently: it works, and DOM keys are ones it leaves alone on purpose. */
+export const NATIVE_RECENT_MS = 2000;
 
 /**
  * Request numbers for `rd_set_grab`, shared by every bridge of the page (a session may build a new one). The
- * app runs commands concurrently, so it applies a request only if its number is newer than the last one; it
- * starts over when a new page loads.
+ * app runs commands concurrently, so it applies a request only if its number is newer than the last one. They
+ * start at the clock (µs) so that a newer page always outranks a late call of the page before it.
  */
-let lastSeq = 0;
+let lastSeq = Date.now() * 1000;
 
 /**
  * The page's half of the desktop app bridge. It always defines `rdNative` (unused in a browser); inside the
@@ -63,21 +66,29 @@ export class DesktopBridge {
   /** Re-install the hook: send `false` before the next `true`. */
   private cycle = false;
   private lastReassertMs = Number.NEGATIVE_INFINITY;
+  private reassertInterval = REASSERT_INTERVAL_MS;
+  private lastNativeMs = Number.NEGATIVE_INFINITY;
+  /** Bumped by `release()`: an answer to a call sent before it says nothing about the app's state now. */
+  private epoch = 0;
   private warned = false;
 
   constructor(
     private readonly host: BridgeHost,
     handlers: BridgeHandlers,
     private readonly warn: (msg: string, err: unknown) => void = (msg, err) => console.warn(msg, err),
+    private readonly now: () => number = () => performance.now(),
   ) {
     host.rdNative = Object.freeze({
       version: BRIDGE_VERSION,
       key: (code: string, down: boolean, repeat: boolean) => {
         if (typeof code !== 'string' || typeof down !== 'boolean') return;
+        this.lastNativeMs = this.now();
+        this.reassertInterval = REASSERT_INTERVAL_MS;
         handlers.key(code, down, repeat === true);
       },
       release: () => {
         // The app has stopped grabbing; the next eligible state asks again (`setActive(true)`).
+        this.epoch++;
         this.wanted = false;
         this.confirmed = false;
         this.told = false;
@@ -115,11 +126,18 @@ export class DesktopBridge {
   }
 
   /**
-   * DOM keys arrive although the app confirmed the grab, so its hook does not see them (Windows dropped the
-   * hook, or other software got in the way). Have the app install a fresh one.
+   * A DOM key arrived although the app confirmed the grab. If no key has come through the hook lately, the hook
+   * probably sees nothing (Windows dropped it, or other software got in the way): have the app install a fresh
+   * one, backing off while that does not help. Keys the hook passes on purpose (injected by other programs)
+   * arrive while it delivers the others, so they cause no re-install.
    */
-  reassert(nowMs: number): void {
-    if (!this.grabbing || nowMs - this.lastReassertMs < REASSERT_INTERVAL_MS) return;
+  reassert(): void {
+    const nowMs = this.now();
+    if (!this.grabbing || nowMs - this.lastNativeMs < NATIVE_RECENT_MS) return;
+    if (nowMs - this.lastReassertMs < this.reassertInterval) return;
+    if (this.lastReassertMs > Number.NEGATIVE_INFINITY) {
+      this.reassertInterval = Math.min(this.reassertInterval * 2, REASSERT_MAX_INTERVAL_MS);
+    }
     this.lastReassertMs = nowMs;
     this.warnOnce('rd: desktop app: keys bypass its keyboard hook; asking it to grab again', null);
     this.confirmed = false;
@@ -144,12 +162,14 @@ export class DesktopBridge {
       active = this.wanted;
     }
     const seq = ++lastSeq;
+    const epoch = this.epoch;
     const settle = (ok: boolean, err?: unknown) => {
       if (this.inflight?.seq !== seq) return; // already timed out
       clearTimeout(this.inflight.timer);
       this.inflight = null;
       if (ok) {
-        this.told = active;
+        // After a release() the app is not grabbing, whatever it answered before: ask again if wanted.
+        this.told = epoch === this.epoch ? active : null;
         this.refused = null;
       } else {
         // Unknown: a late answer may still apply it. Keys the hook forwards anyway are handled (rdNative.key).
