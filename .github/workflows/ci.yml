@@ -25,6 +25,8 @@ jobs:
           bun run typecheck
           bun run test
           bun run build
+      - name: rd Desktop version (package.json = Cargo.toml = Cargo.lock)
+        run: bun tools/release/sync-desktop-version.ts --check
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

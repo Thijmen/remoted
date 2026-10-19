@@ -3,6 +3,7 @@ name: Desktop
 # rd Desktop (clients/desktop): Windows (portable exe + per-user NSIS installer) and macOS
 # (universal .dmg) builds as workflow artifacts; a desktop-v* tag also publishes them as a
 # GitHub Release. (Path filters do not apply to tag pushes, so every desktop-v* tag builds.)
+# release.yml (changesets) creates the tags and dispatches this workflow on them.
 on:
   push:
     branches: [main]
@@ -25,8 +26,10 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
       - id: version
         run: |
+          bun tools/release/sync-desktop-version.ts --check
           v="$(sed -n 's/^version = "\(.*\)"$/\1/p' clients/desktop/src-tauri/Cargo.toml | head -n1)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
           if [[ "$GITHUB_REF" == refs/tags/desktop-v* && "${GITHUB_REF_NAME#desktop-v}" != "$v" ]]; then
@@ -146,6 +149,7 @@ jobs:
     permissions:
       contents: write # gh release create
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: rd-desktop-*
@@ -158,15 +162,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           V: ${{ needs.version.outputs.version }}
         run: |
-          gh release create "$GITHUB_REF_NAME" out/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "rd Desktop $V" \
-            --notes "Unsigned builds; see clients/desktop/README.md for installing.
+          # This version's section of the changelog (written by changesets), if there is one.
+          changes="$(awk -v h="## $V" '$0 == h {f = 1; next} /^## / && f {exit} f' clients/desktop/CHANGELOG.md 2>/dev/null | sed '/./,$!d' || true)"
+          {
+            if [[ -n "${changes//[[:space:]]/}" ]]; then
+              printf '%s\n\n' "$changes"
+            fi
+            cat <<NOTES
+          Unsigned builds; see clients/desktop/README.md for installing.
 
           Windows 10/11 (x64). SmartScreen asks once: More info -> Run anyway.
           - rd-desktop-$V-x64-setup.exe: per-user installer (no admin rights)
           - rd-desktop-$V-x64-portable.exe: single exe, no install
 
           macOS 12+ (Apple silicon and Intel). First start: System Settings -> Privacy & Security -> Open Anyway. Grabbing Cmd+Tab etc. needs the Accessibility permission (the app asks).
-          - rd-desktop-$V-macos-universal.dmg"
+          - rd-desktop-$V-macos-universal.dmg
+          NOTES
+          } > notes.md
+          cat notes.md
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "rd Desktop $V" \
+            --notes-file notes.md

@@ -1,0 +1,12 @@
+{
+  "name": "rd",
+  "private": true,
+  "scripts": {
+    "changeset": "changeset",
+    "version": "changeset version && bun tools/release/sync-desktop-version.ts",
+    "version:check": "bun tools/release/sync-desktop-version.ts --check"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.3"
+  }
+}
