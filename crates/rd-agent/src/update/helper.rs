@@ -1309,7 +1309,9 @@ mod tests {
         }
     }
 
+    // Unix paths: `Path::with_file_name` joins with `\` on Windows, where this code never runs.
     #[test]
+    #[cfg(unix)]
     fn mac_swaps_the_app_and_restarts_the_launch_agent() {
         let sys = FakeSys::with(&[APP, NEW, PREV]);
         let mut swap = mac(&sys);
@@ -1328,7 +1330,9 @@ mod tests {
         assert!(!sys.has(&format!("{APP}.previous-1.5.0")));
     }
 
+    // Unix paths: `Path::with_file_name` joins with `\` on Windows, where this code never runs.
     #[test]
+    #[cfg(unix)]
     fn mac_rolls_back_to_the_app_moved_aside() {
         let sys = FakeSys::with(&[APP, NEW, PREV]);
         let mut swap = mac(&sys);
@@ -1357,7 +1361,9 @@ mod tests {
         );
     }
 
+    // Unix paths: `Path::with_file_name` joins with `\` on Windows, where this code never runs.
     #[test]
+    #[cfg(unix)]
     fn mac_undoes_a_swap_that_cannot_finish() {
         // The app cannot be moved (App Management): nothing changes.
         let sys = FakeSys::with(&[APP, NEW, PREV]);
