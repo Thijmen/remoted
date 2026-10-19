@@ -135,11 +135,22 @@ jobs:
       - name: NSIS
         shell: pwsh
         run: |
-          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
-            $nsis = 'C:\Program Files (x86)\NSIS'
-            if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis -y --no-progress }
-            Add-Content $env:GITHUB_PATH $nsis
+          # Use NSIS if the runner has it. Otherwise download the same NSIS build
+          # Tauri uses (from GitHub, checksum pinned): Chocolatey's feed goes down.
+          if (Get-Command makensis -ErrorAction SilentlyContinue) { exit 0 }
+          $nsis = 'C:\Program Files (x86)\NSIS'
+          if (-not (Test-Path "$nsis\makensis.exe")) {
+            $url = 'https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip'
+            $sha = 'C7D27F780DDB6CFFB4730138CD1591E841F4B7EDB155856901CDF5F214394FA1'
+            $zip = Join-Path $env:RUNNER_TEMP 'nsis.zip'
+            Invoke-WebRequest $url -OutFile $zip -MaximumRetryCount 5 -RetryIntervalSec 10
+            $got = (Get-FileHash $zip -Algorithm SHA256).Hash
+            if ($got -ne $sha) { throw "NSIS download checksum mismatch: $got" }
+            Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP -Force
+            $nsis = Join-Path $env:RUNNER_TEMP 'nsis-3.11'
           }
+          if (-not (Test-Path "$nsis\makensis.exe")) { throw "makensis.exe not found in $nsis" }
+          Add-Content $env:GITHUB_PATH $nsis
 
       - name: Installer
         shell: pwsh
