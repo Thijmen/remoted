@@ -1,7 +1,7 @@
 # Desktop client (rd Desktop)
 
-A small Tauri app that opens the normal viewer (`https://rd.example.com`) in its own
-window. It exists for one reason: a browser tab cannot see the shortcuts the operating system
+A small Tauri app that opens the normal viewer (your gateway, e.g. `https://rd.example.com`; asked
+for on first start) in its own window. It exists for one reason: a browser tab cannot see the shortcuts the operating system
 keeps for itself (Windows: Alt+Tab, the Windows key, Alt+Esc, Ctrl+Esc, …; macOS: Cmd+Tab,
 Cmd+Space, Ctrl+arrows, …) unless it is fullscreen with Keyboard Lock (Chrome and Edge only;
 macOS never passes Cmd+Tab to a page). The desktop app grabs them while you are in a session
@@ -99,8 +99,10 @@ A mouse click outside the window also ends the grab, so you can never get stuck.
 
 ## Security notes
 
-- The app only loads the configured gateway origin; navigation elsewhere opens the system
-  browser. The remote capability that allows `rd_set_grab` is limited to that origin.
+- The app only loads the configured gateway origin (plus, if set, hosts under the configured
+  sign-in domain, for the login page); navigation elsewhere opens the system browser. The
+  capability that allows `rd_set_grab` is added at runtime for the gateway origin only. The
+  bundled setup page may only read and save the gateway (`capabilities/setup.json`).
 - The hook/tap is installed only while the grab is active and the window is foreground; it
   never logs keys (only how many it forwarded).
 - The gateway CSP allows the Tauri IPC endpoints (`ipc:` and `http://ipc.localhost`) in

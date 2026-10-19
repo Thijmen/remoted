@@ -13,7 +13,6 @@ use rd_agent_core::config::AgentConfig;
 
 use crate::{SetupArgs, config, host};
 
-const DEFAULT_GATEWAY: &str = "wss://rd-agent.example.com";
 const DEFAULT_MACHINE: &str = "mbp";
 
 pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
@@ -26,11 +25,9 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
 
     let gateway_url = match &args.gateway {
         Some(g) => g.clone(),
-        None => prompt(
-            "Gateway URL",
-            existing
-                .as_ref()
-                .map_or(DEFAULT_GATEWAY, |c| &c.gateway_url),
+        None => prompt_required(
+            "Gateway URL (e.g. wss://rd-agent.example.com)",
+            existing.as_ref().map(|c| c.gateway_url.as_str()),
         )?,
     };
     let url = url::Url::parse(&gateway_url).context("invalid gateway URL")?;
@@ -138,6 +135,20 @@ fn prompt(label: &str, default: &str) -> anyhow::Result<String> {
     } else {
         answer
     })
+}
+
+/// Like [`prompt`], but without a default an empty answer asks again.
+fn prompt_required(label: &str, default: Option<&str>) -> anyhow::Result<String> {
+    if let Some(default) = default {
+        return prompt(label, default);
+    }
+    loop {
+        print!("{label}: ");
+        let answer = read_line()?;
+        if !answer.is_empty() {
+            return Ok(answer);
+        }
+    }
 }
 
 /// Asks for the token; with `current`, an empty answer keeps it. Never prints a token.

@@ -2465,6 +2465,7 @@ dependencies = [
  "log",
  "open",
  "rd-proto",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",

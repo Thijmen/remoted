@@ -17,7 +17,7 @@ rd-agent (Mac/Win) --WSS--> Traefik --> rd-gateway :8081  (per-agent bearer toke
 - Viewer connects `GET /ws/view/{machine}` on the viewer origin. The gateway joins viewer WS ⇄ agent
   data WS and copies messages unchanged in both directions (it only parses JSON it owns and peeks the
   first byte of binary frames for input-idle tracking / byte counters).
-- Production hosts: viewer `https://rd.example.com`, agents `wss://rd-agent.example.com`.
+- Hosts (examples): viewer `https://rd.example.com`, agents `wss://rd-agent.example.com`.
 - Dev: `rd-gateway --dev` serves both on localhost: viewer `http://127.0.0.1:8080`, agents `ws://127.0.0.1:8081`.
 
 ## Auth
