@@ -163,7 +163,8 @@ Releases go through [changesets](https://github.com/changesets/changesets). The 
    collect into one release.
 3. Merging the version PR tags `desktop-vX.Y.Z` and starts the Desktop workflow on the tag. It
    checks that the tag matches the version and publishes both exes, the .dmg, the Windows agent
-   (`rd-agent-X.Y.Z-windows-x64.zip`) and `SHA256SUMS.txt` as a GitHub Release, with this
+   (`rd-agent-X.Y.Z-windows-x64-setup.exe` and `.zip`; the installer is
+   `packaging/windows/rd-agent.nsi`) and `SHA256SUMS.txt` as a GitHub Release, with this
    version's changelog section as notes.
 
 A manual `bun run version` (from the root) does step 2's edits locally. Pushing a

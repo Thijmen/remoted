@@ -121,6 +121,7 @@ tools/gen-keymap           Chromium key table -> Rust/TS keymaps
 tools/release              changesets helper: rd Desktop version -> Cargo.toml/Cargo.lock
 .changeset                 pending release notes (changesets)
 packaging/macos            app bundle, signing, LaunchAgent
+packaging/windows          rd-agent installer (NSIS, per user)
 deploy/Dockerfile          gateway image (linux/arm64)
 ```
 
