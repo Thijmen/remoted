@@ -1,9 +1,10 @@
 # Build ghcr.io/thijmen/rd-gateway for the arm64 k3s cluster on every push to main
-# that touches the gateway, protocol, flow control or viewer, then open a PR on
-# the GitOps repo (repository variable GITOPS_REPO) bumping k8s/services/rd/app/values.yaml (image.tag).
+# that touches the gateway, protocol, flow control or viewer, then open a PR on a GitOps
+# repo bumping k8s/services/rd/app/values.yaml (image.tag).
 #
-# The bump PR needs the INFRA_ARGOCD_PAT secret (contents + pull-requests write on
-# the GitOps repo (repository variable GITOPS_REPO)) and is skipped without it. GITHUB_TOKEN covers the GHCR push.
+# The bump PR needs the repository variable GITOPS_REPO (owner/name) and the secret
+# INFRA_ARGOCD_PAT (contents + pull-requests write on that repo); it is skipped without
+# either. GITHUB_TOKEN covers the GHCR push.
 name: Gateway image
 
 on:
@@ -73,7 +74,7 @@ jobs:
   update_infra:
     runs-on: ubuntu-latest
     needs: build
-    if: needs.build.outputs.has_infra_pat == 'true'
+    if: needs.build.outputs.has_infra_pat == 'true' && vars.GITOPS_REPO != ''
     steps:
       - uses: actions/checkout@v4
         with:
