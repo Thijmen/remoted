@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 
 use crate::auth::AgentIdentity;
 use crate::config::valid_machine_name;
-use crate::registry::{AgentRegistration, CONTROL_QUEUE};
+use crate::registry::{AgentRegistration, CONTROL_QUEUE, Kick};
 use crate::session::agent_auth_failed;
 use crate::state::AppState;
 use crate::util::{client_ip, close_ws};
@@ -90,7 +90,7 @@ async fn run_control(st: Arc<AppState>, ident: AgentIdentity, ip: IpAddr, mut so
     info!(%ip, machine, os = reg.os, agent_version = reg.agent_version, "agent registered");
     // Register before acknowledging, so the machine is online once the agent hears back.
     let (tx, mut outbox) = mpsc::channel(CONTROL_QUEUE);
-    let (conn_id, mut replaced) = st.registry.register_agent(reg, tx);
+    let (conn_id, mut kick) = st.registry.register_agent(reg, tx);
     st.metrics.agent_registrations.inc();
     let registered = serde_json::to_string(&GatewayToAgent::Registered {
         gw_proto: GW_PROTO_VERSION,
@@ -103,7 +103,7 @@ async fn run_control(st: Arc<AppState>, ident: AgentIdentity, ip: IpAddr, mut so
             conn_id,
             &mut socket,
             &mut outbox,
-            &mut replaced,
+            &mut kick,
             shutdown,
         )
         .await
@@ -129,7 +129,7 @@ async fn serve(
     conn_id: u64,
     socket: &mut WebSocket,
     outbox: &mut mpsc::Receiver<GatewayToAgent>,
-    replaced: &mut oneshot::Receiver<()>,
+    kick: &mut oneshot::Receiver<Kick>,
     mut shutdown: Pin<&mut impl Future<Output = ()>>,
 ) -> Exit {
     let t = st.cfg.timeouts;
@@ -142,7 +142,10 @@ async fn serve(
     loop {
         tokio::select! {
             biased;
-            _ = &mut *replaced => return Exit::Close(close::REPLACED, "replaced by a newer connection"),
+            kicked = &mut *kick => return match kicked {
+                Ok(Kick::Revoked(reason)) => Exit::Close(close::FORBIDDEN, reason),
+                Ok(Kick::Replaced) | Err(_) => Exit::Close(close::REPLACED, "replaced by a newer connection"),
+            },
             () = &mut shutdown => return Exit::Close(1012, "gateway restarting"),
             cmd = outbox.recv() => {
                 // The registry only drops our sender when replacing us (handled above).

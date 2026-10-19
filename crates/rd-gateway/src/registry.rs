@@ -15,6 +15,7 @@ use tokio::time::Instant;
 use tracing::warn;
 
 use crate::config::{MachineConfig, RecoveryLink};
+use crate::devices::Device;
 use crate::util::unix_ms;
 
 /// Capacity of each agent control socket's outgoing queue. Control messages are rare; a full
@@ -140,10 +141,19 @@ pub enum ClaimError {
     Expired,
 }
 
+/// Why the gateway closes an agent's control connection from outside its task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kick {
+    /// A newer connection registered as the same machine (4009).
+    Replaced,
+    /// The device was removed or its token replaced (4002, with this reason).
+    Revoked(&'static str),
+}
+
 struct AgentConn {
     conn_id: u64,
     tx: mpsc::Sender<GatewayToAgent>,
-    replaced: Option<oneshot::Sender<()>>,
+    kick: Option<oneshot::Sender<Kick>>,
 }
 
 struct Session {
@@ -208,6 +218,8 @@ pub struct Registry {
 pub struct MachineView {
     pub machine: String,
     pub name: String,
+    /// Added in the portal: its token can be replaced and the device removed there.
+    pub managed: bool,
     pub online: bool,
     pub since_ms: Option<u64>,
     pub os: Option<String>,
@@ -247,28 +259,28 @@ impl Registry {
     }
 
     /// Register a control connection; a previous one for the same machine is told to close
-    /// (4009) through its `replaced` channel. Returns the connection id and this connection's
-    /// own `replaced` receiver.
+    /// (4009) through its `kick` channel. Returns the connection id and this connection's own
+    /// `kick` receiver.
     pub fn register_agent(
         &self,
         reg: AgentRegistration,
         tx: mpsc::Sender<GatewayToAgent>,
-    ) -> (u64, oneshot::Receiver<()>) {
+    ) -> (u64, oneshot::Receiver<Kick>) {
         let mut inner = self.inner.lock();
         inner.next_conn_id += 1;
         let conn_id = inner.next_conn_id;
         let m = inner.machines.entry(reg.machine).or_default();
         if let Some(old) = m.agent.take()
-            && let Some(replaced) = old.replaced
+            && let Some(kick) = old.kick
         {
-            let _ = replaced.send(());
+            let _ = kick.send(Kick::Replaced);
         }
         m.fail_pending_session();
-        let (replaced_tx, replaced_rx) = oneshot::channel();
+        let (kick_tx, kick_rx) = oneshot::channel();
         m.agent = Some(AgentConn {
             conn_id,
             tx,
-            replaced: Some(replaced_tx),
+            kick: Some(kick_tx),
         });
         m.info = Some(AgentInfo {
             os: reg.os,
@@ -276,7 +288,29 @@ impl Registry {
             state: reg.state,
         });
         m.since_ms = Some(unix_ms());
-        (conn_id, replaced_rx)
+        (conn_id, kick_rx)
+    }
+
+    /// A device's token stopped working: close its control connection (4002 with `reason`) and
+    /// end its viewer session. With `forget` (the device was removed) the machine also leaves
+    /// the portal listing.
+    pub fn revoke(&self, machine: &str, reason: &'static str, forget: bool) {
+        let mut inner = self.inner.lock();
+        let Some(m) = inner.machines.get_mut(machine) else {
+            return;
+        };
+        if let Some(agent) = m.agent.take() {
+            if let Some(kick) = agent.kick {
+                let _ = kick.send(Kick::Revoked(reason));
+            }
+            m.since_ms = Some(unix_ms());
+        }
+        if let Some(s) = m.session.as_mut() {
+            s.signal_end(EndReason::AgentOffline);
+        }
+        if forget {
+            inner.machines.remove(machine);
+        }
     }
 
     /// Remove a control connection if it is still the current one for `machine`.
@@ -450,9 +484,11 @@ impl Registry {
             .count()
     }
 
-    /// Portal listing: configured machines in file order, then any other registered agent.
-    pub fn machines(&self) -> Vec<MachineView> {
+    /// Portal listing: configured machines in file order, then devices added in the portal (in
+    /// the order they were added), then any other registered agent.
+    pub fn machines(&self, devices: &[Device]) -> Vec<MachineView> {
         let inner = self.inner.lock();
+        let device = |id: &str| devices.iter().find(|d| d.machine == id);
         let view = |id: &str, cfg: Option<&MachineConfig>| {
             let m = inner.machines.get(id);
             let info = m.and_then(|m| m.info.as_ref());
@@ -460,7 +496,9 @@ impl Registry {
                 machine: id.to_owned(),
                 name: cfg
                     .and_then(|c| c.name.clone())
+                    .or_else(|| device(id).and_then(|d| d.name.clone()))
                     .unwrap_or_else(|| id.to_owned()),
+                managed: device(id).is_some(),
                 online: m.is_some_and(|m| m.agent.is_some()),
                 since_ms: m.and_then(|m| m.since_ms),
                 os: info.map(|i| i.os.clone()),
@@ -473,15 +511,22 @@ impl Registry {
                 recovery: cfg.map(|c| c.recovery.clone()).unwrap_or_default(),
             }
         };
+        let configured = |id: &str| self.configured.iter().any(|c| c.machine == id);
         let mut out: Vec<MachineView> = self
             .configured
             .iter()
             .map(|c| view(&c.machine, Some(c)))
             .collect();
+        out.extend(
+            devices
+                .iter()
+                .filter(|d| !configured(&d.machine))
+                .map(|d| view(&d.machine, None)),
+        );
         let mut extra: Vec<&String> = inner
             .machines
             .keys()
-            .filter(|id| !self.configured.iter().any(|c| &c.machine == *id))
+            .filter(|id| !configured(id) && device(id).is_none())
             .collect();
         extra.sort();
         out.extend(extra.into_iter().map(|id| view(id, None)));
@@ -560,26 +605,26 @@ mod tests {
             StartError::Offline
         );
         let (tx1, _rx1) = mpsc::channel(CONTROL_QUEUE);
-        let (id1, mut replaced1) = r.register_agent(reg("mbp"), tx1);
+        let (id1, mut kick1) = r.register_agent(reg("mbp"), tx1);
         let pending = r
             .start_session("mbp", "a@x", "ip", Duration::from_secs(10))
             .unwrap();
         let mut pending_end = pending.end;
         let (tx2, _rx2) = mpsc::channel(CONTROL_QUEUE);
-        let (id2, _replaced2) = r.register_agent(reg("mbp"), tx2);
-        assert!(replaced1.try_recv().is_ok());
+        let (id2, _kick2) = r.register_agent(reg("mbp"), tx2);
+        assert_eq!(kick1.try_recv(), Ok(Kick::Replaced));
         assert_eq!(pending_end.try_recv().unwrap(), EndReason::AgentOffline);
         assert!(
             !r.unregister_agent("mbp", id1),
             "stale connection must not unregister"
         );
-        let list = r.machines();
+        let list = r.machines(&[]);
         assert_eq!(list.len(), 2);
         assert_eq!((list[0].machine.as_str(), list[0].online), ("pc", false));
         assert_eq!(list[0].name, "PC");
         assert_eq!((list[1].machine.as_str(), list[1].online), ("mbp", true));
         assert!(r.unregister_agent("mbp", id2));
         assert_eq!(r.online_count(), 0);
-        assert!(!r.machines()[1].online);
+        assert!(!r.machines(&[])[1].online);
     }
 }

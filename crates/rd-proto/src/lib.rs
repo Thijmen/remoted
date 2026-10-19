@@ -5,11 +5,13 @@
 //! - **binary frames**: compact little-endian media / input / ack / ping frames ([`bin`]).
 //!
 //! The gateway never parses viewer<->agent media; it only peeks at the first byte.
-//! The full spec lives in `docs/protocol.md`.
+//! The full spec lives in `docs/protocol.md`. [`setup_code`] is the agent onboarding string the
+//! gateway issues and the agent accepts.
 
 pub mod bin;
 pub mod control;
 pub mod keymap;
+pub mod setup_code;
 
 /// Viewer <-> agent protocol version spoken by this build.
 pub const PROTO_VERSION: u16 = 1;

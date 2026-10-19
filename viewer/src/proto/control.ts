@@ -202,6 +202,8 @@ export type ProbeEvt = ProbeHello | ProbeDone | ProbeErrorMsg;
 export interface Me {
   email: string;
   dev: boolean;
+  /** The gateway can add devices (portal "Add device"). */
+  devices: boolean;
 }
 
 export interface RecoveryLink {
@@ -212,6 +214,8 @@ export interface RecoveryLink {
 export interface MachineInfo {
   machine: string;
   name: string;
+  /** Added in the portal: its token can be replaced and the device removed there. */
+  managed: boolean;
   online: boolean;
   since_ms: number | null;
   os: string;
@@ -423,6 +427,7 @@ export function parseMachines(v: unknown): MachineInfo[] {
     out.push({
       machine: m.machine,
       name: str(m, 'name', m.machine) || m.machine,
+      managed: bool(m, 'managed'),
       online: bool(m, 'online'),
       since_ms: typeof m.since_ms === 'number' ? m.since_ms : null,
       os: str(m, 'os'),
@@ -437,5 +442,28 @@ export function parseMachines(v: unknown): MachineInfo[] {
 
 export function parseMe(v: unknown): Me | null {
   if (!isObj(v) || typeof v.email !== 'string') return null;
-  return { email: v.email, dev: bool(v, 'dev') };
+  return { email: v.email, dev: bool(v, 'dev'), devices: bool(v, 'devices') };
+}
+
+/** A device's credentials, returned once when it is added or its token is replaced. */
+export interface DeviceIssued {
+  machine: string;
+  name: string | null;
+  gateway: string;
+  token: string;
+  setupCode: string;
+}
+
+export function parseDeviceIssued(v: unknown): DeviceIssued | null {
+  if (!isObj(v)) return null;
+  const machine = str(v, 'machine');
+  const setupCode = str(v, 'setup_code');
+  if (!machine || !setupCode) return null;
+  return {
+    machine,
+    name: typeof v.name === 'string' && v.name ? v.name : null,
+    gateway: str(v, 'gateway'),
+    token: str(v, 'token'),
+    setupCode,
+  };
 }

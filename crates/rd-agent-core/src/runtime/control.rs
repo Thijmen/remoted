@@ -309,8 +309,13 @@ impl Control<'_> {
                 );
                 Outcome::Refused
             }
+            // The machine id does not match the token, or the device was removed or given a new
+            // token in the portal (the reason says which): only a new setup helps.
             Some(close::FORBIDDEN) => {
-                error!(reason, "the gateway rejected this machine id for the token");
+                error!(
+                    reason,
+                    "the gateway refused this agent; run `rd-agent setup` with a new setup code"
+                );
                 Outcome::Refused
             }
             _ => {

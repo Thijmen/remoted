@@ -1,5 +1,6 @@
-//! `rd-agent setup`: interactive first-time setup, run in person at the host. Writes
-//! config.toml with the token (readable only by the user), on macOS shows the permission
+//! `rd-agent setup`: interactive first-time setup, run in person at the host. Asks for the setup
+//! code from the portal's *Add device* (or, without one, the gateway URL, machine id and token),
+//! writes config.toml with the token (readable only by the user), on macOS shows the permission
 //! prompts, and installs the login service (LaunchAgent / autostart).
 //!
 //! On macOS the token is not kept in the Keychain: the app is signed with a self-signed
@@ -10,6 +11,7 @@ use std::io::{BufRead as _, Write as _};
 
 use anyhow::{Context as _, bail, ensure};
 use rd_agent_core::config::AgentConfig;
+use rd_proto::setup_code::{SetupCode, valid_machine_id};
 
 use crate::{SetupArgs, config, host};
 
@@ -49,44 +51,24 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         .and_then(Result::ok);
     println!("rd-agent setup (config: {})", path.display());
 
-    let gateway_url = match &args.gateway {
-        Some(g) => g.clone(),
-        None => prompt_required(
-            "Gateway URL (e.g. wss://rd-agent.example.com)",
-            existing.as_ref().map(|c| c.gateway_url.as_str()),
-        )?,
+    // A setup code answers all three questions; flags mean a scripted setup without one.
+    let code = if args.gateway.is_none() && args.machine.is_none() {
+        prompt_setup_code()?
+    } else {
+        None
     };
-    let url = url::Url::parse(&gateway_url).context("invalid gateway URL")?;
-    ensure!(
-        matches!(url.scheme(), "ws" | "wss"),
-        "the gateway URL must start with ws:// or wss://"
-    );
-    let machine = match &args.machine {
-        Some(m) => m.clone(),
-        None => prompt(
-            "Machine id",
-            &existing
-                .as_ref()
-                .map_or_else(default_machine, |c| c.machine.clone()),
-        )?,
+    let (gateway_url, machine, token) = match code {
+        Some(code) => {
+            println!(
+                "setup code for machine {} at {}",
+                code.machine(),
+                code.gateway
+            );
+            let machine = code.machine().to_owned();
+            (code.gateway, machine, code.token)
+        }
+        None => ask_connection(args, existing.as_ref())?,
     };
-    ensure!(
-        !machine.is_empty()
-            && machine.len() <= 64
-            && machine
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
-        "machine ids are 1-64 characters of [A-Za-z0-9_-]"
-    );
-
-    // Enter keeps the token already in the config file (if it is for this machine).
-    let current = existing
-        .as_ref()
-        .and_then(|c| c.token.as_deref())
-        .map(str::trim)
-        .filter(|t| config::token_machine(t) == Some(machine.as_str()))
-        .map(str::to_owned);
-    let token = prompt_token(&machine, current)?;
 
     let cfg = AgentConfig {
         gateway_url,
@@ -114,6 +96,64 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         host::service::install()?;
     }
     Ok(())
+}
+
+/// The setup code from the portal, if the user has one (Enter skips). Asks again after a code
+/// that does not parse.
+fn prompt_setup_code() -> anyhow::Result<Option<SetupCode>> {
+    loop {
+        print!(
+            "Setup code (from Add device in the portal; Enter to type the gateway, machine id \
+             and token instead): "
+        );
+        let answer = read_line()?;
+        if answer.is_empty() {
+            return Ok(None);
+        }
+        match SetupCode::decode(&answer) {
+            Ok(code) => return Ok(Some(code)),
+            Err(e) => println!("{e}"),
+        }
+    }
+}
+
+/// Gateway URL, machine id and token, asked one by one (no setup code).
+fn ask_connection(
+    args: &SetupArgs,
+    existing: Option<&AgentConfig>,
+) -> anyhow::Result<(String, String, String)> {
+    let gateway_url = match &args.gateway {
+        Some(g) => g.clone(),
+        None => prompt_required(
+            "Gateway URL (e.g. wss://rd-agent.example.com)",
+            existing.map(|c| c.gateway_url.as_str()),
+        )?,
+    };
+    let url = url::Url::parse(&gateway_url).context("invalid gateway URL")?;
+    ensure!(
+        matches!(url.scheme(), "ws" | "wss"),
+        "the gateway URL must start with ws:// or wss://"
+    );
+    let machine = match &args.machine {
+        Some(m) => m.clone(),
+        None => prompt(
+            "Machine id",
+            &existing.map_or_else(default_machine, |c| c.machine.clone()),
+        )?,
+    };
+    ensure!(
+        valid_machine_id(&machine),
+        "machine ids are 1-64 characters of [A-Za-z0-9_-]"
+    );
+
+    // Enter keeps the token already in the config file (if it is for this machine).
+    let current = existing
+        .and_then(|c| c.token.as_deref())
+        .map(str::trim)
+        .filter(|t| config::token_machine(t) == Some(machine.as_str()))
+        .map(str::to_owned);
+    let token = prompt_token(&machine, current)?;
+    Ok((gateway_url, machine, token))
 }
 
 /// Nothing to grant on Windows.

@@ -22,7 +22,7 @@ Download `rd-agent-<version>-windows-x64-setup.exe` from the
 [GitHub Releases](https://github.com/Thijmen/remoted/releases) and run it. It installs for your
 account only (no administrator rights) into `%LOCALAPPDATA%\Programs\rd-agent`, adds Start menu
 shortcuts (*rd agent setup*, *rd agent status*, *rd agent logs*) and an entry in Settings → Apps,
-and offers the setup (step 3) at the end. The installer is not signed, so SmartScreen asks once:
+and offers the setup (step 3) at the end, so add the PC in the portal (step 2) first. The installer is not signed, so SmartScreen asks once:
 *More info* → *Run anyway*.
 
 Running a newer installer updates the agent in place: it stops the running agent, replaces the
@@ -45,17 +45,13 @@ for example `%LOCALAPPDATA%\Programs\rd-agent\`:
 - `rd-agent.exe`: the agent and its commands (`setup`, `status`, …);
 - `rd-agentw.exe`: the background launcher the autostart runs (see below).
 
-## 2. Token
+## 2. Add the PC in the portal
 
-On any machine with bash (Git Bash works):
-
-```sh
-tools/new-agent-token.sh pc
-```
-
-Store the **sha256** where the gateway reads agent hashes (see [gateway.md](gateway.md)); only
-the agent gets the **token** (next step). Every device needs its own machine id and token;
-[devices.md](devices.md) explains how they work, and how to rotate or remove them.
+Open your gateway's portal (for example `https://rd.example.com`), click **Add device** and give
+the PC a name. The portal shows a **setup code** (`rds1_…`) once: copy it for the next step.
+It holds the gateway URL and the PC's token, so treat it like a password. Every device gets its
+own machine id and token; [devices.md](devices.md) explains how they work, how to rotate or
+remove them, and how to provision a token without the portal.
 
 ## 3. Setup (in person)
 
@@ -65,9 +61,10 @@ The installer's finish page and the *rd agent setup* shortcut run it; from a ter
 & "$env:LOCALAPPDATA\Programs\rd-agent\rd-agent.exe" setup
 ```
 
-Setup asks for the gateway URL (the agent host of your gateway, e.g.
-`wss://rd-agent.example.com`), the machine id (it suggests the computer name) and the token,
-then:
+Setup asks for the setup code from step 2: paste it (right-click in the console window, or
+Ctrl+V) and press Enter. Without a code, press Enter and it asks for the gateway URL (the agent
+host of your gateway, e.g. `wss://rd-agent.example.com`), the machine id (it suggests the
+computer name) and the token one by one. Then it:
 
 - writes the config file with the token, `%LOCALAPPDATA%\rd-agent\config.toml`. It lives in
   your local (not roaming) profile, which only you and administrators can read. Setup never

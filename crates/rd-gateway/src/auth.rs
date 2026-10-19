@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::warn;
 
-use crate::config::valid_machine_name;
+use crate::devices::DeviceStore;
 use crate::state::AppState;
 use crate::util::client_ip;
 
@@ -26,7 +26,6 @@ use crate::util::client_ip;
 const AUTH_FAILURES_PER_MINUTE: u32 = 5;
 /// Prune limiter state once this many IPs are tracked.
 const LIMITER_PRUNE_AT: usize = 1024;
-const TOKEN_PREFIX: &str = "rd1";
 
 /// Identity of an authenticated agent connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,11 +63,13 @@ impl IntoResponse for AuthRejection {
     }
 }
 
-/// Verifies `Authorization: Bearer rd1.<machine>.<secret>` against
-/// `{tokens_dir}/<machine>` (hex SHA-256 of the whole token).
+/// Verifies `Authorization: Bearer rd1.<machine>.<secret>` against the SHA-256 of the whole
+/// token: the device store's (devices added in the portal) or `{tokens_dir}/<machine>` (hex,
+/// provisioned from outside).
 pub struct AgentAuth {
     dev: bool,
     tokens_dir: PathBuf,
+    devices: Arc<DeviceStore>,
     failures: DefaultKeyedRateLimiter<IpAddr>,
     clock: DefaultClock,
     /// IPs that exhausted their failure budget, until when. Checked before the token so a
@@ -78,11 +79,12 @@ pub struct AgentAuth {
 }
 
 impl AgentAuth {
-    pub fn new(dev: bool, tokens_dir: PathBuf) -> Self {
+    pub fn new(dev: bool, tokens_dir: PathBuf, devices: Arc<DeviceStore>) -> Self {
         let per_minute = NonZeroU32::new(AUTH_FAILURES_PER_MINUTE).expect("non-zero constant");
         AgentAuth {
             dev,
             tokens_dir,
+            devices,
             failures: RateLimiter::keyed(Quota::per_minute(per_minute)),
             clock: DefaultClock::default(),
             blocked: Mutex::new(HashMap::new()),
@@ -119,15 +121,27 @@ impl AgentAuth {
         }
     }
 
+    /// Whether `machine` has a provisioned token file (such ids cannot become devices).
+    pub fn provisioned(&self, machine: &str) -> bool {
+        self.tokens_dir.join(machine).is_file()
+    }
+
     async fn check_token(&self, token: Option<&str>) -> Result<String, &'static str> {
         let token = token.ok_or("missing bearer token")?;
         let machine = machine_of(token).ok_or("malformed token")?;
-        let path = self.tokens_dir.join(machine);
-        let stored = tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|_| "unknown machine")?;
-        let mut expected = [0u8; 32];
-        hex::decode_to_slice(stored.trim(), &mut expected).map_err(|_| "corrupt token file")?;
+        let expected = match self.devices.token_hash(machine) {
+            Some(hash) => hash,
+            None => {
+                let path = self.tokens_dir.join(machine);
+                let stored = tokio::fs::read_to_string(&path)
+                    .await
+                    .map_err(|_| "unknown machine")?;
+                let mut expected = [0u8; 32];
+                hex::decode_to_slice(stored.trim(), &mut expected)
+                    .map_err(|_| "corrupt token file")?;
+                expected
+            }
+        };
         let actual = Sha256::digest(token.as_bytes());
         if bool::from(actual.as_slice().ct_eq(&expected)) {
             Ok(machine.to_owned())
@@ -182,9 +196,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 
 /// `rd1.<machine>.<secret>` → `<machine>` (validated).
 fn machine_of(token: &str) -> Option<&str> {
-    let mut parts = token.splitn(3, '.');
-    let (prefix, machine, secret) = (parts.next()?, parts.next()?, parts.next()?);
-    (prefix == TOKEN_PREFIX && !secret.is_empty() && valid_machine_name(machine)).then_some(machine)
+    rd_proto::setup_code::token_machine(token)
 }
 
 /// Authenticated viewer, inserted into request extensions by [`viewer_auth`].
@@ -316,7 +328,7 @@ mod tests {
             format!("{}\n", hex::encode(Sha256::digest(token))),
         )
         .unwrap();
-        let auth = AgentAuth::new(false, dir.clone());
+        let auth = AgentAuth::new(false, dir.clone(), Arc::new(DeviceStore::disabled()));
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
         let ok = auth
             .verify(&headers(&format!("Bearer {token}")), ip, "/")
@@ -349,7 +361,11 @@ mod tests {
 
     #[tokio::test]
     async fn dev_accepts_anything() {
-        let auth = AgentAuth::new(true, PathBuf::from("/nonexistent"));
+        let auth = AgentAuth::new(
+            true,
+            PathBuf::from("/nonexistent"),
+            Arc::new(DeviceStore::disabled()),
+        );
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
         let id = auth
             .verify(&headers("Bearer rd1.mbp.x"), ip, "/")

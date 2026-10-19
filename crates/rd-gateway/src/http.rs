@@ -8,16 +8,22 @@ use axum::extract::{DefaultBodyLimit, Extension, Path, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::{from_fn_with_state, map_response};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
+use rd_proto::setup_code::SetupCode;
+use serde::Deserialize;
+use tracing::info;
 
 use crate::agent::ws_agent;
 use crate::assets::{self, Caching};
 use crate::auth::{ViewerIdentity, viewer_auth};
+use crate::devices::{Device, DeviceError};
 use crate::probe;
 use crate::session::{ws_agent_session, ws_view};
 use crate::state::AppState;
 
 const REPORT_MAX_BYTES: usize = 1 << 20;
+/// Device requests are a machine id and a name.
+const DEVICE_MAX_BYTES: usize = 4 << 10;
 
 /// `connect-src` also allows the Tauri v2 IPC endpoints (`ipc:` on macOS/Linux, `http://ipc.localhost` on
 /// Windows) so the page can call the desktop app (docs/desktop-client.md); browsers have no such endpoints.
@@ -33,6 +39,18 @@ pub fn viewer_router(st: Arc<AppState>) -> Router {
         .route("/assets/{*path}", get(hashed_asset))
         .route("/api/me", get(api_me))
         .route("/api/machines", get(api_machines))
+        // JSON bodies only (the Json extractor wants Content-Type: application/json): a
+        // cross-site page cannot send those without a CORS preflight, which the gateway never
+        // answers. DELETE is preflighted anyway.
+        .route(
+            "/api/devices",
+            post(api_add_device).layer(DefaultBodyLimit::max(DEVICE_MAX_BYTES)),
+        )
+        .route(
+            "/api/devices/{machine}/token",
+            post(api_replace_token).layer(DefaultBodyLimit::max(DEVICE_MAX_BYTES)),
+        )
+        .route("/api/devices/{machine}", delete(api_remove_device))
         .route(
             "/api/probe/report",
             post(probe::http_report).layer(DefaultBodyLimit::max(REPORT_MAX_BYTES)),
@@ -140,13 +158,115 @@ async fn api_me(
     State(st): State<Arc<AppState>>,
     Extension(viewer): Extension<ViewerIdentity>,
 ) -> Response {
-    no_store(Json(
-        serde_json::json!({ "email": viewer.user, "uid": viewer.uid, "dev": st.cfg.dev }),
-    ))
+    no_store(Json(serde_json::json!({
+        "email": viewer.user,
+        "uid": viewer.uid,
+        "dev": st.cfg.dev,
+        "devices": st.devices_available(),
+    })))
 }
 
 async fn api_machines(State(st): State<Arc<AppState>>) -> Response {
-    no_store(Json(st.registry.machines()))
+    no_store(Json(st.registry.machines(&st.devices.list())))
+}
+
+#[derive(Deserialize)]
+struct AddDevice {
+    machine: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// `POST /api/devices` `{"machine":"studio","name":"Mac Studio"}` → 201 with the setup code.
+async fn api_add_device(
+    State(st): State<Arc<AppState>>,
+    Extension(viewer): Extension<ViewerIdentity>,
+    Json(req): Json<AddDevice>,
+) -> Response {
+    let Some(gateway) = st.agent_url.clone() else {
+        return device_error(&DeviceError::Disabled);
+    };
+    let machine = req.machine.trim();
+    match st
+        .devices
+        .add(machine, req.name.as_deref(), &viewer.user, |m| {
+            st.agent_auth.provisioned(m)
+        }) {
+        Ok((device, token)) => {
+            info!(target: "audit", event = "device_add", user = viewer.user, ip = %viewer.ip, machine, "device_add");
+            issued(StatusCode::CREATED, &device, gateway, token)
+        }
+        Err(e) => device_error(&e),
+    }
+}
+
+/// `POST /api/devices/{machine}/token` (body `{}`): a new token; the old one stops working and
+/// a connected agent is disconnected.
+async fn api_replace_token(
+    State(st): State<Arc<AppState>>,
+    Extension(viewer): Extension<ViewerIdentity>,
+    Path(machine): Path<String>,
+    Json(_): Json<serde_json::Value>,
+) -> Response {
+    let Some(gateway) = st.agent_url.clone() else {
+        return device_error(&DeviceError::Disabled);
+    };
+    match st.devices.replace_token(&machine) {
+        Ok((device, token)) => {
+            st.registry.revoke(&machine, "token replaced", false);
+            info!(target: "audit", event = "device_token", user = viewer.user, ip = %viewer.ip, machine, "device_token");
+            issued(StatusCode::OK, &device, gateway, token)
+        }
+        Err(e) => device_error(&e),
+    }
+}
+
+/// `DELETE /api/devices/{machine}`: the token stops working, a connected agent is
+/// disconnected and the device leaves the portal.
+async fn api_remove_device(
+    State(st): State<Arc<AppState>>,
+    Extension(viewer): Extension<ViewerIdentity>,
+    Path(machine): Path<String>,
+) -> Response {
+    match st.devices.remove(&machine) {
+        Ok(_) => {
+            st.registry.revoke(&machine, "device removed", true);
+            info!(target: "audit", event = "device_remove", user = viewer.user, ip = %viewer.ip, machine, "device_remove");
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => device_error(&e),
+    }
+}
+
+/// The one response that carries a device's token (and setup code); never cached.
+fn issued(status: StatusCode, device: &Device, gateway: String, token: String) -> Response {
+    let setup_code = SetupCode {
+        gateway: gateway.clone(),
+        token: token.clone(),
+    }
+    .encode();
+    let body = serde_json::json!({
+        "machine": device.machine,
+        "name": device.name,
+        "gateway": gateway,
+        "token": token,
+        "setup_code": setup_code,
+    });
+    (status, [(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
+}
+
+fn device_error(e: &DeviceError) -> Response {
+    let status = match e {
+        DeviceError::Disabled => StatusCode::SERVICE_UNAVAILABLE,
+        DeviceError::InvalidMachine | DeviceError::InvalidName => StatusCode::BAD_REQUEST,
+        DeviceError::Exists | DeviceError::Provisioned => StatusCode::CONFLICT,
+        DeviceError::NotFound => StatusCode::NOT_FOUND,
+        DeviceError::Save(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    if let DeviceError::Save(why) = e {
+        tracing::error!(error = why, "device store not saved");
+    }
+    (status, Json(serde_json::json!({ "error": e.to_string() }))).into_response()
 }
 
 fn no_store(body: impl IntoResponse) -> Response {

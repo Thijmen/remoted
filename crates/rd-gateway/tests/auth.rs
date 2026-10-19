@@ -170,7 +170,8 @@ async fn viewer_403_without_allowlisted_email_or_origin() {
     assert_eq!(r.header("cache-control"), Some("no-store"));
     assert_eq!(
         r.json(),
-        serde_json::json!({ "email": "me@example.test", "uid": null, "dev": false })
+        // No RD_STATE_DIR here: Add device is off.
+        serde_json::json!({ "email": "me@example.test", "uid": null, "dev": false, "devices": false })
     );
 
     // WebSocket upgrades also need the exact public Origin.

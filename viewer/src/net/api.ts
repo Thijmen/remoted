@@ -1,4 +1,11 @@
-import { type MachineInfo, type Me, parseMachines, parseMe } from '../proto/control';
+import {
+  type DeviceIssued,
+  type MachineInfo,
+  type Me,
+  parseDeviceIssued,
+  parseMachines,
+  parseMe,
+} from '../proto/control';
 
 export class HttpError extends Error {
   constructor(
@@ -25,6 +32,62 @@ export async function fetchMachine(machine: string, signal?: AbortSignal): Promi
 
 export async function fetchMe(signal?: AbortSignal): Promise<Me | null> {
   return parseMe(await getJson('/api/me', signal));
+}
+
+/**
+ * A JSON request to the devices API. Errors carry the gateway's own message (`{"error": "…"}`)
+ * when it sent one.
+ */
+async function deviceRequest(method: 'POST' | 'DELETE', path: string, body?: unknown): Promise<unknown> {
+  const res = await fetch(path, {
+    method,
+    cache: 'no-store',
+    credentials: 'same-origin',
+    // JSON on purpose: a cross-site page cannot send it without a preflight.
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? null : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const err: unknown = await res.json();
+      if (typeof err === 'object' && err !== null && typeof (err as { error?: unknown }).error === 'string') {
+        message = (err as { error: string }).error;
+      }
+    } catch {
+      // not JSON: keep the status
+    }
+    throw new HttpError(res.status, message);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+function issued(v: unknown): DeviceIssued {
+  const out = parseDeviceIssued(v);
+  if (!out) throw new HttpError(500, 'the gateway sent no setup code');
+  return out;
+}
+
+export async function addDevice(machine: string, name: string): Promise<DeviceIssued> {
+  return issued(await deviceRequest('POST', '/api/devices', { machine, name }));
+}
+
+export async function replaceDeviceToken(machine: string): Promise<DeviceIssued> {
+  return issued(await deviceRequest('POST', `/api/devices/${encodeURIComponent(machine)}/token`, {}));
+}
+
+export async function removeDevice(machine: string): Promise<void> {
+  await deviceRequest('DELETE', `/api/devices/${encodeURIComponent(machine)}`);
+}
+
+/** A machine id suggestion from a display name: lower case, `[a-z0-9_-]`, at most 64. */
+export function machineIdFrom(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
 }
 
 /** Whether this browser is still signed in and allowed: `unknown` when the check itself failed. */
