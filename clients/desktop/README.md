@@ -1,7 +1,6 @@
 # rd Desktop
 
-The normal rd viewer (`https://rd.example.com`) in its own window, for Windows and
-macOS. While a session has the keyboard it also gets the shortcuts a browser tab never sees:
+The normal rd viewer (loaded from your gateway) in its own window, for Windows and macOS. While a session has the keyboard it also gets the shortcuts a browser tab never sees:
 
 - Windows: Alt+Tab, the Windows key, Alt+Esc, Ctrl+Esc, Alt+F4, Caps Lock, …
 - macOS: Cmd+Tab, Cmd+Space, Cmd+Q, Cmd+H, Ctrl+arrows (Spaces), Mission Control, …
@@ -15,8 +14,7 @@ gateway, so the app needs no update when the viewer changes. Design and the page
 ## Install
 
 Download from the [GitHub Releases](https://github.com/Thijmen/remoted/releases) (tags
-`desktop-v*`; the repository is private, so sign in to GitHub first), or from the artifacts of
-a run of the **Desktop** workflow.
+`desktop-v*`), or from the artifacts of a run of the **Desktop** workflow.
 
 ### Windows 10/11
 
@@ -49,7 +47,19 @@ is missing).
 
 ## Use
 
-Start **rd Desktop**, sign in with Authentik in the window, pick a machine and connect. When you
+Start **rd Desktop**. The first time, it asks for:
+
+- **Gateway URL**: where your rd gateway serves the viewer, e.g. `https://rd.example.com`
+  (`https://` is added if you leave it out; plain `http://` only for `localhost`).
+- **Sign-in domain** (optional): if the gateway sends you to a login page on another host (e.g.
+  Authentik at `auth.example.com`), enter `example.com` so that page loads in the window
+  instead of your browser.
+
+Both are saved in `settings.json` (below). To change them later, start the app with `--setup`
+(Windows: `rd-desktop.exe --setup`; macOS: `open -a "rd Desktop" --args --setup`), or delete
+the file.
+
+Then sign in in the window, pick a machine and connect. When you
 click into the remote screen, the keyboard belongs to the remote machine, shortcuts included.
 To get out, click outside the window (or a viewer control such as the settings menu): the grab
 ends at once, and keys work locally again.
@@ -61,8 +71,13 @@ ends at once, and keys work locally again.
   brightness keys stay local too. Caps Lock is this Mac's: the remote lock follows it.
 - Modifier mapping (settings menu): from Windows the default is "Windows keyboard → Mac" (Ctrl
   acts as Cmd, Alt+Tab as Cmd+Tab); from a Mac it is passthrough (Cmd is Cmd).
-- Links to other sites open in your normal browser. Only the gateway and
-  `*.example.com` (Authentik) load inside the window.
+- Links to other sites open in your normal browser. Only the gateway and hosts under the
+  sign-in domain load inside the window.
+
+Settings (`settings.json`: `gateway_url`, `sign_in_domain`):
+
+- Windows: `%APPDATA%\dev.thijmen.rd.desktop\settings.json`
+- macOS: `~/Library/Application Support/dev.thijmen.rd.desktop/settings.json`
 
 Data (the web profile with the login cookies) and the log `rd-desktop.log`:
 
@@ -77,7 +92,8 @@ events it forwarded.
 
 | | |
 |---|---|
-| `--url <URL>` / `RD_URL` | open another gateway, e.g. `http://127.0.0.1:18580` (the flag wins over the variable). That origin gets the `rd_set_grab` permission instead of only the production one. |
+| `--setup` | show the setup page, to change the saved gateway |
+| `--url <URL>` / `RD_URL` | open this gateway for this run only, without saving it, e.g. `http://127.0.0.1:18580` (the flag wins over the variable). That origin gets the `rd_set_grab` permission instead of the saved one. |
 | `RD_LOG` | log level: `error`, `warn`, `info` (default), `debug`, `trace` |
 
 ## Local testing
@@ -144,10 +160,13 @@ the generated `android/`, `ios/`, `Square*`, `StoreLogo.png` and `64x64.png`.
 ## How it works
 
 - `src/main.rs`: the window (title "rd", 1280×800, remembers nothing), navigation policy, the
-  `rd_set_grab` command. The command is an app command with an ACL permission
-  (`build.rs`: `AppManifest`), granted only by `capabilities/gateway.json` (remote origin
-  `https://rd.example.com`, window `main`) or, with `--url`, a capability added at
-  startup for that origin. No other command or plugin permission is exposed to the page.
+  `rd_set_grab` command and the setup commands. They are app commands with ACL permissions
+  (`build.rs`: `AppManifest`). `rd_set_grab` is granted only by a capability added at runtime
+  for the gateway origin in use (saved, or `--url`), window `main`. The setup page
+  (`dist/index.html`, bundled) gets only `rd_setup_info` and `rd_save_gateway`
+  (`capabilities/setup.json`, local pages). No other command or plugin permission is exposed.
+- `src/config.rs`: `--url`/`--setup`, the settings file and its validation, and which URLs may
+  load in the window.
 - `src/grab_windows.rs`: a thread with a message loop owning a `WH_KEYBOARD_LL` hook. It is
   installed when the page asks (`rd_set_grab({active: true})`) while the window is the
   foreground window, and the call resolves only after that. It comes off when the page says so,

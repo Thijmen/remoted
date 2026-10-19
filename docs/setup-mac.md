@@ -47,7 +47,7 @@ tools/new-agent-token.sh mbp
 "/Applications/RD Agent.app/Contents/MacOS/rd-agent" setup
 ```
 
-Setup asks for the gateway URL (default `wss://rd-agent.example.com`), the machine id
+Setup asks for the gateway URL (the agent host of your gateway, e.g. `wss://rd-agent.example.com`), the machine id
 (`mbp`) and the token (when the config file already has a token for that machine, Enter keeps
 it), then:
 - writes the config file with the token,

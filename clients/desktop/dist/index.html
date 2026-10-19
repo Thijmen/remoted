@@ -1,7 +1,29 @@
 <!doctype html>
 <html lang="en">
+<head>
 <meta charset="utf-8">
-<title>rd</title>
-<!-- Placeholder: rd Desktop opens the gateway URL, not a bundled page. -->
-<p>rd Desktop loads the viewer from the gateway.</p>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rd: set up</title>
+<link rel="stylesheet" href="setup.css">
+<script src="setup.js" defer></script>
+</head>
+<body>
+<main>
+  <h1>rd Desktop</h1>
+  <p>Enter the address of your rd gateway. The app opens it in this window from now on.</p>
+  <form id="form" novalidate>
+    <label for="url">Gateway URL</label>
+    <input id="url" name="url" type="text" inputmode="url" autocomplete="url" spellcheck="false"
+      placeholder="https://rd.example.com" required autofocus>
+    <label for="domain">Sign-in domain <span class="opt">(optional)</span></label>
+    <input id="domain" name="domain" type="text" spellcheck="false" placeholder="example.com">
+    <p class="hint">If your gateway sends you to a login page on another host (for example
+      <code>auth.example.com</code>), enter its domain so that page opens in this window. Other
+      sites always open in your browser.</p>
+    <p id="error" class="error" role="alert" hidden></p>
+    <button type="submit">Connect</button>
+  </form>
+  <p class="hint" id="where"></p>
+</main>
+</body>
 </html>
