@@ -2,5 +2,25 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "prConcurrentLimit": 4,
+  "packageRules": [
+    {
+      "description": "Bundle non-major Rust crate updates into one PR",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "Rust dependencies (non-major)"
+    },
+    {
+      "description": "Bundle non-major npm/bun updates into one PR",
+      "matchManagers": ["npm", "bun"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "JS dependencies (non-major)"
+    },
+    {
+      "description": "Bundle Docker image and GitHub Actions updates into one PR",
+      "matchManagers": ["dockerfile", "docker-compose", "github-actions"],
+      "groupName": "Docker and CI"
+    }
   ]
 }
