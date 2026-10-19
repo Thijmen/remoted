@@ -21,7 +21,6 @@ Guacamole: see [docs/recovery.md](docs/recovery.md).
 
 | | |
 |---|---|
-| [docs/plan.md](docs/plan.md) | design, milestones, risks |
 | [docs/protocol.md](docs/protocol.md) | wire protocol v1 |
 | [docs/gateway.md](docs/gateway.md) | gateway configuration and operation |
 | [docs/setup-mac.md](docs/setup-mac.md) | installing the Mac agent, local development |

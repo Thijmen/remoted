@@ -151,7 +151,7 @@ export function environment(): Record<string, unknown> {
   };
 }
 
-/** Runs the M0 network probe suite (see docs/plan.md "Milestones" M0). */
+/** Runs the M0 network probe suite. */
 export class ProbeRunner {
   private main: ProbeSocket | null = null;
   private readonly idleSockets: ProbeSocket[] = [];
