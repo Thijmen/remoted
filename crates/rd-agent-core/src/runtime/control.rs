@@ -1,6 +1,7 @@
-//! The control connection (`/ws/agent`): register, report state changes, receive
-//! `session_request` / `session_end`, reconnect with backoff. Sessions are managed here but run
-//! on their own sockets, so they survive control reconnects.
+//! The control connection (`/ws/agent`): register, report state changes (and with an update
+//! hookup `update_status`), receive `session_request` / `session_end` / `update`, reconnect with
+//! backoff. Sessions are managed here but run on their own sockets, so they survive control
+//! reconnects.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -10,8 +11,8 @@ use std::time::Duration;
 use futures_util::{SinkExt as _, StreamExt as _};
 use rd_proto::GW_PROTO_VERSION;
 use rd_proto::close;
-use rd_proto::control::{AgentToGateway, GatewayToAgent};
-use tokio::sync::{mpsc, oneshot};
+use rd_proto::control::{AgentToGateway, GatewayToAgent, UpdateStatus};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, sleep_until, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http::StatusCode;
@@ -23,7 +24,7 @@ use super::backoff::Backoff;
 use super::net::{DialError, WsStream, valid_session_id};
 use super::session::{self, Ended, StopReason};
 use super::task::TaskGuard;
-use super::{AGENT_VERSION, Ctx};
+use super::{Ctx, UpdateEvent};
 
 /// Largest control message we accept (the gateway's limit is 64 KiB too).
 pub(crate) const MAX_MESSAGE: usize = 64 << 10;
@@ -179,9 +180,11 @@ struct Control<'a> {
 impl Control<'_> {
     async fn serve<F: Future<Output = ()>>(mut self, mut shutdown: Pin<&mut F>) -> Outcome {
         let mut state = self.ctx.state.subscribe();
+        // Sent once registered (marked changed then), and after that on every change.
+        let mut update_status = self.ctx.updates.as_ref().map(|(status, _)| status.clone());
         let register = AgentToGateway::Register {
             machine: self.ctx.cfg.machine.clone(),
-            agent_version: AGENT_VERSION.into(),
+            agent_version: self.ctx.version.clone(),
             os: self.ctx.platform.os_description(),
             gw_proto: GW_PROTO_VERSION,
             state: *state.borrow_and_update(),
@@ -200,7 +203,13 @@ impl Control<'_> {
                 msg = self.ws.next() => {
                     last_rx = Instant::now();
                     match msg {
-                        Some(Ok(Message::Text(text))) => self.on_text(text.as_str()),
+                        Some(Ok(Message::Text(text))) => {
+                            if self.on_text(text.as_str())
+                                && let Some(status) = update_status.as_mut()
+                            {
+                                status.mark_changed();
+                            }
+                        }
                         Some(Ok(Message::Close(frame))) => {
                             let code = frame.as_ref().map(|f| u16::from(f.code));
                             let reason = frame.as_ref().map(|f| f.reason.to_string());
@@ -241,6 +250,13 @@ impl Control<'_> {
                         return self.lost();
                     }
                 }
+                status = status_changed(&mut update_status), if self.registered => {
+                    debug!(phase = ?status.phase, "update status changed");
+                    if !self.send(&AgentToGateway::UpdateStatus(status.clone())).await {
+                        return self.lost();
+                    }
+                    self.ctx.gate.reported.send_replace(Some(status));
+                }
             }
         }
     }
@@ -270,7 +286,8 @@ impl Control<'_> {
         Outcome::Shutdown
     }
 
-    fn on_text(&mut self, text: &str) {
+    /// Handles a gateway message; true when it was `registered`.
+    fn on_text(&mut self, text: &str) -> bool {
         match serde_json::from_str::<GatewayToAgent>(text) {
             Ok(GatewayToAgent::Registered { gw_proto }) => {
                 info!(
@@ -279,6 +296,10 @@ impl Control<'_> {
                     "registered with the gateway"
                 );
                 self.registered = true;
+                self.update_event(UpdateEvent::Registered {
+                    state: *self.ctx.state.borrow(),
+                });
+                return true;
             }
             Ok(GatewayToAgent::SessionRequest {
                 session,
@@ -295,8 +316,28 @@ impl Control<'_> {
             Ok(GatewayToAgent::SessionEnd { session, reason }) => {
                 self.sessions.end(&session, reason);
             }
+            Ok(GatewayToAgent::Update { version }) => {
+                if self.ctx.updates.is_some() {
+                    info!(version, "the gateway asks to install an update");
+                    self.update_event(UpdateEvent::Install { version });
+                } else {
+                    warn!(
+                        version,
+                        "update requested, but this agent cannot update itself"
+                    );
+                }
+            }
             Ok(GatewayToAgent::Unknown) => debug!("unknown gateway message ignored"),
             Err(e) => warn!("unparseable gateway message ignored: {e}"),
+        }
+        false
+    }
+
+    fn update_event(&self, event: UpdateEvent) {
+        if let Some((_, events)) = &self.ctx.updates
+            && events.send(event).is_err()
+        {
+            debug!("the updater is gone; update event dropped");
         }
     }
 
@@ -352,6 +393,17 @@ impl Control<'_> {
             }
         }
     }
+}
+
+/// The next update status, once it changed. Pending forever without an update hookup or once
+/// the binary dropped its end.
+async fn status_changed(status: &mut Option<watch::Receiver<UpdateStatus>>) -> UpdateStatus {
+    if let Some(rx) = status.as_mut()
+        && rx.changed().await.is_ok()
+    {
+        return rx.borrow_and_update().clone();
+    }
+    std::future::pending().await
 }
 
 /// The current session (at most one).

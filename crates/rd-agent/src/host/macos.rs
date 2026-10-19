@@ -12,7 +12,7 @@ use rd_platform_macos::{MacPlatform, RateControl, VideoSource, keychain, session
 use crate::{SelftestArgs, Source};
 
 /// Bundle id; also the unified-log subsystem, the Keychain service and the LaunchAgent label.
-const APP_ID: &str = "dev.thijmen.rd.agent";
+pub const APP_ID: &str = "dev.thijmen.rd.agent";
 pub const LOG_SUBSYSTEM: &str = APP_ID;
 
 fn home() -> anyhow::Result<PathBuf> {
@@ -30,8 +30,11 @@ pub fn config_path() -> anyhow::Result<PathBuf> {
         .join("config.toml"))
 }
 
-/// `~/Library/Logs/rd-agent`
+/// `~/Library/Logs/rd-agent`, or `RD_AGENT_LOG_DIR`.
 pub fn log_dir() -> anyhow::Result<PathBuf> {
+    if let Some(dir) = super::log_dir_override() {
+        return Ok(dir);
+    }
     Ok(home()?.join("Library/Logs/rd-agent"))
 }
 

@@ -43,6 +43,7 @@ pub fn load_for_run(
             machine,
             token: None,
             defaults: Default::default(),
+            update: Default::default(),
         }
     };
     if let Some(gateway) = gateway {
@@ -163,6 +164,7 @@ mod tests {
             machine: "mbp".into(),
             token: Some(" rd1.mbp.secret\n".into()),
             defaults: Default::default(),
+            update: Default::default(),
         };
         // Found before the Keychain is consulted (the test never touches the Keychain).
         let (token, source) = resolve_token(None, &cfg).unwrap();
@@ -184,6 +186,7 @@ mod tests {
             machine: "mbp".into(),
             token: Some("rd1.mbp.secret".into()),
             defaults: Default::default(),
+            update: Default::default(),
         };
         cfg.save(&file).unwrap();
         assert_eq!(too_open(&file), None);

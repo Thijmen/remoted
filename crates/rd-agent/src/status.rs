@@ -38,6 +38,7 @@ pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
         machine: String::new(),
         token: None,
         defaults: Default::default(),
+        update: Default::default(),
     });
     let token = config::resolve_token(None, &lookup);
     match &token {

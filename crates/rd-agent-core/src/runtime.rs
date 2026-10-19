@@ -10,6 +10,7 @@
 //!        ├─ flow.rs       FrameGate on top of rd_flow::FlowGate + BitrateController
 //!        └─ input.rs      dedicated thread owning the InputInjector
 //! net.rs       TCP (TCP_NODELAY, TCP_NOTSENT_LOWAT) + rustls + WebSocket handshake
+//! updates.rs   the hookup for the binary's self-updater (update_status, update, session holds)
 //! ```
 //!
 //! Sessions outlive control reconnects: a joined session keeps streaming on its data socket
@@ -22,24 +23,29 @@ mod input;
 mod net;
 mod session;
 mod task;
+mod updates;
 mod video;
 
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, bail, ensure};
-use rd_proto::control::AgentState;
-use tokio::sync::watch;
+use rd_proto::control::{AgentState, UpdateStatus};
+use tokio::sync::{mpsc, watch};
 use tracing::info;
 
 use crate::config::AgentConfig;
 use crate::platform::{LockState, Platform};
 use net::{DialError, Gateway};
 use task::TaskGuard;
+use updates::SessionGate;
+pub use updates::{
+    SessionControl, SessionHold, UpdateEvent, UpdateLink, Updates, link as update_link,
+};
 
-/// Version reported in `register` and the viewer `hello`.
+/// Version reported in `register` and the viewer `hello` unless the binary sets its own with
+/// [`Runtime::version`].
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Timers of the runtime. The defaults are the protocol values from docs/protocol.md; tests
@@ -85,6 +91,8 @@ pub struct Runtime {
     cfg: AgentConfig,
     platform: Arc<dyn Platform>,
     timings: Timings,
+    version: String,
+    updates: Option<UpdateLink>,
 }
 
 impl Runtime {
@@ -93,11 +101,28 @@ impl Runtime {
             cfg,
             platform,
             timings: Timings::default(),
+            version: AGENT_VERSION.to_owned(),
+            updates: None,
         }
     }
 
     pub fn timings(mut self, timings: Timings) -> Self {
         self.timings = timings;
+        self
+    }
+
+    /// The version reported to the gateway and to viewers: the binary's, which is what
+    /// updates are about. Defaults to [`AGENT_VERSION`].
+    pub fn version(mut self, version: impl Into<String>) -> Self {
+        self.version = version.into();
+        self
+    }
+
+    /// Takes part in self-updates through `link` (see [`update_link`]): reports
+    /// `update_status`, passes on `update` and `registered`, and lets the binary end sessions.
+    /// Without it, `update` commands are ignored.
+    pub fn updates(mut self, link: UpdateLink) -> Self {
+        self.updates = Some(link);
         self
     }
 
@@ -108,11 +133,17 @@ impl Runtime {
     /// Dropping the future instead aborts everything; resources are still released (the
     /// pipeline is stopped and held input released on drop), but nothing is closed politely.
     pub async fn run_until(self, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
-        let ctx = Arc::new(Ctx::new(self.cfg, self.platform, self.timings)?);
+        let ctx = Arc::new(Ctx::new(
+            self.cfg,
+            self.platform,
+            self.timings,
+            self.version,
+            self.updates,
+        )?);
         info!(
             gateway = ctx.cfg.gateway_url,
             machine = ctx.cfg.machine,
-            version = AGENT_VERSION,
+            version = ctx.version,
             "rd agent starting"
         );
         let _monitor = TaskGuard::spawn(monitor_state(ctx.clone()));
@@ -169,10 +200,18 @@ struct Ctx {
     cfg: AgentConfig,
     platform: Arc<dyn Platform>,
     timings: Timings,
+    version: String,
     gateway: Gateway,
     /// Current agent state; the control connection and the session report changes.
     state: watch::Sender<AgentState>,
-    active_sessions: AtomicUsize,
+    /// Connected sessions, and the binary's holds that end them for an update.
+    gate: Arc<SessionGate>,
+    /// The binary's update status and where `update` / `registered` go; `None` without an
+    /// update hookup.
+    updates: Option<(
+        watch::Receiver<UpdateStatus>,
+        mpsc::UnboundedSender<UpdateEvent>,
+    )>,
 }
 
 impl Ctx {
@@ -180,6 +219,8 @@ impl Ctx {
         cfg: AgentConfig,
         platform: Arc<dyn Platform>,
         timings: Timings,
+        version: String,
+        updates: Option<UpdateLink>,
     ) -> anyhow::Result<Self> {
         ensure!(
             valid_machine(&cfg.machine),
@@ -189,13 +230,19 @@ impl Ctx {
         let gateway = Gateway::new(&cfg.gateway_url, token(&cfg)?)
             .with_context(|| format!("invalid gateway_url {:?}", cfg.gateway_url))?;
         let state = watch::Sender::new(AgentState::default());
+        let (gate, updates) = match updates {
+            Some(link) => (link.gate, Some((link.status, link.events))),
+            None => (Arc::default(), None),
+        };
         let ctx = Ctx {
             cfg,
             platform,
             timings,
+            version,
             gateway,
             state,
-            active_sessions: AtomicUsize::new(0),
+            gate,
+            updates,
         };
         ctx.refresh_state();
         Ok(ctx)
@@ -216,13 +263,13 @@ impl Ctx {
 
     /// Marks a session as connected until the returned guard is dropped.
     fn session_active(self: &Arc<Self>) -> ActiveSession {
-        self.active_sessions.fetch_add(1, Ordering::SeqCst);
+        self.gate.sessions.send_modify(|n| *n += 1);
         self.publish_in_session();
         ActiveSession(self.clone())
     }
 
     fn publish_in_session(&self) {
-        let in_session = self.active_sessions.load(Ordering::SeqCst) > 0;
+        let in_session = *self.gate.sessions.borrow() > 0;
         self.state.send_if_modified(|s| {
             let changed = s.in_session != in_session;
             s.in_session = in_session;
@@ -236,7 +283,10 @@ struct ActiveSession(Arc<Ctx>);
 
 impl Drop for ActiveSession {
     fn drop(&mut self) {
-        self.0.active_sessions.fetch_sub(1, Ordering::SeqCst);
+        self.0
+            .gate
+            .sessions
+            .send_modify(|n| *n = n.saturating_sub(1));
         self.0.publish_in_session();
     }
 }
@@ -270,6 +320,7 @@ mod tests {
             machine: "mbp".into(),
             token: None,
             defaults: Default::default(),
+            update: Default::default(),
         };
         assert!(token(&cfg).is_err());
         cfg.token = Some("  ".into());

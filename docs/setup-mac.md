@@ -106,6 +106,33 @@ accepts the token. It never prints the token. The agent logs the same source at 
 `~/Library/Logs/rd-agent/` (daily files), plus the unified log:
 `log stream --predicate 'subsystem == "dev.thijmen.rd.agent"'`.
 
+## Updates
+
+RD Agent.app from a release updates itself from the portal: the Mac's card shows **Update
+available: X.Y.Z**, **What's new** and **Update**. The agent downloads the new app, checks its
+signature and that it is signed with the same certificate (so Screen Recording and
+Accessibility carry over), ends an open session (the viewer reconnects by itself) and hands
+over to an update helper. The helper swaps `/Applications/RD Agent.app` (the old one waits next
+to it as `RD Agent.app.previous-X.Y.Z`), restarts the LaunchAgent and waits up to 2 minutes for
+the new version to connect with the permissions the old one had. If it does not, the helper
+puts the old app back. The card then shows what happened. Details: [updates.md](updates.md).
+
+```sh
+"/Applications/RD Agent.app/Contents/MacOS/rd-agent" update --check   # is there a newer version? also shows the last update's outcome
+"/Applications/RD Agent.app/Contents/MacOS/rd-agent" update           # install it now and wait for the outcome
+```
+
+The helper logs to `~/Library/Logs/rd-agent/update-helper.log`. The agent checks for new versions
+1 minute after it starts and then every 6 hours; `[update]` `check = false` in `config.toml`
+turns that off (the portal then offers nothing, but `rd-agent update` still works).
+
+- If an update fails with a hint about **App Management**, macOS did not let the helper replace
+  the app in `/Applications`: allow RD Agent under System Settings → Privacy & Security → App
+  Management and click **Update** again.
+- An agent you built yourself is signed with your own certificate: the portal still offers the
+  update, but the agent refuses it ("signed with a different certificate") and stays as it is.
+  Install the release by hand once (step 1) to switch.
+
 ## Local development (no cluster, no permissions)
 
 ```sh

@@ -15,6 +15,9 @@ pub const STOP_EVENT: &str = r"Local\dev.thijmen.rd.agent.stop";
 pub const LAUNCHER_MUTEX: &str = r"Local\dev.thijmen.rd.agent.launcher";
 /// The launcher, next to `rd-agent.exe`.
 pub const LAUNCHER_EXE: &str = "rd-agentw.exe";
+/// Set by the launcher for the agent it starts: an agent started this way was started by the
+/// autostart, and may update itself (the installer starts it the same way again).
+pub const LAUNCHER_ENV: &str = "RD_AGENT_LAUNCHER";
 pub const AGENT_EXE: &str = "rd-agent.exe";
 /// Exit code of `rd-agent run` when another agent already runs in the session; the launcher
 /// does not restart it then.

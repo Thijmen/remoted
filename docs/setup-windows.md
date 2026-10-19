@@ -102,7 +102,31 @@ refuses to start.
 
 - `rd-agent install` again restarts the agent (it stops the running one first).
 - `rd-agent uninstall` removes the autostart and stops the agent.
-- Updating: `uninstall`, replace both programs, `install`.
+- Updating by hand (the zip, or a build of your own): `uninstall`, replace both programs,
+  `install`. The installer does the same.
+
+## Updates
+
+An agent installed with the installer (in a folder with its `uninstall.exe`, started by the
+autostart) updates itself from the portal: the PC's card shows **Update available: X.Y.Z**,
+**What's new** and **Update**. The agent downloads the new installer, checks its signature, ends
+an open session (the viewer reconnects by itself) and hands over to an update helper, which runs
+the installer silently and waits up to 2 minutes for the new version to connect to the gateway.
+If it does not, the helper puts the previous `rd-agent.exe` and `rd-agentw.exe` back and starts
+them. The card then shows what happened. Details: [updates.md](updates.md).
+
+At the PC, from a terminal:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\rd-agent\rd-agent.exe" update --check   # is there a newer version? also shows the last update's outcome
+& "$env:LOCALAPPDATA\Programs\rd-agent\rd-agent.exe" update           # install it now
+```
+
+`update` returns at once (the installer has to replace `rd-agent.exe`); `update --check` shows
+the outcome a minute later. The helper logs to `%LOCALAPPDATA%\rd-agent\logs\update-helper.log`.
+The agent checks for new versions 1 minute after it starts and then every 6 hours;
+`[update]` `check = false` in `config.toml` turns that off (the portal then offers nothing, but
+`rd-agent update` still works).
 
 ## Connecting from a Mac
 

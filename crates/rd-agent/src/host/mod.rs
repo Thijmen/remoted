@@ -4,6 +4,16 @@
 
 use std::path::PathBuf;
 
+/// Replaces the log directory (tests, development).
+const LOG_DIR_ENV: &str = "RD_AGENT_LOG_DIR";
+
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+fn log_dir_override() -> Option<PathBuf> {
+    std::env::var_os(LOG_DIR_ENV)
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+}
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]

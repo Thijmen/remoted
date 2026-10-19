@@ -147,7 +147,9 @@ has an end-to-end recipe.
 
 **Checks.** 1 minute after start, then every 6 hours, the agent reads `agent.json`, and reports
 what it found to the gateway (`update_status`, [protocol.md](protocol.md)). `[update] check =
-false` in its `config.toml` turns this off; `RD_AGENT_UPDATE_URL` replaces the manifest URL.
+false` in its `config.toml` turns this off; the portal then has nothing to offer, but `rd-agent
+update` still works (it reads the manifest itself). `RD_AGENT_UPDATE_URL` replaces the manifest
+URL.
 
 **Portal.** A device with a newer version shows **Update available: X.Y.Z** with **What's
 new** (the notes since its version) and **Update**; one that cannot update itself says to
@@ -156,23 +158,55 @@ session ends (close code 4010) and the viewer waits, then reconnects by itself w
 back (about 15 s). The gateway sends the agent `update {version}` and logs `agent_update` in the
 audit log. The card shows the progress, then "Updated to X.Y.Z" or why the update failed.
 
-**Installing.** The agent ends its session, downloads the file, checks its signature, copies
-the running version aside, and starts the **update helper**: `rd-agent update-helper` from
-that copy, as its own process outside the agent's login service. The helper
+**Installing.** The agent reports `downloading`, reads the manifest again (it must still offer
+that version), downloads the file and checks its signature, which must name that version. On
+macOS it unpacks the app and checks it: bundle id `dev.thijmen.rd.agent`, the announced version,
+and a signature that meets the running app's designated requirement (the same certificate, so
+Screen Recording and Accessibility carry over; otherwise it refuses and says to install by hand).
+It copies the running version aside, then ends its session (4010; sessions that start meanwhile
+get 4010 too) and starts the **update helper**: `rd-agent update-helper` from that copy, as its
+own process outside the agent's login service (macOS: a temporary LaunchAgent,
+`<label>.update`; Windows: a detached process). A second `update` while one runs is ignored.
+The helper
 
-1. installs: Windows runs `setup.exe /S` (the installer stops the agent, replaces it and starts
-   it again); macOS swaps `RD Agent.app` and restarts the LaunchAgent;
-2. waits up to 2 minutes for the new version to register with the gateway (the new agent
-   writes a marker once the gateway accepted it);
-3. if it does not, rolls back: puts the previous version back and restarts it;
-4. records the outcome, which the agent reports on its next connection; the portal shows a
-   failed or rolled-back update on the device card.
+1. installs: Windows runs `setup.exe /S /D=<folder>` (the installer stops the agent, replaces
+   it and starts it again); macOS moves `RD Agent.app` aside (`RD Agent.app.previous-X.Y.Z`,
+   same folder), moves the new one in and restarts the LaunchAgent (`launchctl kickstart -k`);
+2. waits up to 2 minutes for the new version to register with the gateway (every agent writes
+   a marker once the gateway accepted it) and to keep running for 10 s; on macOS it must also
+   still have the permissions the old one had;
+3. if it does not, rolls back: puts the previous version back and restarts it (Windows: stops
+   the agent, copies back `rd-agent.exe` and `rd-agentw.exe`, `rd-agent install`, and resets the
+   version in Settings > Apps);
+4. records the outcome (`ok`; `rolled_back`; `failed` when the new version was never started),
+   which the agent reports with every `update_status` until the next update; the portal shows
+   a failed or rolled-back update on the device card.
+
+On macOS the swap needs macOS to let RD Agent change `/Applications`: if it refuses (App
+Management), nothing changes and the outcome says to allow RD Agent under System Settings →
+Privacy & Security → App Management.
+
+The agent and helper share a folder next to `config.toml` (macOS `~/Library/Application
+Support/dev.thijmen.rd.agent/update`, Windows `%LOCALAPPDATA%\rd-agent\update`):
+`registered.json` (the marker), `outcome.json`, `helper.lock` (an update in progress),
+`plan.json`, `previous/` and `download/`. The helper logs to `update-helper.log` in the agent's
+log folder.
 
 Only agents installed the normal way update themselves: on Windows by the installer
-(`uninstall.exe` next to `rd-agent.exe`), on macOS `RD Agent.app` started by its LaunchAgent.
-Others report `can_install: false`; the portal then says to install by hand.
+(`uninstall.exe` next to `rd-agent.exe`, started by the autostart's `rd-agentw.exe`), on macOS
+`RD Agent.app` started by its LaunchAgent, in a folder the user can write to. Others report
+`can_install: false` with the reason; the portal then says to install by hand.
 
-`rd-agent update` does the same from a terminal (`--check` only reports).
+`rd-agent update` does the same from a terminal (`--check` only reports). On macOS it waits
+for the outcome; on Windows it ends at once (the installer must replace `rd-agent.exe`) and
+`rd-agent update --check` shows the outcome later.
+
+**Testing.** Debug builds only: `RD_AGENT_TEST_VERSION=X.Y.Z cargo build` gives a build another
+version, `RD_AGENT_UPDATE_PUBKEY` replaces the built-in key, `RD_AGENT_UPDATE_URL` may be plain
+`http://` to localhost, `RD_AGENT_UPDATE_WAIT_S` shortens the 2 minutes, and
+`RD_AGENT_SERVICE_LABEL` names the LaunchAgent `rd-agent update` restarts. `RD_AGENT_LOG_DIR`
+(any build) moves the logs; `--config` moves the update folder with the config file. So a test
+install in a temporary folder, with its own LaunchAgent label, never touches the real one.
 
 ## Existing installs
 
