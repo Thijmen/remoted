@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.28
 #
 # rd-gateway image: viewer build (bun) -> static aarch64-musl binary (cargo-zigbuild) -> distroless.
 # The build stages run on the build host's platform and cross-compile, so this works the same on
