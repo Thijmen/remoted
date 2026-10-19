@@ -9,7 +9,8 @@ name: Agent
 # forks) the builds are unsigned.
 #
 # Secrets: TAURI_SIGNING_PRIVATE_KEY + TAURI_SIGNING_PRIVATE_KEY_PASSWORD (update signatures,
-# made with the Tauri CLI like rd Desktop's), MACOS_CERTIFICATE + MACOS_CERTIFICATE_PASSWORD
+# made with the Tauri CLI like rd Desktop's and bound to the version: the agent checks that the
+# signature names the version the manifest offers), MACOS_CERTIFICATE + MACOS_CERTIFICATE_PASSWORD
 # (the "rd Code Signing" certificate: Screen Recording / Accessibility survive updates).
 on:
   push:
@@ -180,7 +181,7 @@ jobs:
           fi
           cd clients/desktop
           bun install --frozen-lockfile
-          bun run tauri signer sign "$GITHUB_WORKSPACE/out/rd-agent-$v-windows-x64-setup.exe"
+          bun run tauri signer sign --app-version "$v" "$GITHUB_WORKSPACE/out/rd-agent-$v-windows-x64-setup.exe"
           ls -l "$GITHUB_WORKSPACE/out"
 
       - uses: actions/upload-artifact@v4
@@ -253,7 +254,7 @@ jobs:
           fi
           cd clients/desktop
           bun install --frozen-lockfile
-          bun run tauri signer sign "$GITHUB_WORKSPACE/out/rd-agent-$v-macos-universal.zip"
+          bun run tauri signer sign --app-version "$v" "$GITHUB_WORKSPACE/out/rd-agent-$v-macos-universal.zip"
           ls -l "$GITHUB_WORKSPACE/out"
 
       - uses: actions/upload-artifact@v4

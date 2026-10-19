@@ -92,41 +92,56 @@ downloaded by the app or agent itself and run without the prompt.
 
 ## rd Desktop
 
-**When.** 10 s after launch, then every 6 hours, unless automatic checks are off: the tray
-menu's **Check for updates automatically**, or `"update_check": false` in `settings.json`. The
-environment variable `RD_UPDATE_CHECK=0` turns them off regardless (for managed machines).
-**Check for Updates…** always works.
+**When.** 10 s after launch, then every 6 hours (30 minutes after a check that failed, e.g.
+offline), unless automatic checks are off: the tray menu's **Check for updates
+automatically**, or `"update_check": false` in `settings.json`. The environment variable
+`RD_UPDATE_CHECK=0` turns them off regardless (for managed machines). **Check for Updates…**
+always works. The timer follows the wall clock, so a laptop that slept checks when it wakes.
 
 **What happens.** A newer version is downloaded in the background and its signature checked.
 Then the update window opens, unless a session is open in the main window (a `/m/…` page of the
-gateway): then it waits until the session page is left, or for the next check. Closing the
-window means "later": it opens again at the next check or launch, and the tray menu offers
-**Restart to Update to X.Y.Z** in the meantime.
+gateway): then it waits until the session page is left, or for the next check. It opens without
+taking the keyboard focus, and its button is not focused, so typing elsewhere cannot press it.
+Closing the window means "later": it opens again at the next check or launch, and the tray menu
+offers **Restart to Update to X.Y.Z…** in the meantime.
 
 **The window** (`dist/update.html`, a bundled page in its own small window) shows the new
 version, the installed one, the notes of every version in between (newest first), a link to the
 GitHub release, and one button, **Restart & update**:
 
 - macOS: the app is replaced in place and restarted.
-- Windows: the app quits and the installer runs with a progress bar only (`passive`), then
-  starts the new version.
+- Windows: the app quits and the installer runs with a progress bar only (`passive`, the
+  updater plugin passes `/P /UPDATE /R /ARGS <the app's arguments>`); when it is done it starts
+  the new version with the same arguments.
 
 **Can't install here.** The portable exe (no `uninstall.exe` next to it), and a macOS app that
 cannot be replaced (run from the disk image, or translocated by Gatekeeper, or a folder the
-user cannot write) get the same window, but the button is **Download** and opens the release
-page.
+user cannot write), and development builds (a binary outside an app bundle or installer) get
+the same window, but the button is **Download** and opens the release page. The tray menu
+then says **Download rd Desktop X.Y.Z…**.
 
 **After an update** the main window shows a small notice for 20 s: "Updated to X.Y.Z ·
-What's new". **What's new** opens the window with the notes.
+What's new". **What's new** opens the window with the notes of the versions the update brought.
+The app knows it was updated from `state.json` (the version that ran last, in the app's local
+data directory).
 
 **Menus.** A tray (macOS: menu bar) icon while the app runs: the version, **Check for
-Updates…** (or **Restart to Update to X.Y.Z**), **Check for updates automatically**, **Show
+Updates…** (or **Restart to Update to X.Y.Z…**), **Check for updates automatically**, **Show
 rd**, **Quit**. Closing the window still quits the app. macOS: the app menu has **About rd
-Desktop** and **Check for Updates…**. Windows: the window's title-bar menu (right-click the
-title bar, or Alt+Space) has **About rd Desktop** and **Check for Updates…**.
+Desktop** (the standard About panel) and **Check for Updates…**. Windows: the window's
+title-bar menu (right-click the title bar, or Alt+Space) has **About rd Desktop** (the update
+window with the version and the update state) and **Check for Updates…**.
 
-**Testing.** `RD_UPDATE_URL=<manifest URL>` replaces the manifest URL (also plain `http://` to
-localhost in debug builds).
+**Signatures.** `requireSignedVersion` is on: the signature's trusted comment must name the
+version the manifest announces, so a tampered manifest cannot offer an older release as a new
+one. `tauri build` writes it into the `.sig` files it makes; a file signed by hand needs
+`tauri signer sign --app-version X.Y.Z`.
+
+**Testing.** `RD_UPDATE_URL=<manifest URL>` replaces the manifest URL: https, or plain
+`http://` to localhost in debug builds (and in test builds whose `--config` sets
+`plugins.updater.dangerousInsecureTransportProtocol`; never in a release). Debug builds check
+automatically only with it. [clients/desktop/README.md](../clients/desktop/README.md#local-testing)
+has an end-to-end recipe.
 
 ## rd agent
 
@@ -134,10 +149,12 @@ localhost in debug builds).
 what it found to the gateway (`update_status`, [protocol.md](protocol.md)). `[update] check =
 false` in its `config.toml` turns this off; `RD_AGENT_UPDATE_URL` replaces the manifest URL.
 
-**Portal.** A device with a newer version shows **Update to X.Y.Z** with **What's new** (the
-notes since its version). While a session to that machine is open, the portal asks first: the
-session ends and the viewer reconnects by itself when the agent is back (about 15 s). The
-gateway sends the agent `update {version}` and logs `agent_update` in the audit log.
+**Portal.** A device with a newer version shows **Update available: X.Y.Z** with **What's
+new** (the notes since its version) and **Update**; one that cannot update itself says to
+update by hand instead. While a session to that machine is open, the portal asks first: the
+session ends (close code 4010) and the viewer waits, then reconnects by itself when the agent is
+back (about 15 s). The gateway sends the agent `update {version}` and logs `agent_update` in the
+audit log. The card shows the progress, then "Updated to X.Y.Z" or why the update failed.
 
 **Installing.** The agent ends its session, downloads the file, checks its signature, copies
 the running version aside, and starts the **update helper**: `rd-agent update-helper` from

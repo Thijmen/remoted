@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { MAX_RELEASES, buildManifest, changelogSections, compareVersions } from "./manifest";
+import { MAX_RELEASES, buildManifest, changelogSections, compareVersions, signedVersion } from "./manifest";
 
 const CHANGELOG = `# rd-desktop
 
@@ -32,7 +32,13 @@ const CHANGELOG = `# rd-desktop
 - 2222222: Updates.
 `;
 
-const SIG = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZQo=\n";
+/** A .sig as `tauri signer sign --app-version` writes it (base64 of the minisign file). */
+function sig(version: string | null): string {
+  const trusted = ["timestamp:1792443754", "file:x"].concat(version ? [`version:${version}`] : []).join("\t");
+  const file = `untrusted comment: signature from tauri secret key\nRUQ=\ntrusted comment: ${trusted}\nUoh=\n`;
+  return `${Buffer.from(file).toString("base64")}\n`;
+}
+const SIG = sig("1.6.0");
 
 describe("changelogSections", () => {
   test("drops changeset headings and commit hashes", () => {
@@ -93,14 +99,16 @@ describe("buildManifest", () => {
   });
 
   test("an older release leaves later sections out", () => {
-    const m = buildManifest({ ...input, version: "1.5.1" });
+    const platforms = { "windows-x86_64": { file: "x.exe", signature: sig("1.5.1") } };
+    const m = buildManifest({ ...input, version: "1.5.1", platforms });
     expect(m.releases.map((r) => r.version)).toEqual(["1.5.1", "1.5.0"]);
   });
 
   test("at most MAX_RELEASES versions", () => {
     let log = "# rd-desktop\n";
     for (let i = 40; i >= 1; i--) log += `\n## 1.${i}.0\n\n- ${i}\n`;
-    const m = buildManifest({ ...input, version: "1.40.0", changelog: log });
+    const platforms = { "windows-x86_64": { file: "x.exe", signature: sig("1.40.0") } };
+    const m = buildManifest({ ...input, version: "1.40.0", changelog: log, platforms });
     expect(m.releases).toHaveLength(MAX_RELEASES);
     expect(m.releases[0].version).toBe("1.40.0");
   });
@@ -112,6 +120,18 @@ describe("buildManifest", () => {
       buildManifest({ ...input, platforms: { "macos-universal": input.platforms["darwin-aarch64"] } }),
     ).toThrow(/bad platform key/);
     expect(() => buildManifest({ ...input, pkg: "rd-gateway" })).toThrow(/unknown package/);
+    // Signatures must name the released version, or every client refuses the update.
+    for (const signature of [sig("1.5.1"), sig(null), "not base64 at all"]) {
+      expect(() =>
+        buildManifest({ ...input, platforms: { "windows-x86_64": { file: "x.exe", signature } } }),
+      ).toThrow(/the signature is for version/);
+    }
+  });
+
+  test("signedVersion", () => {
+    expect(signedVersion(sig("1.6.0"))).toBe("1.6.0");
+    expect(signedVersion(sig(null))).toBeUndefined();
+    expect(signedVersion("")).toBeUndefined();
   });
 });
 

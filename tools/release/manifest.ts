@@ -104,6 +104,12 @@ export function buildManifest(input: ManifestInput): Manifest {
   const platforms: Manifest["platforms"] = {};
   for (const [key, { file, signature }] of Object.entries(input.platforms)) {
     if (!/^(windows|darwin|linux)-(x86_64|aarch64|i686|armv7)$/.test(key)) fail(`bad platform key ${key}`);
+    const signed = signedVersion(signature);
+    if (signed !== input.version) {
+      // The clients refuse a signature that does not name the offered version
+      // (requireSignedVersion), so publishing this would stop every update.
+      fail(`${basename(file)}: the signature is for version ${signed ?? "(none)"}, not ${input.version}`);
+    }
     platforms[key] = { url: assetUrl(input.repo, tag, file), signature: signature.trim() };
   }
   if (Object.keys(platforms).length === 0) fail("no --platform given");
@@ -115,6 +121,26 @@ export function buildManifest(input: ManifestInput): Manifest {
     platforms,
     releases,
   };
+}
+
+/**
+ * The `version:` field of a signature's trusted comment. `signature` is a `.sig` file as Tauri
+ * writes it: base64 of a minisign signature file, whose trusted comment `tauri build` and
+ * `tauri signer sign --app-version` fill with `timestamp:…\tfile:…\tversion:X.Y.Z`.
+ */
+export function signedVersion(signature: string): string | undefined {
+  let text: string;
+  try {
+    text = Buffer.from(signature.trim(), "base64").toString("utf8");
+  } catch {
+    return undefined;
+  }
+  const trusted = text.split(/\r?\n/).find((l) => l.startsWith("trusted comment: "));
+  const field = trusted
+    ?.slice("trusted comment: ".length)
+    .split("\t")
+    .find((f) => f.startsWith("version:"));
+  return field?.slice("version:".length);
 }
 
 /** Semver precedence for X.Y.Z[-pre] (build metadata is not used here). */
