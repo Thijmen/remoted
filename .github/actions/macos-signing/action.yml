@@ -1,0 +1,71 @@
+name: macOS signing keychain
+description: >
+  Imports the project's self-signed code-signing certificate ("rd Code Signing", docs/updates.md)
+  into a temporary keychain on the search list, so codesign (and Tauri's bundler) can use it.
+  Without the certificate (pull requests from forks) it does nothing and reports
+  available=false; builds then fall back to ad-hoc signing.
+
+inputs:
+  certificate:
+    description: base64 of the .p12 (secret MACOS_CERTIFICATE)
+    required: false
+    default: ""
+  password:
+    description: the .p12 password (secret MACOS_CERTIFICATE_PASSWORD)
+    required: false
+    default: ""
+
+outputs:
+  available:
+    description: '"true" when the identity is ready to use'
+    value: ${{ steps.import.outputs.available }}
+  identity:
+    description: the identity name to pass to codesign (empty when not available)
+    value: ${{ steps.import.outputs.identity }}
+  keychain:
+    description: path of the temporary keychain (empty when not available)
+    value: ${{ steps.import.outputs.keychain }}
+
+runs:
+  using: composite
+  steps:
+    - id: import
+      shell: bash
+      env:
+        CERT: ${{ inputs.certificate }}
+        PASS: ${{ inputs.password }}
+      run: |
+        identity="rd Code Signing"
+        if [[ -z "$CERT" || -z "$PASS" ]]; then
+          echo "::warning::no macOS signing certificate (MACOS_CERTIFICATE); signing ad-hoc"
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        keychain="$RUNNER_TEMP/rd-signing.keychain-db"
+        kc_pass="$(openssl rand -hex 16)"
+        p12="$RUNNER_TEMP/rd-signing.p12"
+        trap 'rm -f "$p12"' EXIT
+        printf '%s' "$CERT" | base64 --decode > "$p12"
+        security create-keychain -p "$kc_pass" "$keychain"
+        # Stay unlocked for the whole job (6 h), not the default 5 minutes.
+        security set-keychain-settings -lut 21600 "$keychain"
+        security unlock-keychain -p "$kc_pass" "$keychain"
+        security import "$p12" -k "$keychain" -P "$PASS" -T /usr/bin/codesign >/dev/null
+        # Lets codesign use the key without a password prompt.
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$keychain" >/dev/null
+        # codesign finds identities only in keychains on the search list. (This is a throwaway
+        # runner, so changing the user's search list is fine here; never do this on your Mac.)
+        existing=()
+        while IFS= read -r k; do
+          k="${k#"${k%%[![:space:]]*}"}"; k="${k#\"}"; k="${k%\"}"
+          [[ -n "$k" ]] && existing+=("$k")
+        done < <(security list-keychains -d user)
+        security list-keychains -d user -s "$keychain" "${existing[@]}"
+        # The certificate is self-signed, so it is listed as not trusted; codesign uses it anyway.
+        security find-identity -p codesigning "$keychain" | grep -F "\"$identity\"" \
+          || { echo "::error::\"$identity\" not found in the imported certificate"; exit 1; }
+        {
+          echo "available=true"
+          echo "identity=$identity"
+          echo "keychain=$keychain"
+        } >> "$GITHUB_OUTPUT"

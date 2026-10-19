@@ -18,21 +18,28 @@ screen and injects input for whoever is logged in.
 
 ## 1. Install
 
-Download `rd-agent-<version>-windows-x64-setup.exe` from the
+Download `rd-agent-<version>-windows-x64-setup.exe` from the agent releases (`agent-v*`; up
+to 1.4.2 the agent came with the rd Desktop releases) on
 [GitHub Releases](https://github.com/Thijmen/remoted/releases) and run it. It installs for your
 account only (no administrator rights) into `%LOCALAPPDATA%\Programs\rd-agent`, adds Start menu
 shortcuts (*rd agent setup*, *rd agent status*, *rd agent logs*) and an entry in Settings → Apps,
 and offers the setup (step 3) at the end, so add the PC in the portal (step 2) first. The installer is not signed, so SmartScreen asks once:
 *More info* → *Run anyway*.
 
-Running a newer installer updates the agent in place: it stops the running agent, replaces the
-programs and starts it again with the existing configuration. Silent installs work too:
-`setup.exe /S`, then `rd-agent.exe setup` in a terminal.
+From 1.5.0 on, an agent installed this way updates itself: the portal shows **Update to
+X.Y.Z** on the PC's card, and the agent installs the new version and puts the previous one back
+if the new one does not reconnect within two minutes ([updates.md](updates.md)). Agents up to
+1.4.2 have no updater: run the 1.5.0 installer once.
+
+Running a newer installer by hand also updates the agent in place: it stops the running agent,
+replaces the programs and starts it again with the existing configuration. Silent installs work
+too: `setup.exe /S`, then `rd-agent.exe setup` in a terminal.
 
 Without the installer: every release also has `rd-agent-<version>-windows-x64.zip` with the same
-programs (the zip from 1.1.0 on, the installer from 1.2.0 on). Unblock the zip before extracting
-it (right-click → Properties → Unblock, or `Unblock-File`), so SmartScreen does not stop the
-unsigned programs. Or build them, on any Windows machine with the Rust toolchain from
+programs (the zip from 1.1.0 on, the installer from 1.2.0 on). An agent unpacked from the zip
+does not update itself; the portal then says to update it by hand. Unblock the zip before
+extracting it (right-click → Properties → Unblock, or `Unblock-File`), so SmartScreen does not
+stop the unsigned programs. Or build them, on any Windows machine with the Rust toolchain from
 `rust-toolchain.toml`:
 
 ```powershell

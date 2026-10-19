@@ -27,6 +27,8 @@ jobs:
           bun run build
       - name: Release versions (package.json = Cargo.toml = Cargo.lock)
         run: bun tools/release/sync-versions.ts --check
+      - name: Release tooling (update manifests)
+        run: bun test tools/release
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

@@ -1,0 +1,323 @@
+name: Agent
+
+# The rd agent (crates/rd-agent), for the machines you connect to: Windows (per-user NSIS
+# installer + zip) and macOS (universal RD Agent.app, zipped), with update signatures
+# (docs/updates.md). An agent-v* tag also publishes them as a GitHub Release and then points the
+# update manifest (agent.json on the `updates` release) at it. release.yml (changesets) creates
+# the tags and dispatches this workflow on them. (Path filters do not apply to tag pushes.)
+# Pull requests build too, but never publish; without the signing secrets (pull requests from
+# forks) the builds are unsigned.
+#
+# Secrets: TAURI_SIGNING_PRIVATE_KEY + TAURI_SIGNING_PRIVATE_KEY_PASSWORD (update signatures,
+# made with the Tauri CLI like rd Desktop's), MACOS_CERTIFICATE + MACOS_CERTIFICATE_PASSWORD
+# (the "rd Code Signing" certificate: Screen Recording / Accessibility survive updates).
+on:
+  push:
+    branches: [main]
+    tags: ["agent-v*"]
+    paths:
+      - "crates/**"
+      - "packaging/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "THIRD_PARTY_NOTICES.md"
+      - "tools/release/**"
+      - ".github/actions/macos-signing/**"
+      - ".github/workflows/agent.yml"
+  pull_request:
+    paths:
+      - "crates/rd-agent/**"
+      - "crates/rd-agent-core/**"
+      - "crates/rd-platform-macos/**"
+      - "crates/rd-platform-windows/**"
+      - "crates/rd-proto/**"
+      - "crates/rd-flow/**"
+      - "packaging/**"
+      - "Cargo.lock"
+      - "tools/release/**"
+      - ".github/actions/macos-signing/**"
+      - ".github/workflows/agent.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - id: version
+        run: |
+          bun tools/release/sync-versions.ts --check
+          v="$(bun tools/release/sync-versions.ts --print rd-agent)"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          release=false
+          if [[ "$GITHUB_REF" == refs/tags/agent-v* ]]; then
+            if [[ "${GITHUB_REF_NAME#agent-v}" != "$v" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the rd-agent version $v"
+              exit 1
+            fi
+            release=true
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows (installer + zip)
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+
+      # Clippy and the tests run in ci.yml.
+      - name: Build
+        run: cargo build --locked --release -p rd-agent
+
+      # Windows Server images have no Media Foundation (mfplat.dll) unless the feature is added;
+      # without it rd-agent.exe does not even start.
+      - name: Media Foundation
+        shell: pwsh
+        run: |
+          $mf = Join-Path $env:WINDIR 'System32\mfplat.dll'
+          if (-not (Test-Path $mf)) { Install-WindowsFeature Server-Media-Foundation | Out-Null }
+          if (-not (Test-Path $mf)) { throw 'Media Foundation is missing' }
+
+      # The shipped exe starts and encodes (no GPU here: the software encoder).
+      - name: Smoke test
+        run: |
+          target/release/rd-agent.exe --version
+          target/release/rd-agent.exe selftest --synthetic --encoder software --size 640x360 --seconds 2
+
+      - name: Collect
+        shell: pwsh
+        run: |
+          $v = '${{ needs.version.outputs.version }}'
+          New-Item -ItemType Directory -Force out, pkg | Out-Null
+          # The key tables in rd-agent derive from Chromium (BSD-3-Clause): ship the notice.
+          Copy-Item target/release/rd-agent.exe, target/release/rd-agentw.exe, THIRD_PARTY_NOTICES.md pkg
+          Compress-Archive -Path pkg/* -DestinationPath "out/rd-agent-$v-windows-x64.zip"
+          Get-ChildItem out
+
+      - name: NSIS
+        shell: pwsh
+        run: |
+          # Use NSIS if the runner has it. Otherwise download the same NSIS build
+          # Tauri uses (from GitHub, checksum pinned): Chocolatey's feed goes down.
+          if (Get-Command makensis -ErrorAction SilentlyContinue) { exit 0 }
+          $nsis = 'C:\Program Files (x86)\NSIS'
+          if (-not (Test-Path "$nsis\makensis.exe")) {
+            $url = 'https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip'
+            $sha = 'C7D27F780DDB6CFFB4730138CD1591E841F4B7EDB155856901CDF5F214394FA1'
+            $zip = Join-Path $env:RUNNER_TEMP 'nsis.zip'
+            Invoke-WebRequest $url -OutFile $zip -MaximumRetryCount 5 -RetryIntervalSec 10
+            $got = (Get-FileHash $zip -Algorithm SHA256).Hash
+            if ($got -ne $sha) { throw "NSIS download checksum mismatch: $got" }
+            Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP -Force
+            $nsis = Join-Path $env:RUNNER_TEMP 'nsis-3.11'
+          }
+          if (-not (Test-Path "$nsis\makensis.exe")) { throw "makensis.exe not found in $nsis" }
+          Add-Content $env:GITHUB_PATH $nsis
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $v = '${{ needs.version.outputs.version }}'
+          makensis -V2 "-DVERSION=$v" "-DSRC=$PWD\pkg" "-DOUTFILE=$PWD\out\rd-agent-$v-windows-x64-setup.exe" packaging/windows/rd-agent.nsi
+          if ($LASTEXITCODE) { throw "makensis failed: $LASTEXITCODE" }
+          Get-ChildItem out
+
+      # Silent install and uninstall (no config here, so the agent is not started).
+      - name: Installer smoke test
+        shell: pwsh
+        run: |
+          $v = '${{ needs.version.outputs.version }}'
+          $dir = Join-Path $env:RUNNER_TEMP 'rd-agent'
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\rd-agent'
+          $p = Start-Process "out\rd-agent-$v-windows-x64-setup.exe" -ArgumentList '/S', "/D=$dir" -PassThru
+          $p.WaitForExit()
+          if ($p.ExitCode) { throw "installer exit code $($p.ExitCode)" }
+          foreach ($f in 'rd-agent.exe', 'rd-agentw.exe', 'uninstall.exe') {
+            if (-not (Test-Path "$dir\$f")) { throw "$f was not installed" }
+          }
+          if ((Get-ItemProperty $key).DisplayVersion -ne $v) { throw 'no Apps entry for this version' }
+          & "$dir\rd-agent.exe" --version
+          # The uninstaller copies itself to %TEMP% and returns at once.
+          Start-Process "$dir\uninstall.exe" -ArgumentList '/S' -Wait
+          $deadline = (Get-Date).AddSeconds(30)
+          while ((Test-Path $key) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+          if ((Test-Path $key) -or (Test-Path "$dir\rd-agent.exe")) { throw 'the uninstall left files or the Apps entry' }
+          'install and uninstall OK'
+
+      - name: Update signature
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            [[ "${{ needs.version.outputs.release }}" != true ]] || { echo "::error::a release needs TAURI_SIGNING_PRIVATE_KEY"; exit 1; }
+            echo "::warning::no TAURI_SIGNING_PRIVATE_KEY: the installer gets no update signature"
+            exit 0
+          fi
+          cd clients/desktop
+          bun install --frozen-lockfile
+          bun run tauri signer sign "$GITHUB_WORKSPACE/out/rd-agent-$v-windows-x64-setup.exe"
+          ls -l "$GITHUB_WORKSPACE/out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rd-agent-${{ needs.version.outputs.version }}-windows-x64
+          path: out/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS (universal RD Agent.app)
+    needs: version
+    runs-on: macos-26 # screencapturekit's Swift bridge (apple-metal) needs the macOS 26 SDK
+    timeout-minutes: 45
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Signing keychain
+        id: signing
+        uses: ./.github/actions/macos-signing
+        with:
+          certificate: ${{ secrets.MACOS_CERTIFICATE }}
+          password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+
+      - name: Build RD Agent.app
+        env:
+          RD_SIGN_IDENTITY: ${{ steps.signing.outputs.identity || 'rd Code Signing' }}
+          RD_SIGN_KEYCHAIN: ${{ steps.signing.outputs.keychain }}
+          RD_SIGN_REQUIRED: ${{ needs.version.outputs.release == 'true' && '1' || '0' }}
+        run: packaging/macos/build-app.sh --universal
+
+      - name: Check
+        env:
+          SIGNED: ${{ steps.signing.outputs.available }}
+        run: |
+          app="packaging/macos/build/RD Agent.app"
+          lipo -archs "$app/Contents/MacOS/rd-agent" | grep -q 'x86_64 arm64' \
+            || { echo "::error::not a universal binary"; exit 1; }
+          "$app/Contents/MacOS/rd-agent" --version
+          codesign --verify --strict --verbose=2 "$app"
+          if [[ "$SIGNED" == true ]]; then
+            # The designated requirement must name the certificate, not a per-build hash:
+            # that is what keeps Screen Recording and Accessibility across updates.
+            codesign -d -r- "$app" 2>&1 | grep -q 'certificate leaf = H"' \
+              || { echo "::error::RD Agent.app is not signed with the certificate"; exit 1; }
+          fi
+
+      - name: Collect
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          mkdir -p out
+          ditto -c -k --keepParent "packaging/macos/build/RD Agent.app" "out/rd-agent-$v-macos-universal.zip"
+          ls -l out
+
+      - name: Update signature
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            [[ "${{ needs.version.outputs.release }}" != true ]] || { echo "::error::a release needs TAURI_SIGNING_PRIVATE_KEY"; exit 1; }
+            echo "::warning::no TAURI_SIGNING_PRIVATE_KEY: the zip gets no update signature"
+            exit 0
+          fi
+          cd clients/desktop
+          bun install --frozen-lockfile
+          bun run tauri signer sign "$GITHUB_WORKSPACE/out/rd-agent-$v-macos-universal.zip"
+          ls -l "$GITHUB_WORKSPACE/out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rd-agent-${{ needs.version.outputs.version }}-macos-universal
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: needs.version.outputs.release == 'true'
+    needs: [version, windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # gh release create / upload
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rd-agent-*
+          path: out
+          merge-multiple: true
+      - name: Checksums
+        run: cd out && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          # This version's section of the changelog (written by changesets), if there is one.
+          changes="$(awk -v h="## $V" '$0 == h {f = 1; next} /^## / && f {exit} f' crates/rd-agent/CHANGELOG.md 2>/dev/null | sed '/./,$!d' || true)"
+          {
+            if [[ -n "${changes//[[:space:]]/}" ]]; then
+              printf '%s\n\n' "$changes"
+            fi
+            cat <<NOTES
+          The rd agent runs on the machine you connect to. Agents from 1.5.0 on update from the portal (docs/updates.md); install by hand only the first time.
+
+          Windows 10 1703+/11 (x64); setup: docs/setup-windows.md. Not code-signed: SmartScreen asks once (More info -> Run anyway).
+          - rd-agent-$V-windows-x64-setup.exe: per-user installer (no admin rights); it offers the setup (paste the setup code from the portal) at the end
+          - rd-agent-$V-windows-x64.zip: the same programs to unpack yourself (unblock the zip first: Properties -> Unblock); does not update itself
+
+          macOS 15+ (Apple silicon and Intel); setup: docs/setup-mac.md. Signed with the project's own certificate, not notarized: the first start needs System Settings -> Privacy & Security -> Open Anyway.
+          - rd-agent-$V-macos-universal.zip: RD Agent.app; move it to Applications, then run its setup
+
+          The .sig and SHA256SUMS.txt files are for the updater and for checking downloads.
+          NOTES
+          } > notes.md
+          cat notes.md
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "rd agent $V" \
+            --notes-file notes.md
+      - name: Update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          bun tools/release/manifest.ts --package rd-agent --version "$V" \
+            --platform "windows-x86_64=out/rd-agent-$V-windows-x64-setup.exe" \
+            --platform "darwin-aarch64,darwin-x86_64=out/rd-agent-$V-macos-universal.zip" \
+            --out agent.json
+          cat agent.json
+          bash tools/release/publish-manifest.sh agent.json

@@ -1,10 +1,15 @@
 name: Desktop
 
-# rd Desktop (clients/desktop): Windows (portable exe + per-user NSIS installer) and macOS
-# (universal .dmg) builds, plus the Windows agent (per-user installer, and rd-agent.exe +
-# rd-agentw.exe zipped), as workflow artifacts; a desktop-v* tag also publishes them as a GitHub Release. (Path filters do
-# not apply to tag pushes, so every desktop-v* tag builds.) release.yml (changesets) creates the
-# tags and dispatches this workflow on them.
+# rd Desktop (clients/desktop): Windows (per-user NSIS installer + portable exe) and macOS
+# (universal .dmg) builds as workflow artifacts, with the signed updater files (docs/updates.md).
+# A desktop-v* tag also publishes them as a GitHub Release and then points the update manifest
+# (desktop.json on the `updates` release) at it. release.yml (changesets) creates the tags and
+# dispatches this workflow on them. (Path filters do not apply to tag pushes, so every desktop-v*
+# tag builds.) Pull requests build too, but never publish; without the signing secrets (pull
+# requests from forks) the builds are unsigned and have no updater files.
+#
+# Secrets: TAURI_SIGNING_PRIVATE_KEY + TAURI_SIGNING_PRIVATE_KEY_PASSWORD (update signatures),
+# MACOS_CERTIFICATE + MACOS_CERTIFICATE_PASSWORD (the "rd Code Signing" certificate).
 on:
   push:
     branches: [main]
@@ -12,11 +17,24 @@ on:
     paths:
       - "clients/desktop/**"
       - "crates/rd-proto/**"
+      - "tools/release/**"
+      - ".github/actions/macos-signing/**"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    paths:
+      - "clients/desktop/**"
+      - "crates/rd-proto/**"
+      - "tools/release/**"
+      - ".github/actions/macos-signing/**"
       - ".github/workflows/desktop.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   version:
@@ -25,27 +43,36 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - id: version
         run: |
           bun tools/release/sync-versions.ts --check
-          v="$(sed -n 's/^version = "\(.*\)"$/\1/p' clients/desktop/src-tauri/Cargo.toml | head -n1)"
+          v="$(bun tools/release/sync-versions.ts --print rd-desktop)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          if [[ "$GITHUB_REF" == refs/tags/desktop-v* && "${GITHUB_REF_NAME#desktop-v}" != "$v" ]]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match clients/desktop/src-tauri/Cargo.toml version $v"
-            exit 1
+          release=false
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then
+            if [[ "${GITHUB_REF_NAME#desktop-v}" != "$v" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the rd-desktop version $v"
+              exit 1
+            fi
+            release=true
           fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
 
   windows:
-    name: Windows (exe + NSIS installer)
+    name: Windows (installer + portable exe)
     needs: version
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
       run:
         shell: bash
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -63,7 +90,19 @@ jobs:
 
       - name: Build
         working-directory: clients/desktop
-        run: bun run tauri build --ci --bundles nsis -- --locked
+        run: |
+          # With the update-signing key, Tauri also signs the installer for the updater
+          # (setup.exe.sig). A release must have it.
+          config='{}'
+          if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            config='{"bundle":{"createUpdaterArtifacts":true}}'
+          elif [[ "${{ needs.version.outputs.release }}" == true ]]; then
+            echo "::error::a release needs the TAURI_SIGNING_PRIVATE_KEY secret"
+            exit 1
+          else
+            echo "::warning::no TAURI_SIGNING_PRIVATE_KEY: building without updater signatures"
+          fi
+          bun run tauri build --ci --bundles nsis --config "$config" -- --locked
 
       - name: Test
         working-directory: clients/desktop/src-tauri
@@ -80,7 +119,11 @@ jobs:
           src=clients/desktop/src-tauri/target/release
           mkdir -p out
           cp "$src/rd-desktop.exe" "out/rd-desktop-$v-x64-portable.exe"
-          cp "$src"/bundle/nsis/*-setup.exe "out/rd-desktop-$v-x64-setup.exe"
+          setup=("$src"/bundle/nsis/*-setup.exe)
+          cp "${setup[0]}" "out/rd-desktop-$v-x64-setup.exe"
+          if [[ -f "${setup[0]}.sig" ]]; then
+            cp "${setup[0]}.sig" "out/rd-desktop-$v-x64-setup.exe.sig"
+          fi
           ls -l out
 
       - uses: actions/upload-artifact@v4
@@ -89,110 +132,14 @@ jobs:
           path: out/*
           if-no-files-found: error
 
-  windows-agent:
-    name: Windows agent (installer + zip)
-    needs: version
-    runs-on: windows-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.99.1"
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build --locked --release -p rd-agent
-
-      # Windows Server images have no Media Foundation (mfplat.dll) unless the feature is added;
-      # without it rd-agent.exe does not even start.
-      - name: Media Foundation
-        shell: pwsh
-        run: |
-          $mf = Join-Path $env:WINDIR 'System32\mfplat.dll'
-          if (-not (Test-Path $mf)) { Install-WindowsFeature Server-Media-Foundation | Out-Null }
-          if (-not (Test-Path $mf)) { throw 'Media Foundation is missing' }
-
-      # The shipped exe starts and encodes (no GPU here: the software encoder).
-      - name: Smoke test
-        run: |
-          target/release/rd-agent.exe --version
-          target/release/rd-agent.exe selftest --synthetic --encoder software --size 640x360 --seconds 2
-
-      - name: Collect
-        shell: pwsh
-        run: |
-          $v = '${{ needs.version.outputs.version }}'
-          New-Item -ItemType Directory -Force out, pkg | Out-Null
-          # The key tables in rd-agent derive from Chromium (BSD-3-Clause): ship the notice.
-          Copy-Item target/release/rd-agent.exe, target/release/rd-agentw.exe, THIRD_PARTY_NOTICES.md pkg
-          Compress-Archive -Path pkg/* -DestinationPath "out/rd-agent-$v-windows-x64.zip"
-          Get-ChildItem out
-
-      - name: NSIS
-        shell: pwsh
-        run: |
-          # Use NSIS if the runner has it. Otherwise download the same NSIS build
-          # Tauri uses (from GitHub, checksum pinned): Chocolatey's feed goes down.
-          if (Get-Command makensis -ErrorAction SilentlyContinue) { exit 0 }
-          $nsis = 'C:\Program Files (x86)\NSIS'
-          if (-not (Test-Path "$nsis\makensis.exe")) {
-            $url = 'https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip'
-            $sha = 'C7D27F780DDB6CFFB4730138CD1591E841F4B7EDB155856901CDF5F214394FA1'
-            $zip = Join-Path $env:RUNNER_TEMP 'nsis.zip'
-            Invoke-WebRequest $url -OutFile $zip -MaximumRetryCount 5 -RetryIntervalSec 10
-            $got = (Get-FileHash $zip -Algorithm SHA256).Hash
-            if ($got -ne $sha) { throw "NSIS download checksum mismatch: $got" }
-            Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP -Force
-            $nsis = Join-Path $env:RUNNER_TEMP 'nsis-3.11'
-          }
-          if (-not (Test-Path "$nsis\makensis.exe")) { throw "makensis.exe not found in $nsis" }
-          Add-Content $env:GITHUB_PATH $nsis
-
-      - name: Installer
-        shell: pwsh
-        run: |
-          $v = '${{ needs.version.outputs.version }}'
-          makensis -V2 "-DVERSION=$v" "-DSRC=$PWD\pkg" "-DOUTFILE=$PWD\out\rd-agent-$v-windows-x64-setup.exe" packaging/windows/rd-agent.nsi
-          if ($LASTEXITCODE) { throw "makensis failed: $LASTEXITCODE" }
-          Get-ChildItem out
-
-      # Silent install and uninstall (no config here, so the agent is not started).
-      - name: Installer smoke test
-        shell: pwsh
-        run: |
-          $v = '${{ needs.version.outputs.version }}'
-          $dir = Join-Path $env:RUNNER_TEMP 'rd-agent'
-          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\rd-agent'
-          $p = Start-Process "out\rd-agent-$v-windows-x64-setup.exe" -ArgumentList '/S', "/D=$dir" -PassThru
-          $p.WaitForExit()
-          if ($p.ExitCode) { throw "installer exit code $($p.ExitCode)" }
-          foreach ($f in 'rd-agent.exe', 'rd-agentw.exe', 'uninstall.exe') {
-            if (-not (Test-Path "$dir\$f")) { throw "$f was not installed" }
-          }
-          if ((Get-ItemProperty $key).DisplayVersion -ne $v) { throw 'no Apps entry for this version' }
-          & "$dir\rd-agent.exe" --version
-          # The uninstaller copies itself to %TEMP% and returns at once.
-          Start-Process "$dir\uninstall.exe" -ArgumentList '/S' -Wait
-          $deadline = (Get-Date).AddSeconds(30)
-          while ((Test-Path $key) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
-          if ((Test-Path $key) -or (Test-Path "$dir\rd-agent.exe")) { throw 'the uninstall left files or the Apps entry' }
-          'install and uninstall OK'
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rd-agent-${{ needs.version.outputs.version }}-windows-x64
-          path: out/*
-          if-no-files-found: error
-
   macos:
     name: macOS (universal .dmg)
     needs: version
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -205,14 +152,35 @@ jobs:
           workspaces: clients/desktop/src-tauri -> target
       - uses: oven-sh/setup-bun@v2
 
+      - name: Signing keychain
+        id: signing
+        uses: ./.github/actions/macos-signing
+        with:
+          certificate: ${{ secrets.MACOS_CERTIFICATE }}
+          password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+
       - name: Tauri CLI (version pinned in clients/desktop/package.json)
         working-directory: clients/desktop
         run: bun install --frozen-lockfile
 
       - name: Build
         working-directory: clients/desktop
-        # Ad-hoc signed (bundle.macOS.signingIdentity "-"): no Apple developer account.
-        run: bun run tauri build --ci --target universal-apple-darwin --bundles app,dmg -- --locked
+        env:
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+          RELEASE: ${{ needs.version.outputs.release }}
+        run: |
+          # Signed with "rd Code Signing" (so the Accessibility permission survives updates),
+          # else ad-hoc (tauri.conf.json: signingIdentity "-"). With the update-signing key,
+          # Tauri also writes the updater archive (.app.tar.gz) and its .sig.
+          if [[ "$RELEASE" == true && ( -z "$IDENTITY" || -z "$TAURI_SIGNING_PRIVATE_KEY" ) ]]; then
+            echo "::error::a release needs the MACOS_CERTIFICATE and TAURI_SIGNING_PRIVATE_KEY secrets"
+            exit 1
+          fi
+          config="$(jq -cn --arg identity "$IDENTITY" --arg key "$TAURI_SIGNING_PRIVATE_KEY" '{bundle: (
+            (if $key != "" then {createUpdaterArtifacts: true} else {} end)
+            + (if $identity != "" then {macOS: {signingIdentity: $identity}} else {} end))}')"
+          echo "config overrides: $config"
+          bun run tauri build --ci --target universal-apple-darwin --bundles app,dmg --config "$config" -- --locked
 
       - name: Test
         working-directory: clients/desktop/src-tauri
@@ -224,14 +192,28 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Collect
+        env:
+          SIGNED: ${{ steps.signing.outputs.available }}
         run: |
           v="${{ needs.version.outputs.version }}"
           bundle=clients/desktop/src-tauri/target/universal-apple-darwin/release/bundle
           app="$bundle/macos/rd Desktop.app"
           lipo -archs "$app/Contents/MacOS/rd-desktop"
           codesign --verify --strict --verbose=2 "$app"
+          codesign -d -r- "$app"
+          if [[ "$SIGNED" == true ]]; then
+            # The designated requirement must name the certificate, not a per-build hash:
+            # that is what keeps the Accessibility permission across updates.
+            codesign -d -r- "$app" 2>&1 | grep -q 'certificate leaf = H"' \
+              || { echo "::error::rd Desktop.app is not signed with the certificate"; exit 1; }
+          fi
           mkdir -p out
           cp "$bundle"/dmg/*.dmg "out/rd-desktop-$v-macos-universal.dmg"
+          tarball=("$bundle"/macos/*.app.tar.gz)
+          if [[ -f "${tarball[0]}" ]]; then
+            cp "${tarball[0]}" "out/rd-desktop-$v-macos-universal.app.tar.gz"
+            cp "${tarball[0]}.sig" "out/rd-desktop-$v-macos-universal.app.tar.gz.sig"
+          fi
           ls -l out
 
       - uses: actions/upload-artifact@v4
@@ -242,21 +224,22 @@ jobs:
 
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
-    needs: [version, windows, windows-agent, macos]
+    if: needs.version.outputs.release == 'true'
+    needs: [version, windows, macos]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # gh release create
+      contents: write # gh release create / upload
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
       - uses: actions/download-artifact@v4
         with:
-          pattern: rd-*
+          pattern: rd-desktop-*
           path: out
           merge-multiple: true
       - name: Checksums
-        run: cd out && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+        run: cd out && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -269,18 +252,16 @@ jobs:
               printf '%s\n\n' "$changes"
             fi
             cat <<NOTES
-          Unsigned builds; see clients/desktop/README.md for installing.
+          rd Desktop 1.5.0 and later update themselves (docs/updates.md); install by hand only the first time. See clients/desktop/README.md for installing.
 
-          Windows 10/11 (x64). SmartScreen asks once: More info -> Run anyway.
+          Windows 10/11 (x64). Not code-signed: SmartScreen asks once (More info -> Run anyway).
           - rd-desktop-$V-x64-setup.exe: per-user installer (no admin rights)
-          - rd-desktop-$V-x64-portable.exe: single exe, no install
+          - rd-desktop-$V-x64-portable.exe: single exe, no install (does not update itself)
 
-          macOS 12+ (Apple silicon and Intel). First start: System Settings -> Privacy & Security -> Open Anyway. Grabbing Cmd+Tab etc. needs the Accessibility permission (the app asks).
+          macOS 12+ (Apple silicon and Intel). Signed with the project's own certificate, not notarized: the first start needs System Settings -> Privacy & Security -> Open Anyway. Grabbing Cmd+Tab etc. needs the Accessibility permission (the app asks).
           - rd-desktop-$V-macos-universal.dmg
 
-          Windows agent, for the PC you connect to (Windows 10 1703+/11, x64; setup: docs/setup-windows.md). SmartScreen asks once: More info -> Run anyway.
-          - rd-agent-$V-windows-x64-setup.exe: per-user installer (no admin rights); it offers the setup (gateway, machine id, token) at the end
-          - rd-agent-$V-windows-x64.zip: the same programs to unpack yourself (unblock the zip first: Properties -> Unblock)
+          The .sig, .app.tar.gz and SHA256SUMS.txt files are for the updater and for checking downloads.
           NOTES
           } > notes.md
           cat notes.md
@@ -289,3 +270,14 @@ jobs:
             --verify-tag \
             --title "rd Desktop $V" \
             --notes-file notes.md
+      - name: Update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          bun tools/release/manifest.ts --package rd-desktop --version "$V" \
+            --platform "windows-x86_64=out/rd-desktop-$V-x64-setup.exe" \
+            --platform "darwin-aarch64,darwin-x86_64=out/rd-desktop-$V-macos-universal.app.tar.gz" \
+            --out desktop.json
+          cat desktop.json
+          bash tools/release/publish-manifest.sh desktop.json
