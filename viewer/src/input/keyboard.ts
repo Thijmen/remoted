@@ -4,7 +4,9 @@ import { hidForCode } from './keymap.gen';
 import { type ModifierMapping, isModifierCode, mapCode } from './modifiers';
 
 export const HID_CAPS_LOCK = 0x00070039;
+const HID_CONTROL_LEFT = 0x000700e0;
 const HID_ALT_LEFT = 0x000700e2;
+const HID_ALT_RIGHT = 0x000700e6;
 const HID_META_LEFT = 0x000700e3;
 const HID_META_RIGHT = 0x000700e7;
 
@@ -59,7 +61,7 @@ const isShift = (code: string) => code === 'ShiftLeft' || code === 'ShiftRight';
 
 /**
  * Keyboard state between the DOM (or the desktop app's hook) and the wire: which physical keys are down on the
- * remote side, the remote Caps Lock state, viewer chords, Alt+Tab → Cmd+Tab, and the Windows quirks (AltGr's
+ * remote side, the remote Caps Lock state, viewer chords, Alt+Tab ⇄ Cmd+Tab, and the Windows quirks (AltGr's
  * fake Ctrl, missing Shift keyups).
  */
 export class KeyboardForwarder {
@@ -163,7 +165,7 @@ export class KeyboardForwarder {
     }
     if (hidForCode(mapCode(e.code, this.deps.mapping())) === undefined && !this.pressed.has(e.code)) return 'ignore';
     this.syncCaps(e.getModifierState('CapsLock'));
-    if (e.code === 'Tab') this.altTabToCmdTab();
+    if (e.code === 'Tab') this.appSwitcherTab();
     this.press(e.code, e.repeat);
     return 'consume';
   }
@@ -200,18 +202,33 @@ export class KeyboardForwarder {
   }
 
   /**
-   * windows-to-mac: Alt+Tab switches apps on Windows, Cmd+Tab does on the Mac. When Tab is pressed while the
-   * left Alt is held as Option, that Alt becomes Cmd until it is released (Option up, Cmd down, then the Tab),
-   * so Shift+Alt+Tab and further Tabs work like Cmd+Tab and releasing Alt picks the app. Right Alt (AltGr on
-   * many layouts) stays Option, and a Cmd already held (Ctrl+Alt+Tab) leaves Alt alone.
+   * The app switcher is Alt+Tab on Windows and Cmd+Tab on the Mac.
+   * - windows-to-mac: when Tab is pressed while the left Alt is held as Option, that Alt becomes Cmd until it
+   *   is released (Option up, Cmd down, then the Tab), so Shift+Alt+Tab and further Tabs work like Cmd+Tab and
+   *   releasing Alt picks the app. Right Alt (AltGr on many layouts) stays Option, and a Cmd already held
+   *   (Ctrl+Alt+Tab) leaves Alt alone.
+   * - mac-to-windows: the same the other way round: the left Cmd, held as Ctrl, becomes Alt at the Tab (rd
+   *   Desktop captures Cmd+Tab; a browser never sees it). An Alt already held (Option+Cmd+Tab) leaves it alone.
    */
-  private altTabToCmdTab(): void {
-    if (this.deps.mapping() !== 'windows-to-mac' || this.pressed.get('AltLeft') !== HID_ALT_LEFT) return;
-    for (const hid of this.pressed.values()) if (hid === HID_META_LEFT || hid === HID_META_RIGHT) return;
-    this.deps.send(encodeKey(false, false, HID_ALT_LEFT));
-    this.deps.send(encodeKey(true, false, HID_META_LEFT));
-    // The keyup (and autorepeat) of AltLeft now go to Cmd; forget() drops this with everything else.
-    this.pressed.set('AltLeft', HID_META_LEFT);
+  private appSwitcherTab(): void {
+    switch (this.deps.mapping()) {
+      case 'windows-to-mac':
+        return this.swapForTab('AltLeft', HID_ALT_LEFT, HID_META_LEFT, [HID_META_LEFT, HID_META_RIGHT]);
+      case 'mac-to-windows':
+        return this.swapForTab('MetaLeft', HID_CONTROL_LEFT, HID_ALT_LEFT, [HID_ALT_LEFT, HID_ALT_RIGHT]);
+      case 'passthrough':
+        return;
+    }
+  }
+
+  /** `code`, held as `held`, becomes `switcher` (unless a key in `unless` is already held). */
+  private swapForTab(code: string, held: number, switcher: number, unless: readonly number[]): void {
+    if (this.pressed.get(code) !== held) return;
+    for (const hid of this.pressed.values()) if (unless.includes(hid)) return;
+    this.deps.send(encodeKey(false, false, held));
+    this.deps.send(encodeKey(true, false, switcher));
+    // The keyup (and autorepeat) of `code` now go to the switcher key; forget() drops this with everything else.
+    this.pressed.set(code, switcher);
   }
 
   /** Send a key-down for a physical code (autorepeat if it is already down). */

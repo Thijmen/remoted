@@ -225,4 +225,7 @@ be replayed by a fake agent or decoded by the viewer's `/dev/decoder-test`.
 ## Keys
 Wire = USB HID usage `(page << 16) | usage`. Tables generated from Chromium `dom_code_data.inc` by
 `tools/gen-keymap` into `crates/rd-proto/src/keymap_gen.rs` and `viewer/src/input/keymap.gen.ts`.
-Viewer: `KeyboardEvent.code` → HID. macOS: HID → kVK. Windows: HID → scancode (`0xE0xx` extended).
+Viewer: `KeyboardEvent.code` → HID. macOS: HID → kVK. Windows: HID → scancode (`0xE0xx` extended),
+injected with `SendInput`. The table follows the low-level keyboard hook's convention, which differs
+from injection for Num Lock (table `E0 45`, injected as `45`) and Pause (table `45`, injected as
+`VK_PAUSE`).

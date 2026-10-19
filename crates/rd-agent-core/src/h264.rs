@@ -1,4 +1,7 @@
-//! H.264 helpers: avcC parsing/building, WebCodecs codec strings, Annex-B <-> AVCC.
+//! H.264 helpers: avcC parsing/building, WebCodecs codec strings, Annex-B <-> AVCC, and the
+//! SPS VUI fix-up shared by the platform encoders ([`vui`]).
+
+pub mod vui;
 
 use bytes::Bytes;
 

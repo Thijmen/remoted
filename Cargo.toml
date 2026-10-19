@@ -5,6 +5,7 @@ members = [
   "crates/rd-flow",
   "crates/rd-agent-core",
   "crates/rd-platform-macos",
+  "crates/rd-platform-windows",
   "crates/rd-agent",
   "crates/rd-gateway",
 ]
@@ -22,6 +23,7 @@ rd-proto = { path = "crates/rd-proto" }
 rd-flow = { path = "crates/rd-flow" }
 rd-agent-core = { path = "crates/rd-agent-core" }
 rd-platform-macos = { path = "crates/rd-platform-macos" }
+rd-platform-windows = { path = "crates/rd-platform-windows" }
 
 anyhow = "1"
 thiserror = "2"

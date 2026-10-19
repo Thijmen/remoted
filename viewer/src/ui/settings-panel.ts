@@ -127,7 +127,9 @@ export function settingsPanel(initial: Settings, onChange: (s: Settings) => void
       select(
         id('mapping'),
         [
+          { value: 'auto', label: 'Automatic (by the keyboard and the remote OS)' },
           { value: 'windows-to-mac', label: 'Windows keyboard → Mac (Ctrl→Cmd, Win→Ctrl)' },
+          { value: 'mac-to-windows', label: 'Mac keyboard → Windows (Cmd→Ctrl, Ctrl→Win)' },
           { value: 'passthrough', label: 'Pass through' },
         ] as const,
         s.mapping,

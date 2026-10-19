@@ -28,6 +28,7 @@ webpki-roots = "1.0"
 url = { workspace = true }
 toml = { workspace = true }
 opus = { workspace = true }
+h264-reader = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

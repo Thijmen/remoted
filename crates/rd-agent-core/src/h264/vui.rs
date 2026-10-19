@@ -1,10 +1,11 @@
 //! SPS VUI fix-up. Browsers' H.264 decoders only output each frame as soon as it is decoded
 //! when the SPS declares `bitstream_restriction_flag = 1` with `max_num_reorder_frames = 0`;
-//! otherwise they may hold up to a full DPB of frames. VideoToolbox's standard rate control
-//! omits the restriction (the low-latency one includes it), so when it is missing it is added to
-//! the SPS inside the avcC record. VideoToolbox's AVCC samples carry no in-band parameter sets,
-//! so the avcC is the only copy a decoder sees. Only valid because the session never reorders
-//! frames (`AllowFrameReordering = false`).
+//! otherwise they may hold up to a full DPB of frames. Not every encoder writes it
+//! (VideoToolbox's standard rate control omits it, its low-latency one includes it), so when it
+//! is missing it is added to the SPS inside the avcC record. The agents' AVCC payloads carry no
+//! in-band parameter sets (VideoToolbox emits none, the Windows encoder strips them), so the
+//! avcC is the only copy a decoder sees. Only valid because the encoders never reorder frames
+//! (no B-frames).
 
 use anyhow::{Context as _, anyhow, ensure};
 use h264_reader::nal::sps::{BitstreamRestrictions, SeqParameterSet, VuiParameters};
@@ -12,7 +13,7 @@ use h264_reader::nal::{Nal, NalHeader, RefNal, WritableNal};
 
 /// A rewritten avcC record if any SPS in `avcc` permits frame reordering; `None` if every SPS
 /// already declares `max_num_reorder_frames = 0`.
-pub(crate) fn without_reordering(avcc: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+pub fn without_reordering(avcc: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
     let record = AvccRecord::parse(avcc)?;
     let mut changed = false;
     let mut sps_list = Vec::with_capacity(record.sps.len());

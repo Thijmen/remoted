@@ -1,6 +1,6 @@
 //! Host-specific pieces of the binary: the [`rd_agent_core::Platform`], token storage,
-//! permissions, the login service (LaunchAgent) and the selftest. macOS is implemented; other
-//! targets compile with an "unsupported platform" error until their platform crate exists.
+//! permissions, the login service (a LaunchAgent on macOS, an autostart entry on Windows) and
+//! the selftest. Other targets compile with an "unsupported platform" error.
 
 use std::path::PathBuf;
 
@@ -9,9 +9,14 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::*;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use self::windows::*;
+
+#[cfg(not(any(target_os = "macos", windows)))]
 mod unsupported;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub use unsupported::*;
 
 /// State of the login service that starts the agent.

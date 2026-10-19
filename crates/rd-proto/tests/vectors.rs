@@ -112,7 +112,9 @@ fn golden_vectors() {
         return;
     }
     let actual = std::fs::read_to_string(path)
-        .expect("testvectors/binary.json missing; run with UPDATE_VECTORS=1");
+        .expect("testvectors/binary.json missing; run with UPDATE_VECTORS=1")
+        // A Windows checkout (core.autocrlf) has CRLF line endings.
+        .replace("\r\n", "\n");
     assert_eq!(
         actual, expected,
         "golden vectors changed; regenerate with UPDATE_VECTORS=1 and update the TS side"

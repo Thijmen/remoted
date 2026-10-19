@@ -27,9 +27,12 @@ describe('resolveSize', () => {
 
 describe('sanitizeSettings', () => {
   const d = defaultSettings(win);
-  it('defaults the modifier mapping from the platform', () => {
-    expect(d.mapping).toBe('windows-to-mac');
-    expect(defaultSettings({ platform: 'MacIntel' }).mapping).toBe('passthrough');
+  it('defaults the modifier mapping to auto (resolved per session) and keeps explicit ones', () => {
+    expect(d.mapping).toBe('auto');
+    expect(defaultSettings({ platform: 'MacIntel' }).mapping).toBe('auto');
+    expect(sanitizeSettings({ mapping: 'windows-to-mac' }, d).mapping).toBe('windows-to-mac');
+    expect(sanitizeSettings({ mapping: 'mac-to-windows' }, d).mapping).toBe('mac-to-windows');
+    expect(sanitizeSettings({ mapping: 'sideways' }, d).mapping).toBe('auto');
   });
   it('keeps valid fields and replaces invalid ones', () => {
     const s = sanitizeSettings(

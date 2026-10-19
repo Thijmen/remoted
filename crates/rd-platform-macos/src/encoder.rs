@@ -56,11 +56,11 @@ use objc2_video_toolbox::{
     kVTVideoEncoderNotAvailableNowErr, kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
-use rd_agent_core::h264::codec_string_from_avcc;
+use rd_agent_core::h264::{codec_string_from_avcc, vui};
 use rd_agent_core::{CodecConfig, EncodedFrame, FrameGate, FrameSink};
 use tracing::{debug, error, info, warn};
 
-use crate::{cf, vui};
+use crate::cf;
 
 /// "No limit" for the key-frame interval: IDRs only on demand.
 const MAX_KEY_FRAME_INTERVAL: i32 = i32::MAX;
@@ -101,7 +101,7 @@ pub const RATE_CONTROL_ENV: &str = "RD_VT_RATE_CONTROL";
 /// Measured on an M1 Pro (macOS 26.3, 1728x1118@60, synthetic content, 2026-10-17):
 /// - `Standard`: p50 ~9.3 ms, p90 ~14 ms, no drops. IDRs ~250 KiB (vs ~177 KiB) and looser
 ///   per-second bitrate adherence. Its SPS lacks the VUI bitstream restriction, which the
-///   encoder then adds to the avcC itself (see `vui.rs`).
+///   encoder then adds to the avcC itself (see `rd_agent_core::h264::vui`).
 /// - `LowLatency`: p50 ~19 ms, p90 ~28-36 ms. `RealTime = true` makes VideoToolbox pace itself
 ///   to `ExpectedFrameRate` (about one frame interval); `Standard` with `RealTime = true` shows
 ///   the same ~17 ms. Overstating `ExpectedFrameRate` (90-240) lowers p50 to 10-12 ms but p90

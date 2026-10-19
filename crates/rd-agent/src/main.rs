@@ -1,10 +1,10 @@
-//! rd-agent: the rd host agent.
+//! rd-agent: the rd host agent (macOS and Windows).
 //!
 //! ```text
 //! rd-agent run        [--config PATH] [--gateway URL] [--machine ID] [--source screen|synthetic] [--token-env VAR]
-//! rd-agent setup      interactive, in person: config.toml (with the token, mode 0600), permission prompts, LaunchAgent
-//! rd-agent install | uninstall     LaunchAgent management
-//! rd-agent status     config, token, permissions, LaunchAgent state, gateway reachability
+//! rd-agent setup      interactive, in person: config.toml (with the token, readable only by you), permissions, login service
+//! rd-agent install | uninstall     login service management (macOS: LaunchAgent; Windows: autostart + rd-agentw.exe)
+//! rd-agent status     config, token, permissions, login service state, gateway reachability
 //! rd-agent selftest   --size 1728x1118 --fps 60 --seconds 10 [--bitrate-kbps 8000] [--record out.rdv] [--synthetic]
 //! ```
 
@@ -30,15 +30,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Connect to the gateway and serve viewer sessions (what the LaunchAgent runs).
+    /// Connect to the gateway and serve viewer sessions (what the login service runs).
     Run(RunArgs),
-    /// Interactive first-time setup (run in person): token, config, permissions, LaunchAgent.
+    /// Interactive first-time setup (run in person): token, config, permissions, login service.
     Setup(SetupArgs),
-    /// Install (or reinstall) and load the LaunchAgent.
+    /// Install (or reinstall) and start the login service (macOS: LaunchAgent; Windows:
+    /// autostart entry).
     Install,
-    /// Unload and remove the LaunchAgent.
+    /// Stop and remove the login service.
     Uninstall,
-    /// Show configuration, token, permissions, LaunchAgent and gateway status.
+    /// Show configuration, token, permissions, login service and gateway status.
     Status(ConfigArg),
     /// Capture/encode benchmark with SPS/VUI assertions.
     Selftest(SelftestArgs),
@@ -99,8 +100,8 @@ struct SetupArgs {
     /// Machine id (asked for when missing).
     #[arg(long, value_name = "ID")]
     machine: Option<String>,
-    /// Do not install the LaunchAgent.
-    #[arg(long)]
+    /// Do not install the login service (LaunchAgent / autostart).
+    #[arg(long, alias = "no-autostart")]
     no_launch_agent: bool,
 }
 
@@ -121,15 +122,20 @@ struct SelftestArgs {
     /// Encode a moving test pattern instead of the screen (needs no permission).
     #[arg(long)]
     synthetic: bool,
-    /// Encoder rate control: low-latency or standard [default: RD_VT_RATE_CONTROL or standard].
+    /// macOS: encoder rate control, low-latency or standard [default: RD_VT_RATE_CONTROL or
+    /// standard].
     #[arg(long, value_name = "MODE")]
     rate_control: Option<String>,
+    /// Windows: encoder, auto (the GPU's, else software), hardware or software [default:
+    /// RD_MF_ENCODER or auto].
+    #[arg(long, value_name = "ENCODER")]
+    encoder: Option<String>,
 }
 
 /// Where session video comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Source {
-    /// Screen capture (needs the Screen Recording permission).
+    /// Screen capture (on macOS it needs the Screen Recording permission).
     Screen,
     /// A moving test pattern through the real encoder (needs no permission).
     Synthetic,
@@ -151,6 +157,10 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     error!("{e:#}");
+                    #[cfg(windows)]
+                    if e.is::<host::AlreadyRunning>() {
+                        return ExitCode::from(host::names::EXIT_ALREADY_RUNNING);
+                    }
                     ExitCode::FAILURE
                 }
             };
@@ -197,6 +207,9 @@ fn main() -> ExitCode {
 }
 
 fn run(args: RunArgs) -> anyhow::Result<()> {
+    // One agent per session; `install` / `uninstall` stop it through the guard's event.
+    #[cfg(windows)]
+    let guard = host::RunGuard::acquire()?;
     let mut cfg = config::load_for_run(args.config.config.as_deref(), args.gateway, args.machine)?;
     let (token, token_source) = config::resolve_token(args.token_env.as_deref(), &cfg)?;
     cfg.token = Some(token);
@@ -212,11 +225,16 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
         .thread_name("rd-agent")
         .enable_all()
         .build()?;
-    runtime.block_on(Runtime::new(cfg, platform).run_until(shutdown_signal()))
+    #[cfg(windows)]
+    let stopped = guard.stopped();
+    #[cfg(not(windows))]
+    let stopped = std::future::pending::<()>();
+    runtime.block_on(Runtime::new(cfg, platform).run_until(shutdown_signal(stopped)))
 }
 
-/// SIGTERM (launchd stopping us) or SIGINT.
-async fn shutdown_signal() {
+/// SIGTERM (launchd stopping us), SIGINT / Ctrl-C, or `stopped` (Windows: the stop event of
+/// `rd-agent install` / `uninstall`; never on macOS).
+async fn shutdown_signal(stopped: impl std::future::Future<Output = ()>) {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -225,18 +243,24 @@ async fn shutdown_signal() {
                 tokio::select! {
                     _ = term.recv() => info!("SIGTERM received; shutting down"),
                     _ = tokio::signal::ctrl_c() => info!("SIGINT received; shutting down"),
+                    () = stopped => info!("asked to stop; shutting down"),
                 }
             }
             Err(e) => {
                 error!("cannot listen for SIGTERM: {e}");
-                let _ = tokio::signal::ctrl_c().await;
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    () = stopped => {}
+                }
             }
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
-        info!("Ctrl-C received; shutting down");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => info!("Ctrl-C received; shutting down"),
+            () = stopped => info!("asked to stop; shutting down"),
+        }
     }
 }
 
