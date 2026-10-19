@@ -1,4 +1,5 @@
-//! Agent control socket `/ws/agent`: registration, state updates, session requests/ends.
+//! Agent control socket `/ws/agent`: registration, state and update status reports, session
+//! requests/ends, update requests.
 
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
@@ -12,7 +13,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use rd_proto::control::{AgentToGateway, GatewayToAgent};
+use rd_proto::control::{AgentToGateway, GatewayToAgent, UpdatePhase, UpdateResult, UpdateStatus};
 use rd_proto::{GW_PROTO_VERSION, close};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
@@ -181,11 +182,73 @@ fn handle_message(st: &AppState, machine: &str, conn_id: u64, text: &str) {
             info!(machine, session, reason, "agent ended session");
             st.registry.agent_session_end(machine, &session, reason);
         }
+        Ok(AgentToGateway::UpdateStatus(status)) => update_status(st, machine, conn_id, status),
         Ok(AgentToGateway::Register { .. }) => {
             warn!(machine, "agent control: duplicate register ignored");
         }
         Ok(AgentToGateway::Unknown) => debug!(machine, "agent control: unknown message ignored"),
         Err(err) => warn!(machine, error = %err, "agent control: unparseable message ignored"),
+    }
+}
+
+/// Store an agent's update status. Every report is logged at debug; a new phase and a new outcome
+/// at info, so the log tells the story of an update without the 6-hourly repeats.
+fn update_status(st: &AppState, machine: &str, conn_id: u64, status: UpdateStatus) {
+    let available = status.available.as_ref().map(|a| a.version.clone());
+    let phase = status.phase;
+    debug!(
+        machine,
+        phase = phase_name(phase),
+        available,
+        can_install = status.can_install,
+        cannot_install = status.cannot_install,
+        error = status.error,
+        checked_ms = status.checked_ms,
+        "agent update status"
+    );
+    let Some(change) = st.registry.set_update_status(machine, conn_id, status) else {
+        return;
+    };
+    if let Some(was) = change.phase_was {
+        info!(
+            machine,
+            phase = phase_name(phase),
+            was = phase_name(was),
+            available,
+            "agent update phase"
+        );
+    }
+    if let Some(o) = change.outcome {
+        info!(
+            machine,
+            from = o.from,
+            to = o.to,
+            result = result_name(o.result),
+            error = o.error,
+            at_ms = o.at_ms,
+            "agent update outcome"
+        );
+    }
+}
+
+/// The wire name (`update_status.phase`), for logs.
+fn phase_name(phase: UpdatePhase) -> &'static str {
+    match phase {
+        UpdatePhase::Idle => "idle",
+        UpdatePhase::Checking => "checking",
+        UpdatePhase::Downloading => "downloading",
+        UpdatePhase::Installing => "installing",
+        UpdatePhase::Unknown => "unknown",
+    }
+}
+
+/// The wire name (`update_status.last.result`), for logs.
+fn result_name(result: UpdateResult) -> &'static str {
+    match result {
+        UpdateResult::Ok => "ok",
+        UpdateResult::RolledBack => "rolled_back",
+        UpdateResult::Failed => "failed",
+        UpdateResult::Unknown => "unknown",
     }
 }
 

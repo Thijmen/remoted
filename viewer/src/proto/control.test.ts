@@ -119,6 +119,50 @@ describe('parseMachines', () => {
   it('returns [] for non-arrays', () => {
     expect(parseMachines({})).toEqual([]);
   });
+
+  it('decodes the update status leniently', () => {
+    const [m] = parseMachines([
+      {
+        machine: 'mbp',
+        update: {
+          available: { version: '1.6.0', notes: '## 1.6.0', url: 'javascript:alert(1)' },
+          can_install: true,
+          phase: 'installing',
+          checked_ms: 5,
+          last: { from: '1.5.0', to: '1.5.1', result: 'rolled_back', error: 'timeout', at_ms: 6 },
+          from_the_future: 1,
+        },
+      },
+    ]);
+    expect(m!.update).toEqual({
+      available: { version: '1.6.0', notes: '## 1.6.0', url: '' },
+      can_install: true,
+      cannot_install: '',
+      phase: 'installing',
+      error: '',
+      checked_ms: 5,
+      last: { from: '1.5.0', to: '1.5.1', result: 'rolled_back', error: 'timeout', at_ms: 6 },
+    });
+    // Older agents and gateways: no status. Newer values: unknown. The minimal report: defaults.
+    expect(parseMachines([{ machine: 'pc' }])[0]!.update).toBeNull();
+    expect(parseMachines([{ machine: 'pc', update: null }])[0]!.update).toBeNull();
+    const future = parseMachines([
+      { machine: 'pc', update: { phase: 'verifying', last: { from: '1', to: '2', result: 'partial' } } },
+    ])[0]!.update;
+    expect(future?.phase).toBe('unknown');
+    expect(future?.last?.result).toBe('unknown');
+    expect(parseMachines([{ machine: 'pc', update: { can_install: false, phase: 'idle' } }])[0]!.update).toEqual({
+      available: null,
+      can_install: false,
+      cannot_install: '',
+      phase: 'idle',
+      error: '',
+      checked_ms: null,
+      last: null,
+    });
+    // An available update needs a version.
+    expect(parseMachines([{ machine: 'pc', update: { available: { notes: 'x' } } }])[0]!.update?.available).toBeNull();
+  });
 });
 
 describe('parseMe', () => {

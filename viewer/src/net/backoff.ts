@@ -30,6 +30,8 @@ export type CloseAction =
   | 'stop'
   /** Machine offline: poll /api/machines until it is back, then reconnect. */
   | 'poll'
+  /** The agent is installing an update: poll until it is back and done, then reconnect. */
+  | 'update'
   /** Reconnect with backoff. */
   | 'retry';
 
@@ -48,9 +50,18 @@ export function closeAction(code: number): CloseAction {
       return 'stop';
     case CloseCode.AGENT_OFFLINE:
       return 'poll';
+    case CloseCode.AGENT_UPDATING:
+      return 'update';
     default:
       return 'retry';
   }
 }
 
 export const OFFLINE_POLL_MS = 3000;
+/** Polling while an agent updates: it is back within seconds of registering. */
+export const UPDATE_POLL_MS = 2000;
+/**
+ * How long after a 4010 other closes still count as part of the update (the agent restarting
+ * answers 4003 or 4004). The update helper gives the new version 2 minutes, then rolls back.
+ */
+export const UPDATE_WAIT_MS = 180_000;

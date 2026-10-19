@@ -15,6 +15,8 @@ export const CloseCode = {
   SESSION_ENDED: 4006,
   IDLE_TIMEOUT: 4008,
   REPLACED: 4009,
+  /** The agent is installing an update; it comes back by itself, usually within a minute. */
+  AGENT_UPDATING: 4010,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -211,6 +213,46 @@ export interface RecoveryLink {
   url: string;
 }
 
+export type UpdatePhase = 'idle' | 'checking' | 'downloading' | 'installing' | 'unknown';
+export type UpdateResult = 'ok' | 'rolled_back' | 'failed' | 'unknown';
+
+/** A newer agent version. */
+export interface AvailableUpdate {
+  version: string;
+  /** Release notes of every version newer than the running one, newest first, as Markdown. */
+  notes: string;
+  /** Release page (http(s) only, else empty). */
+  url: string;
+}
+
+/** How an update attempt ended. */
+export interface UpdateOutcome {
+  from: string;
+  to: string;
+  result: UpdateResult;
+  error: string;
+  /** Unix ms (agent clock); 0 when unknown. */
+  at_ms: number;
+}
+
+/** An agent's `update_status` (docs/protocol.md), as listed by `/api/machines`. */
+export interface UpdateStatus {
+  available: AvailableUpdate | null;
+  can_install: boolean;
+  /** Why not, when `can_install` is false. */
+  cannot_install: string;
+  phase: UpdatePhase;
+  /** Why the last check or update request failed. */
+  error: string;
+  checked_ms: number | null;
+  last: UpdateOutcome | null;
+}
+
+/** The agent is downloading or installing an update (it ends sessions and restarts meanwhile). */
+export function updateInProgress(u: UpdateStatus | null): boolean {
+  return u !== null && (u.phase === 'downloading' || u.phase === 'installing');
+}
+
 export interface MachineInfo {
   machine: string;
   name: string;
@@ -223,6 +265,8 @@ export interface MachineInfo {
   state: AgentState | null;
   viewer: { user: string; since_ms: number } | null;
   recovery: RecoveryLink[];
+  /** Null for agents that do not report updates (before 1.5.0), and on older gateways. */
+  update: UpdateStatus | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,12 +453,51 @@ export function parseProbeEvt(text: string): ProbeEvt | null {
   }
 }
 
+function isHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
 function recoveryFrom(v: unknown): RecoveryLink[] {
   if (!Array.isArray(v)) return [];
   return v
     .filter(isObj)
     .map((r) => ({ label: str(r, 'label'), url: str(r, 'url') }))
-    .filter((r) => r.label !== '' && /^https?:\/\//i.test(r.url));
+    .filter((r) => r.label !== '' && isHttpUrl(r.url));
+}
+
+function oneOf<T extends string>(v: unknown, values: readonly T[], other: T): T {
+  return typeof v === 'string' && (values as readonly string[]).includes(v) ? (v as T) : other;
+}
+
+const PHASES = ['idle', 'checking', 'downloading', 'installing'] as const;
+const RESULTS = ['ok', 'rolled_back', 'failed'] as const;
+
+/** Lenient like serde on the Rust side: missing fields get defaults, unknown values become `unknown`. */
+export function updateStatusFrom(v: unknown): UpdateStatus | null {
+  if (!isObj(v)) return null;
+  const a = isObj(v.available) ? v.available : null;
+  const l = isObj(v.last) ? v.last : null;
+  const url = a ? str(a, 'url') : '';
+  return {
+    available:
+      a && str(a, 'version')
+        ? { version: str(a, 'version'), notes: str(a, 'notes'), url: isHttpUrl(url) ? url : '' }
+        : null,
+    can_install: bool(v, 'can_install'),
+    cannot_install: str(v, 'cannot_install'),
+    phase: v.phase === undefined ? 'idle' : oneOf(v.phase, PHASES, 'unknown'),
+    error: str(v, 'error'),
+    checked_ms: typeof v.checked_ms === 'number' && Number.isFinite(v.checked_ms) ? v.checked_ms : null,
+    last: l
+      ? {
+          from: str(l, 'from'),
+          to: str(l, 'to'),
+          result: oneOf(l.result, RESULTS, 'unknown'),
+          error: str(l, 'error'),
+          at_ms: num(l, 'at_ms'),
+        }
+      : null,
+  };
 }
 
 /** Decode the `/api/machines` response; malformed entries are skipped. */
@@ -435,6 +518,7 @@ export function parseMachines(v: unknown): MachineInfo[] {
       state: isObj(m.state) ? agentStateFrom(m.state) : null,
       viewer,
       recovery: recoveryFrom(m.recovery),
+      update: updateStatusFrom(m.update),
     });
   }
   return out;
