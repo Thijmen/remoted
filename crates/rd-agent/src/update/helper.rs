@@ -1198,6 +1198,8 @@ mod tests {
     }
 
     impl FakeSys {
+        // The macOS swap tests (Unix only) use the path set.
+        #[cfg(unix)]
         fn with(paths: &[&str]) -> FakeSys {
             let sys = FakeSys::default();
             sys.paths
@@ -1224,6 +1226,7 @@ mod tests {
             self.log.borrow().clone()
         }
 
+        #[cfg(unix)]
         fn has(&self, path: &str) -> bool {
             self.paths.borrow().contains(Path::new(path))
         }
@@ -1292,10 +1295,14 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     const APP: &str = "/Apps/RD Agent.app";
+    #[cfg(unix)]
     const NEW: &str = "/data/update/download/unpacked/RD Agent.app";
+    #[cfg(unix)]
     const PREV: &str = "/data/update/previous/RD Agent.app";
 
+    #[cfg(unix)]
     fn mac(sys: &FakeSys) -> MacSwap<'_> {
         MacSwap {
             sys,
