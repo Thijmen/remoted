@@ -1,10 +1,10 @@
-//! `rd-agent setup`: interactive first-time setup, run in person at the Mac. Writes config.toml
-//! with the token (readable only by the user), shows the permission prompts and installs the
-//! LaunchAgent.
+//! `rd-agent setup`: interactive first-time setup, run in person at the host. Writes
+//! config.toml with the token (readable only by the user), on macOS shows the permission
+//! prompts, and installs the login service (LaunchAgent / autostart).
 //!
-//! The token is not kept in the Keychain: the app is signed with a self-signed certificate (no
-//! Team ID), so macOS ties a Keychain item to the exact build, and every rebuild would make
-//! the LaunchAgent wait on an unseen "allow access" dialog.
+//! On macOS the token is not kept in the Keychain: the app is signed with a self-signed
+//! certificate (no Team ID), so macOS ties a Keychain item to the exact build, and every
+//! rebuild would make the LaunchAgent wait on an unseen "allow access" dialog.
 
 use std::io::{BufRead as _, Write as _};
 
@@ -13,7 +13,33 @@ use rd_agent_core::config::AgentConfig;
 
 use crate::{SetupArgs, config, host};
 
-const DEFAULT_MACHINE: &str = "mbp";
+/// The machine id offered when there is no config yet: the computer name on Windows.
+fn default_machine() -> String {
+    #[cfg(windows)]
+    if let Some(id) = std::env::var("COMPUTERNAME")
+        .ok()
+        .and_then(|n| machine_id(&n))
+    {
+        return id;
+    }
+    "mbp".to_owned()
+}
+
+/// `name` as a machine id: lowercase, `[a-z0-9_-]`, at most 64 characters.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn machine_id(name: &str) -> Option<String> {
+    let id: String = name
+        .trim()
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | '0'..='9' | '-' | '_' => c,
+            'A'..='Z' => c.to_ascii_lowercase(),
+            _ => '-',
+        })
+        .take(64)
+        .collect();
+    (!id.is_empty()).then_some(id)
+}
 
 pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
     let path = config::path(args.config.config.as_deref())?;
@@ -39,7 +65,9 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         Some(m) => m.clone(),
         None => prompt(
             "Machine id",
-            existing.as_ref().map_or(DEFAULT_MACHINE, |c| &c.machine),
+            &existing
+                .as_ref()
+                .map_or_else(default_machine, |c| c.machine.clone()),
         )?,
     };
     ensure!(
@@ -78,8 +106,31 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         path.display()
     );
 
-    // Asked for by a fresh instance of the app (via LaunchServices), so the grants go to
-    // RD Agent.app and not to the terminal this runs in.
+    permissions()?;
+
+    if args.no_launch_agent {
+        println!("skipping the login service (--no-launch-agent)");
+    } else {
+        host::service::install()?;
+    }
+    Ok(())
+}
+
+/// Nothing to grant on Windows.
+#[cfg(windows)]
+fn permissions() -> anyhow::Result<()> {
+    println!(
+        "Windows needs no permission prompts: the agent captures the screen and injects input \
+         in your session. (Windows ignores injected input while an elevated window has the \
+         focus; see docs/setup-windows.md.)"
+    );
+    Ok(())
+}
+
+/// Screen Recording and Accessibility, asked for by a fresh instance of the app (via
+/// LaunchServices), so the grants go to RD Agent.app and not to the terminal this runs in.
+#[cfg(not(windows))]
+fn permissions() -> anyhow::Result<()> {
     println!(
         "asking macOS for Screen Recording and Accessibility for RD Agent; approve them in the \
          dialogs / System Settings > Privacy & Security"
@@ -105,15 +156,10 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         granted(perms.screen),
         granted(perms.input)
     );
-
-    if args.no_launch_agent {
-        println!("skipping the LaunchAgent (--no-launch-agent)");
-    } else {
-        host::service::install()?;
-    }
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn granted(yes: bool) -> &'static str {
     if yes { "granted" } else { "NOT granted" }
 }
@@ -167,5 +213,21 @@ fn prompt_token(machine: &str, current: Option<String>) -> anyhow::Result<String
         Some(m) if m == machine => Ok(token),
         Some(m) => bail!("this token is for machine {m:?}, not {machine:?}"),
         None => bail!("expected a token of the form rd1.<machine>.<secret>"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn computer_names_become_machine_ids() {
+        assert_eq!(
+            machine_id("DESKTOP-4K2Q9ZB").as_deref(),
+            Some("desktop-4k2q9zb")
+        );
+        assert_eq!(machine_id(" Thijs PC ").as_deref(), Some("thijs-pc"));
+        assert_eq!(machine_id(""), None);
+        assert_eq!(machine_id(&"x".repeat(80)).map(|id| id.len()), Some(64));
     }
 }

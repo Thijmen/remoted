@@ -1,6 +1,7 @@
 import { AudioPlayer } from '../audio/player';
 import { CHORD_LABEL, type ChordAction } from '../input/chords';
-import { InputController } from '../input/controller';
+import { InputController, type InputOptions } from '../input/controller';
+import { resolveMapping } from '../input/modifiers';
 import { fetchMachine } from '../net/api';
 import { Session, type SessionStatus } from '../net/session';
 import type { AudioMsg, VideoMsg } from '../proto/bin';
@@ -106,7 +107,11 @@ export class ViewerApp {
       {
         status: (s) => this.onStatus(s),
         session: (m) => this.setAgentState(m.agent),
-        agentHello: (m) => (this.agentHello = m),
+        agentHello: (m) => {
+          this.agentHello = m;
+          // "auto" modifier mapping depends on the agent's OS.
+          this.input.setOptions(this.inputOptions(this.settings));
+        },
         control: (m) => this.onControl(m),
         video: (m: VideoMsg, rxUs: number) => this.video.onVideo(m, rxUs),
         audio: (m: AudioMsg) => this.audio?.onAudio(m),
@@ -135,7 +140,7 @@ export class ViewerApp {
             locked ? { level: 'info', text: 'Pointer locked — press Esc to release.' } : null,
           ),
       },
-      { mapping: this.settings.mapping, invertScroll: this.settings.invertScroll },
+      this.inputOptions(this.settings),
     );
     this.latency = new LatencyTest({
       canvas: this.canvas,
@@ -321,6 +326,13 @@ export class ViewerApp {
     };
   }
 
+  private inputOptions(s: Settings): InputOptions {
+    return {
+      mapping: resolveMapping(s.mapping, navigator, this.agentHello?.agent.os),
+      invertScroll: s.invertScroll,
+    };
+  }
+
   private startParams(hello: AgentHello): StreamParams {
     const display = hello.agent.displays[0];
     const size = resolveSize(this.settings.preset, display, this.viewport());
@@ -461,7 +473,7 @@ export class ViewerApp {
     this.settings = next;
     saveSettings(this.machine, next);
     this.video.setRenderMode(next.renderMode);
-    this.input.setOptions({ mapping: next.mapping, invertScroll: next.invertScroll });
+    this.input.setOptions(this.inputOptions(next));
     if (next.audio && this.live) this.startAudio();
     if (!next.audio && this.audio) {
       this.audio.close();

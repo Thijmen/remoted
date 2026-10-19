@@ -1,4 +1,4 @@
-import { type ModifierMapping, type PlatformHint, defaultMapping } from '../input/modifiers';
+import type { MappingSetting, PlatformHint } from '../input/modifiers';
 import type { DisplayDesc, StreamParams } from '../proto/control';
 import type { RenderMode } from '../video/pipeline';
 
@@ -22,14 +22,15 @@ export interface Settings {
   volume: number;
   renderMode: RenderMode;
   invertScroll: boolean;
-  mapping: ModifierMapping;
+  /** Resolved per session with `resolveMapping`. */
+  mapping: MappingSetting;
 }
 
 export const MIN_KBPS = 1000;
 export const START_KBPS = 8000;
 export const MAX_KBPS_LIMIT = 100_000;
 
-export function defaultSettings(nav: PlatformHint): Settings {
+export function defaultSettings(_nav: PlatformHint): Settings {
   return {
     preset: '1728x1118',
     fps: 60,
@@ -39,7 +40,7 @@ export function defaultSettings(nav: PlatformHint): Settings {
     volume: 1,
     renderMode: 'immediate',
     invertScroll: false,
-    mapping: defaultMapping(nav),
+    mapping: 'auto',
   };
 }
 
@@ -68,7 +69,7 @@ export function sanitizeSettings(raw: unknown, defaults: Settings): Settings {
     volume: Math.min(1, Math.max(0, volume)),
     renderMode: pick(o.renderMode, ['immediate', 'raf'] as const, defaults.renderMode),
     invertScroll: bool('invertScroll'),
-    mapping: pick(o.mapping, ['windows-to-mac', 'passthrough'] as const, defaults.mapping),
+    mapping: pick(o.mapping, ['auto', 'windows-to-mac', 'mac-to-windows', 'passthrough'] as const, defaults.mapping),
   };
 }
 

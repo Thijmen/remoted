@@ -4,7 +4,8 @@
 #   tools/new-agent-token.sh mbp
 #
 # - The TOKEN goes to the agent only: paste it into `rd-agent setup` on that machine (it is
-#   kept in the agent's config.toml, mode 0600). Never store it in the cluster or in git.
+#   kept in the agent's config file, readable only by the user). Never store it in the cluster
+#   or in git.
 # - The SHA-256 goes into the 1Password item `rd-agent-tokens` (vault k3s-vault), field named
 #   after the machine; the ExternalSecret mounts it as /etc/rd/agents/<machine>.
 # Rotating: run again, update the 1Password field, re-run setup on the machine.

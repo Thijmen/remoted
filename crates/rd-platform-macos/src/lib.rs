@@ -24,7 +24,6 @@ mod pattern;
 pub mod power;
 pub mod selftest;
 pub mod session;
-mod vui;
 
 use std::sync::Arc;
 

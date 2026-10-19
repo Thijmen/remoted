@@ -10,6 +10,7 @@ const HID = {
   KeyE: 0x00070008,
   ShiftLeft: 0x000700e1,
   ShiftRight: 0x000700e5,
+  KeyC: 0x00070006,
   ControlLeft: 0x000700e0,
   AltLeft: 0x000700e2,
   AltRight: 0x000700e6,
@@ -346,6 +347,57 @@ describe('macOS viewer', () => {
     kb.handle(ev('KeyA'), true, true);
     kb.handle(ev('MetaLeft'), false, true);
     expect(take()).toEqual([down(HID.MetaLeft), down(HID.KeyA), up(HID.MetaLeft), up(HID.KeyA)]);
+  });
+});
+
+describe('Cmd+Tab → Alt+Tab (mac-to-windows)', () => {
+  it('sends Cmd+C as Ctrl+C and Ctrl as the Windows key', () => {
+    const { kb, take } = setup({ mac: true }, 'mac-to-windows');
+    kb.handle(ev('MetaLeft'), true, true);
+    kb.handle(ev('KeyC'), true, true);
+    kb.handle(ev('KeyC'), false, true);
+    kb.handle(ev('MetaLeft'), false, true);
+    kb.handle(ev('ControlLeft', { ctrl: true }), true, true);
+    kb.handle(ev('ControlLeft'), false, true);
+    expect(take()).toEqual([
+      down(HID.ControlLeft),
+      down(HID.KeyC),
+      up(HID.KeyC),
+      up(HID.ControlLeft),
+      down(HID.MetaLeft),
+      up(HID.MetaLeft),
+    ]);
+  });
+
+  it('turns the held left Cmd (as Ctrl) into Alt at the first Tab, for the rest of the hold', () => {
+    const { kb, take } = setup({ mac: true }, 'mac-to-windows');
+    kb.handle(ev('MetaLeft'), true, true);
+    kb.handle(ev('Tab'), true, true);
+    kb.handle(ev('Tab'), false, true);
+    kb.handle(ev('Tab'), true, true);
+    kb.handle(ev('MetaLeft'), false, true);
+    kb.handle(ev('Tab'), false, true);
+    expect(take()).toEqual([
+      down(HID.ControlLeft),
+      up(HID.ControlLeft),
+      down(HID.AltLeft),
+      down(HID.Tab),
+      up(HID.Tab),
+      down(HID.Tab),
+      up(HID.AltLeft),
+      up(HID.Tab),
+    ]);
+    // The next Cmd is Ctrl again.
+    kb.handle(ev('MetaLeft'), true, true);
+    expect(take()).toEqual([down(HID.ControlLeft)]);
+  });
+
+  it('leaves Option+Cmd+Tab (Alt already held) alone', () => {
+    const { kb, take } = setup({ mac: true }, 'mac-to-windows');
+    kb.handle(ev('AltLeft', { alt: true }), true, true);
+    kb.handle(ev('MetaLeft', { alt: true }), true, true);
+    kb.handle(ev('Tab', { alt: true }), true, true);
+    expect(take()).toEqual([down(HID.AltLeft), down(HID.ControlLeft), down(HID.Tab)]);
   });
 });
 

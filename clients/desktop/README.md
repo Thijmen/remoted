@@ -69,8 +69,9 @@ ends at once, and keys work locally again.
 - macOS: **Ctrl+Cmd+Q** (lock screen) and **Cmd+Option+Esc** (Force Quit) always stay on this
   Mac, so you can never lock the remote Mac by accident or get stuck. Media, volume and
   brightness keys stay local too. Caps Lock is this Mac's: the remote lock follows it.
-- Modifier mapping (settings menu): from Windows the default is "Windows keyboard → Mac" (Ctrl
-  acts as Cmd, Alt+Tab as Cmd+Tab); from a Mac it is passthrough (Cmd is Cmd).
+- Modifier mapping (settings menu): the default, "Automatic", follows the keyboard and the remote
+  OS. Windows → Mac: Ctrl acts as Cmd, Alt+Tab as Cmd+Tab. Mac → Windows: Cmd acts as Ctrl,
+  Cmd+Tab as Alt+Tab. The same OS on both sides passes keys through.
 - Links to other sites open in your normal browser. Only the gateway and hosts under the
   sign-in domain load inside the window.
 

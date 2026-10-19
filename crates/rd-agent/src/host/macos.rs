@@ -141,6 +141,10 @@ pub fn report_permissions(
 
 /// Blocks for the duration of the test.
 pub fn selftest(args: &SelftestArgs) -> anyhow::Result<bool> {
+    anyhow::ensure!(
+        args.encoder.is_none(),
+        "--encoder is a Windows option; on macOS choose the rate control with --rate-control"
+    );
     let rate_control = match &args.rate_control {
         Some(mode) => mode.parse()?,
         None => RateControl::from_env(),

@@ -10,6 +10,11 @@ build = "build.rs"
 name = "rd-agent"
 path = "src/main.rs"
 
+# Windows background launcher (GUI subsystem: no console window); a stub elsewhere.
+[[bin]]
+name = "rd-agentw"
+path = "src/bin/rd-agentw.rs"
+
 [dependencies]
 rd-proto = { workspace = true }
 rd-agent-core = { workspace = true }
@@ -28,3 +33,13 @@ url = { workspace = true }
 rd-platform-macos = { workspace = true }
 tracing-oslog = "0.3"
 libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+rd-platform-windows = { workspace = true }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+] }

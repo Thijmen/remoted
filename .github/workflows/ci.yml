@@ -49,3 +49,28 @@ jobs:
         run: cargo clippy -p rd-platform-macos -p rd-agent --all-targets -- -D warnings
       - name: Test (no capture / no input posting in CI)
         run: cargo test -p rd-platform-macos -p rd-agent
+
+  windows:
+    name: Rust (Windows agent)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Windows Server images have no Media Foundation (mfplat.dll) unless the feature is added.
+      - name: Media Foundation
+        shell: pwsh
+        run: |
+          $mf = Join-Path $env:WINDIR 'System32\mfplat.dll'
+          if (-not (Test-Path $mf)) { Install-WindowsFeature Server-Media-Foundation | Out-Null }
+          if (-not (Test-Path $mf)) { throw 'Media Foundation is missing' }
+      - name: Clippy
+        run: cargo clippy -p rd-platform-windows -p rd-agent --all-targets -- -D warnings
+      # No GPU: WARP and the software encoder. The tests that capture the real desktop or move
+      # the pointer are #[ignore]d.
+      - name: Test
+        run: cargo test -p rd-agent-core -p rd-platform-windows -p rd-agent

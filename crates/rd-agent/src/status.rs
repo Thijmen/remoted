@@ -47,14 +47,26 @@ pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
 
     // Checked in a fresh instance of the app: from a terminal, this process's own grants would
     // be the terminal's.
-    match host::app_permissions(false) {
-        Ok(p) => println!(
-            "permissions:  screen recording {}, accessibility {} (RD Agent.app)",
-            yes_no(p.screen),
-            yes_no(p.input)
-        ),
-        Err(e) => println!("permissions:  unknown ({e:#})"),
+    if cfg!(windows) {
+        println!("permissions:  none needed on Windows");
+    } else {
+        match host::app_permissions(false) {
+            Ok(p) => println!(
+                "permissions:  screen recording {}, accessibility {} (RD Agent.app)",
+                yes_no(p.screen),
+                yes_no(p.input)
+            ),
+            Err(e) => println!("permissions:  unknown ({e:#})"),
+        }
     }
+
+    // The login service: a LaunchAgent on macOS (loaded into launchd), an autostart entry on
+    // Windows (enabled at login).
+    let (service, loaded_word) = if cfg!(windows) {
+        ("autostart:   ", "enabled")
+    } else {
+        ("launch agent:", "loaded")
+    };
 
     match host::service::status() {
         Ok(s) => {
@@ -63,16 +75,20 @@ pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
                 .as_ref()
                 .map_or("not installed".to_owned(), |p| p.display().to_string());
             let loaded = match (s.loaded, s.state, s.pid) {
-                (false, ..) => "not loaded".to_owned(),
+                // Windows: an agent can run without the autostart (started by hand).
+                (false, Some(state), _) if cfg!(windows) => {
+                    format!("not {loaded_word}; agent {state}")
+                }
+                (false, ..) => format!("not {loaded_word}"),
                 (true, state, pid) => format!(
-                    "loaded, {}{}",
+                    "{loaded_word}, {}{}",
                     state.as_deref().unwrap_or("state unknown"),
                     pid.map_or(String::new(), |p| format!(" (pid {p})"))
                 ),
             };
-            println!("launch agent: {installed}; {loaded}");
+            println!("{service} {installed}; {loaded}");
         }
-        Err(e) => println!("launch agent: unknown ({e:#})"),
+        Err(e) => println!("{service} unknown ({e:#})"),
     }
 
     if let Some(mut cfg) = cfg {

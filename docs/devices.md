@@ -1,8 +1,8 @@
 # Adding devices
 
-A *device* (or *machine*) is a Mac that runs `rd-agent` and shows up in the portal. This page
-explains how the gateway recognises a device, and walks through adding, renaming, rotating
-and removing one.
+A *device* (or *machine*) is a Mac or Windows PC that runs `rd-agent` and shows up in the
+portal. This page explains how the gateway recognises a device, and walks through adding,
+renaming, rotating and removing one.
 
 ## How it works
 
@@ -94,12 +94,13 @@ Restart the gateway after changing this file. Startup fails on an invalid or dup
 
 ### 4. Install the agent on the device
 
-At the Mac itself, follow [setup-mac.md](setup-mac.md) (signing identity, build, install). When
-`rd-agent setup` asks:
+At the device itself, follow [setup-mac.md](setup-mac.md) (signing identity, build, install) or
+[setup-windows.md](setup-windows.md) (build, copy the two programs). When `rd-agent setup` asks:
 
 - **Gateway URL**: the agent host, for example `wss://rd-agent.example.com`
   (not the portal URL).
-- **Machine id**: `studio`. The default is `mbp`, so change it on every other device.
+- **Machine id**: `studio`. The default is `mbp` on a Mac and the computer name on Windows,
+  so check it on every device.
 - **Token**: the token from step 2.
 
 Setup can also take the first two as flags:
@@ -109,14 +110,18 @@ Setup can also take the first two as flags:
   --gateway wss://rd-agent.example.com --machine studio
 ```
 
+On Windows the same flags work with `rd-agent.exe setup` (see
+[setup-windows.md](setup-windows.md#3-setup-in-person)).
+
 ### 5. Check
 
 ```sh
 "/Applications/RD Agent.app/Contents/MacOS/rd-agent" status
 ```
 
-`status` reports whether the gateway accepts the token. The device should now be online in the
-portal, and the gateway logs `agent registered` with `machine=studio`.
+(`rd-agent.exe status` on Windows.) `status` reports whether the gateway accepts the token.
+The device should now be online in the portal, and the gateway logs `agent registered` with
+`machine=studio`.
 
 ## Rotate a token
 
@@ -126,7 +131,8 @@ portal, and the gateway logs `agent registered` with `machine=studio`.
 3. Run `rd-agent setup` on the device again and enter the new token.
 
 A control socket that is already connected stays up until it reconnects, so restart the agent
-(`launchctl kickstart -k gui/$(id -u)/dev.thijmen.rd.agent`) to apply the change right away.
+to apply the change right away: `launchctl kickstart -k gui/$(id -u)/dev.thijmen.rd.agent` on a
+Mac, `rd-agent.exe install` on Windows.
 
 ## Rename a device
 
@@ -138,7 +144,9 @@ add its hash (and machines-file entry), run `setup` with the new id, then remove
 1. Delete `/etc/rd/agents/<machine>` (or the 1Password field). The agent can no longer connect.
 2. Remove the entry from `RD_MACHINES_FILE`, if there is one, and restart the gateway. Without
    a restart, a device that connected earlier stays in the portal list as offline.
-3. On the Mac: `packaging/macos/uninstall.sh --purge`.
+3. On the device: `packaging/macos/uninstall.sh --purge` on a Mac; on Windows
+   `rd-agent.exe uninstall`, then delete `%LOCALAPPDATA%\rd-agent` (config with the token,
+   logs) and the programs ([setup-windows.md](setup-windows.md#uninstall)).
 
 ## Troubleshooting
 
@@ -158,4 +166,5 @@ first, which is closed with **4009**, so two devices that keep replacing each ot
 share an id.
 
 In `--dev` mode the gateway skips the token check, so any `RD_AGENT_TOKEN=rd1.<machine>.dev`
-works. See [setup-mac.md](setup-mac.md#local-development-no-cluster-no-permissions).
+works. See [setup-mac.md](setup-mac.md#local-development-no-cluster-no-permissions) or
+[setup-windows.md](setup-windows.md#local-development-no-cluster).
