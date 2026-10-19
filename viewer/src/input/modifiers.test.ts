@@ -72,6 +72,7 @@ describe('chordFor', () => {
     expect(chordFor({ ...base, code: 'KeyH' })).toBe('hud');
     expect(chordFor({ ...base, code: 'KeyD' })).toBe('disconnect');
     expect(chordFor({ ...base, code: 'KeyT' })).toBe('latency-test');
+    expect(chordFor({ ...base, code: 'KeyM' })).toBe('next-display');
   });
   it('ignores other keys and incomplete chords', () => {
     expect(chordFor({ ...base, code: 'KeyA' })).toBeNull();

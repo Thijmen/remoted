@@ -24,6 +24,8 @@ export interface Settings {
   invertScroll: boolean;
   /** Resolved per session with `resolveMapping`. */
   mapping: MappingSetting;
+  /** Display id last chosen in a session (the agent's `hello` ids; 0 = main display). */
+  display: number;
 }
 
 export const MIN_KBPS = 1000;
@@ -41,6 +43,7 @@ export function defaultSettings(_nav: PlatformHint): Settings {
     renderMode: 'immediate',
     invertScroll: false,
     mapping: 'auto',
+    display: 0,
   };
 }
 
@@ -70,6 +73,10 @@ export function sanitizeSettings(raw: unknown, defaults: Settings): Settings {
     renderMode: pick(o.renderMode, ['immediate', 'raf'] as const, defaults.renderMode),
     invertScroll: bool('invertScroll'),
     mapping: pick(o.mapping, ['auto', 'windows-to-mac', 'mac-to-windows', 'passthrough'] as const, defaults.mapping),
+    display:
+      typeof o.display === 'number' && Number.isInteger(o.display) && o.display >= 0 && o.display <= 0xffff_ffff
+        ? o.display
+        : defaults.display,
   };
 }
 
@@ -137,4 +144,14 @@ export function streamParams(s: Settings, size: { width: number; height: number 
     audio: s.audio,
     display,
   };
+}
+
+/** The display to stream: the one with id `wanted` if the agent still has it, else its first (main) display. */
+export function pickDisplay(displays: readonly DisplayDesc[], wanted: number): DisplayDesc | undefined {
+  return displays.find((d) => d.id === wanted) ?? displays[0];
+}
+
+/** Pixel size of a display, e.g. "2560×1440". */
+export function displaySize(d: DisplayDesc): string {
+  return `${Math.round(d.w_pt * d.scale)}×${Math.round(d.h_pt * d.scale)}`;
 }

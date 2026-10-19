@@ -32,8 +32,10 @@ use localhost, or HTTPS in production.
 
 ## Shortcuts in a session
 
-Ctrl+Alt+Shift + **F** fullscreen + Keyboard Lock · **L** pointer lock · **H** stats HUD · **T** latency test · **D**
-disconnect. The small ▾ tab at the top of the screen opens the menu and the settings.
+Ctrl+Alt+Shift + **F** fullscreen + Keyboard Lock · **M** next display · **L** pointer lock · **H** stats HUD · **T**
+latency test · **D** disconnect. The small ▾ tab at the top of the screen opens the menu: a display picker (when the
+host has more than one screen), fullscreen, pointer lock, stats, settings and disconnect. The chosen display is
+remembered per machine and used again on the next connect.
 
 To run the latency test, open `/latency-target` on the host, rest the remote cursor on its box, then press the T
 chord. The viewer sends F13 and measures how long it takes for the box flip to be painted.

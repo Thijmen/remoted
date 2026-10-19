@@ -10,13 +10,14 @@ import {
 } from '../net/api';
 import type { DeviceIssued, MachineInfo } from '../proto/control';
 import { byId, h, setChildren, timeAgo } from '../ui/dom';
+import { icon } from '../ui/icons';
 
 const REFRESH_MS = 5000;
 
 const root = byId('app');
 const who = h('span', { className: 'muted' });
-const addButton = h('button', { className: 'primary', type: 'button', hidden: true }, 'Add device');
-const list = h('div', { className: 'stack' });
+const addButton = h('button', { className: 'primary', type: 'button', hidden: true }, icon('plus', 16), 'Add device');
+const list = h('div', { className: 'machines' });
 const status = h('div', { className: 'muted' });
 /** Add device, and the one-time setup code after adding a device or replacing its token. */
 const dialog = h('dialog');
@@ -26,23 +27,32 @@ let canAdd = false;
 root.append(
   h(
     'main',
-    { className: 'page stack' },
+    { className: 'page' },
     h(
-      'div',
-      { className: 'row spread' },
-      h('h1', null, 'Remote desktops'),
+      'header',
+      { className: 'portal-head' },
+      h(
+        'div',
+        { className: 'brand' },
+        h('span', { className: 'brand-mark' }, icon('monitor', 22)),
+        h('h1', null, 'Remote desktops'),
+      ),
       h('div', { className: 'row' }, who, addButton),
     ),
     list,
-    status,
     h(
       'div',
-      { className: 'row muted' },
-      h('a', { href: '/probe' }, 'Network probe'),
-      '·',
-      h('a', { href: '/latency-target' }, 'Latency target'),
-      '·',
-      h('a', { href: '/keytest' }, 'Key test'),
+      { className: 'row spread muted portal-foot' },
+      status,
+      h(
+        'div',
+        { className: 'row' },
+        h('a', { href: '/probe' }, 'Network probe'),
+        '·',
+        h('a', { href: '/latency-target' }, 'Latency target'),
+        '·',
+        h('a', { href: '/keytest' }, 'Key test'),
+      ),
     ),
   ),
   dialog,
@@ -54,7 +64,7 @@ function errorText(e: unknown): string {
 }
 
 function stateBadges(m: MachineInfo): HTMLElement[] {
-  const out = [h('span', { className: `badge ${m.online ? 'ok' : 'bad'}` }, m.online ? 'online' : 'offline')];
+  const out: HTMLElement[] = [];
   const st = m.state;
   if (m.online && st) {
     if (st.locked) out.push(h('span', { className: 'badge warn' }, 'locked'));
@@ -89,40 +99,61 @@ function deviceActions(m: MachineInfo): HTMLElement {
   return h('div', { className: 'row' }, newToken, remove);
 }
 
+function osLabel(os: string): string {
+  return ({ macos: 'macOS', windows: 'Windows' } as Record<string, string>)[os] ?? os;
+}
+
 function machineCard(m: MachineInfo): HTMLElement {
   const details = [
     m.machine !== m.name ? m.machine : '',
-    m.os,
+    osLabel(m.os),
     m.agent_version && `agent ${m.agent_version}`,
-    m.since_ms !== null && (m.online ? `online since ${timeAgo(m.since_ms)}` : `last seen ${timeAgo(m.since_ms)}`),
   ].filter(Boolean);
+  const seen =
+    m.since_ms !== null ? (m.online ? `online since ${timeAgo(m.since_ms)}` : `last seen ${timeAgo(m.since_ms)}`) : '';
+  const badges = stateBadges(m);
   return h(
     'section',
-    { className: 'card stack' },
+    { className: `card machine-card${m.online ? '' : ' offline'}` },
     h(
       'div',
-      { className: 'row spread' },
+      { className: 'machine-head' },
+      h('div', { className: 'machine-avatar' }, icon('monitor', 24)),
       h(
         'div',
-        { className: 'row' },
-        h('span', { className: `dot ${m.online ? 'ok' : 'bad'}` }),
-        h('h2', { style: 'margin:0' }, m.name),
+        { className: 'machine-title' },
+        h('h2', null, m.name),
+        h('div', { className: 'muted' }, details.join(' · ')),
       ),
-      h('a', { className: 'button primary', href: `/m/${encodeURIComponent(m.machine)}` }, 'Connect'),
     ),
-    h('div', { className: 'muted' }, details.join(' · ')),
-    h('div', { className: 'row' }, ...stateBadges(m)),
+    h(
+      'div',
+      { className: 'row' },
+      h(
+        'span',
+        { className: `pill ${m.online ? 'ok' : 'bad'}` },
+        h('span', { className: `dot ${m.online ? 'ok' : 'bad'}` }),
+        m.online ? 'Online' : 'Offline',
+      ),
+      seen ? h('span', { className: 'muted' }, seen) : null,
+    ),
+    badges.length ? h('div', { className: 'row' }, ...badges) : null,
     m.recovery.length
       ? h(
           'div',
           { className: 'row' },
           h('span', { className: 'muted' }, 'Recovery:'),
           ...m.recovery.map((r) =>
-            h('a', { className: 'button', href: r.url, target: '_blank', rel: 'noopener noreferrer' }, r.label),
+            h('a', { className: 'button small', href: r.url, target: '_blank', rel: 'noopener noreferrer' }, r.label),
           ),
         )
       : null,
-    m.managed ? deviceActions(m) : null,
+    h(
+      'div',
+      { className: 'row spread actions' },
+      m.managed ? deviceActions(m) : h('span'),
+      h('a', { className: 'button primary', href: `/m/${encodeURIComponent(m.machine)}` }, 'Connect'),
+    ),
   );
 }
 
