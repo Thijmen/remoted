@@ -23,7 +23,8 @@ rd-agent (Mac/Win) --WSS--> Traefik --> rd-gateway :8081  (per-agent bearer toke
 ## Auth
 
 **Agents** — header `Authorization: Bearer rd1.<machine>.<secret>`.
-- Gateway hashes the whole token with SHA-256 and compares (constant time) to the hex digest in
+- Gateway hashes the whole token with SHA-256 and compares (constant time) to the device's digest in
+  `{RD_STATE_DIR}/devices.json` (devices added in the portal), else to the hex digest in
   `{RD_AGENT_TOKENS_DIR}/<machine>` (default `/etc/rd/agents`). `<machine>` from the token must match
   the `register.machine`.
 - Rate limit: 5 failed auths / minute / client IP (client IP = rightmost `X-Forwarded-For` entry, else peer addr).
@@ -47,7 +48,8 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
    45 s without Pong. The agent reconnects its control socket if it receives nothing for 30 s.
    Agent reconnect backoff: 1 s → 30 s exponential with ±20 % jitter, reset after a registration.
    How the control upgrade's answer changes that:
-   - 401/403, and closes 4002 (wrong machine) / 4009 (replaced): a refusal, wait 30 s.
+   - 401/403, and closes 4002 (wrong machine, token replaced or device removed) / 4009 (replaced):
+     a refusal, wait 30 s.
    - 429 (failed-login rate limit): wait `Retry-After` (≤ 10 min), else 30 s.
    - Any other HTTP answer (the proxy's 502/503/504, or 404 when the gateway's route is gone,
      while the gateway pod restarts): retry every 1 s (±20 %) for up to 2 min, then exponential.
@@ -164,8 +166,11 @@ pipeline, releases all keys/buttons and drops the keep-awake guard.
 | `GET /latency-target` | latency target page (`latency.html`), opened ON the host to be filmed/detected |
 | `GET /keytest` | key test page (`keytest.html`), opened ON the host |
 | `GET /assets/*` | hashed Vite assets (`Cache-Control: public, max-age=31536000, immutable`) |
-| `GET /api/me` | `{"email":"…","uid":"…","dev":false}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`) |
-| `GET /api/machines` | `[{"machine":"mbp","name":"MacBook Pro","online":true,"since_ms":1729160000000,"os":"macOS 26.3","agent_version":"0.1.0","state":{AgentState},"viewer":null\|{"user":"…","since_ms":…},"recovery":[{"label":"Screen Sharing (VNC)","url":"https://…"}]}]` |
+| `GET /api/me` | `{"email":"…","uid":"…","dev":false,"devices":true}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`; `devices` = *Add device* available) |
+| `GET /api/machines` | `[{"machine":"mbp","name":"MacBook Pro","managed":false,"online":true,"since_ms":1729160000000,"os":"macOS 26.3","agent_version":"0.1.0","state":{AgentState},"viewer":null\|{"user":"…","since_ms":…},"recovery":[{"label":"Screen Sharing (VNC)","url":"https://…"}]}]` |
+| `POST /api/devices` | JSON `{"machine":"studio","name":"Mac Studio"}` → 201 `{"machine","name","gateway","token","setup_code"}` (no-store) |
+| `POST /api/devices/{machine}/token` | JSON `{}` → 200, same fields; the agent's control socket is closed with 4002 |
+| `DELETE /api/devices/{machine}` | → 204; the agent's control socket is closed with 4002 |
 | `GET /ws/view/{machine}` | viewer session WS |
 | `GET /ws/probe` | probe WS (below) |
 | `POST /api/probe/report` | JSON body (≤ 1 MiB) logged as one line `probe_report {...}`; → 204 |
@@ -181,6 +186,16 @@ HTML pages are served with `Cache-Control: no-cache`. All responses on 8080 carr
 The viewer build (`viewer/dist`) must therefore contain: `index.html`, `viewer.html`, `probe.html`,
 `latency.html`, `keytest.html`, `assets/…`. The gateway embeds `viewer/dist` (rust-embed,
 `allow_missing`) and `--assets-dir <dir>` overrides it at runtime.
+
+Device routes take JSON bodies only (≤ 4 KiB) and answer errors as `{"error":"…"}`: 400 invalid id/name,
+404 unknown device, 409 id exists or has a provisioned token, 503 no `RD_STATE_DIR`/`RD_AGENT_PUBLIC_URL`,
+500 store not saved. Details: `docs/gateway.md`.
+
+### Setup code
+What *Add device* hands out and `rd-agent setup` reads (`crates/rd-proto/src/setup_code.rs`):
+`rds1_` + base64url (no padding) of `{"gateway":"wss://rd-agent.example.com","token":"rd1.<machine>.<secret>"}`.
+`gateway` is `ws://` or `wss://`; the machine id is the token's. Whitespace inside the code is ignored
+(line breaks from copying). The secret of a token the gateway creates is 32 random bytes, base64url.
 
 Agent port 8081: `GET /ws/agent`, `GET /ws/agent/session/{session}` only (everything else 404).
 Metrics port 9090: `GET /healthz` → `ok`, `GET /metrics` (Prometheus text, optional).
@@ -210,7 +225,9 @@ Metrics port 9090: `GET /healthz` → `ok`, `GET /metrics` (Prometheus text, opt
 | `RD_PUBLIC_ORIGIN` | – (required unless `--dev`) | e.g. `https://rd.example.com` |
 | `RD_ALLOWED_EMAILS` | – (required unless `--dev`) | comma separated |
 | `RD_ALLOWED_UIDS` | – (optional) | comma separated `X-authentik-uid` values; when set, a viewer must match both lists |
-| `RD_AGENT_TOKENS_DIR` | `/etc/rd/agents` | one file per machine with hex sha256 |
+| `RD_STATE_DIR` | – | writable dir for `devices.json` (portal devices); none → *Add device* off (dev: in memory) |
+| `RD_AGENT_PUBLIC_URL` | – (dev: `ws://<agent addr>`) | agent URL put into setup codes, e.g. `wss://rd-agent.example.com` |
+| `RD_AGENT_TOKENS_DIR` | `/etc/rd/agents` | provisioned tokens: one file per machine with hex sha256 |
 | `RD_MACHINES_FILE` | – | JSON `[{"machine":"mbp","name":"MacBook Pro","recovery":[{"label":"…","url":"…"}]}]` |
 | `RD_SESSION_IDLE_TIMEOUT` | `3600` | seconds without input |
 | `RD_CHAOS` | – | dev only: `bw_kbps=5000,delay_ms=50` applied agent→viewer in the join loop |

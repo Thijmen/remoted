@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMachines, parseProbeEvt, parseViewerIncoming } from './control';
+import { parseDeviceIssued, parseMachines, parseMe, parseProbeEvt, parseViewerIncoming } from './control';
 
 describe('parseViewerIncoming', () => {
   it('decodes the gateway session message with defaults', () => {
@@ -113,8 +113,40 @@ describe('parseMachines', () => {
     expect(ms[0]!.state).toEqual({ locked: true, perms: { screen: false, input: false }, in_session: false });
     expect(ms[0]!.recovery).toEqual([{ label: 'VNC', url: 'https://guac.example/#/client/x' }]);
     expect(ms[0]!.viewer).toEqual({ user: 'a@b', since_ms: 2 });
+    expect(ms[0]!.managed).toBe(false);
+    expect(parseMachines([{ machine: 'pc', managed: true }])[0]!.managed).toBe(true);
   });
   it('returns [] for non-arrays', () => {
     expect(parseMachines({})).toEqual([]);
+  });
+});
+
+describe('parseMe', () => {
+  it('reads whether devices can be added', () => {
+    expect(parseMe({ email: 'me@x', dev: false, devices: true })).toEqual({ email: 'me@x', dev: false, devices: true });
+    expect(parseMe({ email: 'me@x' })?.devices).toBe(false);
+  });
+});
+
+describe('parseDeviceIssued', () => {
+  it('needs a machine and a setup code', () => {
+    expect(
+      parseDeviceIssued({
+        machine: 'pc',
+        name: 'Windows PC',
+        gateway: 'wss://rd-agent.example',
+        token: 'rd1.pc.s',
+        setup_code: 'rds1_x',
+      }),
+    ).toEqual({
+      machine: 'pc',
+      name: 'Windows PC',
+      gateway: 'wss://rd-agent.example',
+      token: 'rd1.pc.s',
+      setupCode: 'rds1_x',
+    });
+    expect(parseDeviceIssued({ machine: 'pc', name: null, setup_code: 'rds1_x' })?.name).toBeNull();
+    expect(parseDeviceIssued({ machine: 'pc' })).toBeNull();
+    expect(parseDeviceIssued('junk')).toBeNull();
   });
 });

@@ -58,6 +58,7 @@ You may see fewer frames for a moment, but what you see is current.
 - ⌨️ **Keyboard that works.** Physical key codes, Caps Lock sync, automatic Windows ⇄ Mac modifier mapping (Ctrl ⇄ Cmd), and full shortcut capture with rd Desktop.
 - 🖱️ **Multiple displays**, pointer lock and scaling that keeps the right aspect ratio.
 - 👤 **Single sign-on** through Authentik, with an email allowlist and a separate token per agent.
+- ➕ **Add device** in the portal: it gives you a one-time setup code to paste into the agent's setup.
 - 📶 **Network probe.** A built-in test (`/probe`) checks whether your connection can carry a session, before you rely on it.
 - 🖥️ **Mac and Windows hosts.** Reach a Windows PC from a Mac (Cmd acts as Ctrl) or a Mac from Windows.
 - 🛟 **Recovery path.** Lock screen, login window or a reboot on the Mac? Apple Screen Sharing over Guacamole takes over. See [recovery](docs/recovery.md).
@@ -75,7 +76,7 @@ rd has three parts to set up. Each has its own guide:
    your machine. Or install [rd Desktop](clients/desktop/README.md) from the
    [releases](https://github.com/Thijmen/remoted/releases).
 
-To add another Mac later, see [docs/devices.md](docs/devices.md).
+To add another device later, click **Add device** in the portal; see [docs/devices.md](docs/devices.md).
 
 ### Try it locally
 

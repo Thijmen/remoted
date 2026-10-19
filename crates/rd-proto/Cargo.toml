@@ -9,6 +9,7 @@ description = "rd wire protocol v1: binary media/input frames + JSON control mes
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }

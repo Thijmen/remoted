@@ -29,20 +29,13 @@ The LaunchAgent (`~/Library/LaunchAgents/dev.thijmen.rd.agent.plist`) runs the a
 in your logged-in GUI session (`LimitLoadToSessionType=Aqua`). launchd restarts it if it
 exits.
 
-## 3. Token
+## 3. Add the Mac in the portal
 
-On any machine:
-
-```sh
-tools/new-agent-token.sh mbp
-```
-
-- Put the **sha256** in the 1Password item `rd-agent-tokens` (vault `k3s-vault`), in the
-  field `mbp`. The gateway reads it as `/etc/rd/agents/mbp`.
-- Only the agent gets the **token** (next step). It never goes into the cluster or git.
-
-For a second device, use a different machine id. [devices.md](devices.md) explains how ids and
-tokens work, and how to rotate or remove them.
+Open your gateway's portal (for example `https://rd.example.com`), click **Add device** and give
+the Mac a name. The portal shows a **setup code** (`rds1_…`) once: copy it for the next step.
+It holds the gateway URL and the Mac's token, so treat it like a password. Every device gets its
+own machine id and token; [devices.md](devices.md) explains how they work, how to rotate or
+remove them, and how to provision a token without the portal.
 
 ## 4. Setup (in person)
 
@@ -50,9 +43,10 @@ tokens work, and how to rotate or remove them.
 "/Applications/RD Agent.app/Contents/MacOS/rd-agent" setup
 ```
 
-Setup asks for the gateway URL (the agent host of your gateway, e.g. `wss://rd-agent.example.com`), the machine id
-(`mbp`) and the token (when the config file already has a token for that machine, Enter keeps
-it), then:
+Setup asks for the setup code from step 3: paste it and press Enter. Without a code, press
+Enter and it asks for the gateway URL (the agent host of your gateway, e.g.
+`wss://rd-agent.example.com`), the machine id (`mbp`) and the token one by one (when the
+config file already has a token for that machine, Enter keeps it). Then it:
 - writes the config file with the token,
   `~/Library/Application Support/dev.thijmen.rd.agent/config.toml`. The file is mode 0600 and
   its directory 0700, so only your user can read it. Setup never prints the token;
@@ -68,8 +62,9 @@ Restart the agent after granting permissions:
 **Older installs** (set up before the token moved to the config file) have it in the Keychain
 (service `dev.thijmen.rd.agent`, account `gateway-token`). The agent still reads it there when
 neither `RD_AGENT_TOKEN` nor the config file has one, but after a rebuild that read waits on the
-"allow access" dialog at the Mac. Run `setup` once more and enter the token, so it moves into
-the config file; the Keychain item is then unused (`uninstall.sh --purge` removes it).
+"allow access" dialog at the Mac. Run `setup` once more (with a setup code, or the token), so
+it moves into the config file; the Keychain item is then unused (`uninstall.sh --purge` removes
+it).
 
 ## 5. Check
 

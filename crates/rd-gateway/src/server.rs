@@ -40,8 +40,9 @@ impl Gateway {
         let agent = bind(cfg.agent_addr, "agent").await?;
         let metrics = bind(cfg.metrics_addr, "metrics").await?;
         let (shutdown, shutdown_rx) = watch::channel(false);
+        let agent_addr = agent.local_addr().context("agent listener address")?;
         Ok(Gateway {
-            state: Arc::new(AppState::new(cfg, shutdown_rx)),
+            state: Arc::new(AppState::new(cfg, shutdown_rx, agent_addr)?),
             shutdown,
             viewer,
             agent,
@@ -79,6 +80,8 @@ impl Gateway {
             metrics = %self.metrics.local_addr()?,
             assets = st.assets.describe(),
             machines = cfg.machines.len(),
+            devices = st.devices.describe(),
+            agent_url = st.agent_url.as_deref().unwrap_or("-"),
             chaos = ?cfg.chaos,
             "rd-gateway listening"
         );

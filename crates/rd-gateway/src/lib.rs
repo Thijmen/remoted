@@ -13,6 +13,7 @@ mod assets;
 mod auth;
 mod chaos;
 mod config;
+mod devices;
 mod http;
 mod metrics;
 mod probe;

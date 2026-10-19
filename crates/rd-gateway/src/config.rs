@@ -55,6 +55,14 @@ pub struct Cli {
     /// Serve the viewer build from this directory instead of the embedded copy.
     #[arg(long, env = "RD_ASSETS_DIR")]
     pub assets_dir: Option<PathBuf>,
+    /// Writable directory for the gateway's own state: the devices added in the portal
+    /// (`devices.json`). Without it *Add device* is off (with --dev devices are kept in memory).
+    #[arg(long, env = "RD_STATE_DIR")]
+    pub state_dir: Option<PathBuf>,
+    /// Where agents connect, e.g. wss://rd-agent.example.com; goes into setup codes. Default
+    /// with --dev: ws://<agent listener>.
+    #[arg(long, env = "RD_AGENT_PUBLIC_URL")]
+    pub agent_public_url: Option<String>,
 }
 
 /// One entry of `RD_MACHINES_FILE`.
@@ -117,6 +125,10 @@ pub struct Config {
     pub agent_tokens_dir: PathBuf,
     pub machines: Vec<MachineConfig>,
     pub assets_dir: Option<PathBuf>,
+    /// Device store directory (`RD_STATE_DIR`).
+    pub state_dir: Option<PathBuf>,
+    /// `ws://` or `wss://` URL agents connect to (`RD_AGENT_PUBLIC_URL`), without trailing slash.
+    pub agent_public_url: Option<String>,
     /// Only ever `Some` in dev mode.
     pub chaos: Option<Chaos>,
     pub timeouts: Timeouts,
@@ -137,6 +149,8 @@ impl Config {
             agent_tokens_dir: PathBuf::from("/etc/rd/agents"),
             machines: Vec::new(),
             assets_dir: None,
+            state_dir: None,
+            agent_public_url: None,
             chaos: None,
             timeouts: Timeouts::default(),
         }
@@ -177,6 +191,20 @@ impl Config {
             }
         }
 
+        let agent_public_url = cli
+            .agent_public_url
+            .as_deref()
+            .map(|u| u.trim().trim_end_matches('/').to_owned())
+            .filter(|u| !u.is_empty());
+        if let Some(url) = &agent_public_url {
+            let ok = url
+                .split_once("://")
+                .is_some_and(|(scheme, host)| matches!(scheme, "ws" | "wss") && !host.is_empty());
+            if !ok {
+                bail!("RD_AGENT_PUBLIC_URL must be a ws:// or wss:// URL, got {url:?}");
+            }
+        }
+
         let machines = match &cli.machines_file {
             Some(path) => load_machines(path)?,
             None => Vec::new(),
@@ -202,6 +230,8 @@ impl Config {
             agent_tokens_dir: cli.agent_tokens_dir,
             machines,
             assets_dir: cli.assets_dir,
+            state_dir: cli.state_dir,
+            agent_public_url,
             chaos,
             timeouts: Timeouts {
                 idle: Duration::from_secs(cli.session_idle_timeout.max(1)),
@@ -218,10 +248,7 @@ pub fn normalize_origin(origin: &str) -> String {
 /// Machine ids appear in URLs, token files and tokens (`rd1.<machine>.<secret>`), so they are
 /// restricted to `[A-Za-z0-9_-]{1,64}` (no dots, no path separators).
 pub fn valid_machine_name(name: &str) -> bool {
-    (1..=64).contains(&name.len())
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    rd_proto::setup_code::valid_machine_id(name)
 }
 
 fn load_machines(path: &std::path::Path) -> anyhow::Result<Vec<MachineConfig>> {

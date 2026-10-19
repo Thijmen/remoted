@@ -9,8 +9,8 @@
 ; - A running agent is stopped first (with the new rd-agent.exe, so it works whatever version or
 ;   folder the agent runs from). When the agent is already configured (an update), the
 ;   autostart is installed again from the new folder, which also starts the agent.
-; - Otherwise the finish page offers `rd-agent setup` (gateway, machine id, token), which turns
-;   the autostart on.
+; - Otherwise the finish page offers `rd-agent setup` (paste the setup code from the portal's
+;   Add device, or enter the gateway, machine id and token), which turns the autostart on.
 ; - Silent: `setup.exe /S` (add `/D=<folder>` last to pick the folder); uninstall with
 ;   `uninstall.exe /S`. Silent uninstalls keep the configuration.
 ; - Uninstalling stops the agent and removes the autostart. The configuration (with the agent
@@ -61,12 +61,12 @@ VIAddVersionKey "LegalCopyright" "rd"
 !define MUI_UNICON "${ICON}"
 !define MUI_ABORTWARNING
 
-!define MUI_WELCOMEPAGE_TEXT "This installs ${NAME} ${VERSION}, the host side of rd: it lets you reach this PC from a Mac or a browser through your rd gateway.$\r$\n$\r$\nIt installs for your Windows account only and needs no administrator rights. Keep the agent token for this PC (rd1.<machine>.<secret>) at hand for the setup at the end."
+!define MUI_WELCOMEPAGE_TEXT "This installs ${NAME} ${VERSION}, the host side of rd: it lets you reach this PC from a Mac or a browser through your rd gateway.$\r$\n$\r$\nIt installs for your Windows account only and needs no administrator rights. For the setup at the end, add this PC in your rd portal (Add device) and keep its setup code at hand."
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_TEXT "Set up ${NAME} now (gateway URL, machine id, token)"
+!define MUI_FINISHPAGE_RUN_TEXT "Set up ${NAME} now (paste the setup code)"
 !define MUI_FINISHPAGE_RUN_FUNCTION RunSetup
 !define MUI_FINISHPAGE_SHOWREADME
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "Open the setup guide"

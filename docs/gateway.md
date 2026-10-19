@@ -27,15 +27,17 @@ Every flag can also be set through the environment variable next to it.
 | `--public-origin` | `RD_PUBLIC_ORIGIN` | required unless `--dev` | e.g. `https://rd.example.com` (case-insensitive, trailing `/` ignored) |
 | `--allowed-emails` | `RD_ALLOWED_EMAILS` | required unless `--dev` | comma separated, case-insensitive |
 | `--allowed-uids` | `RD_ALLOWED_UIDS` | optional | comma separated `X-authentik-uid` values; when set, a viewer must match both lists (the uid is immutable, the email is not) |
-| `--agent-tokens-dir` | `RD_AGENT_TOKENS_DIR` | `/etc/rd/agents` | one file per machine holding the hex SHA-256 of that agent's token; re-read on every auth, so rotation needs no restart |
+| `--state-dir` | `RD_STATE_DIR` | – | writable directory for `devices.json`, the devices added in the portal (see [Devices](#devices)); without it *Add device* is off (in dev mode: devices are kept in memory) |
+| `--agent-public-url` | `RD_AGENT_PUBLIC_URL` | – (dev: `ws://<agent listener>`) | where agents connect, e.g. `wss://rd-agent.example.com`; goes into setup codes, so *Add device* needs it |
+| `--agent-tokens-dir` | `RD_AGENT_TOKENS_DIR` | `/etc/rd/agents` | provisioned tokens: one file per machine holding the hex SHA-256 of that agent's token; re-read on every auth, so rotation needs no restart |
 | `--machines-file` | `RD_MACHINES_FILE` | – | `[{"machine":"mbp","name":"MacBook Pro","recovery":[{"label":"…","url":"…"}]}]`; these machines are listed even while offline. Machine ids are `[A-Za-z0-9_-]{1,64}`. |
 | `--session-idle-timeout` | `RD_SESSION_IDLE_TIMEOUT` | `3600` | seconds without viewer input → close 4008 |
 | `--chaos` | `RD_CHAOS` | – | dev only, e.g. `bw_kbps=5000,delay_ms=50` (see [Failure injection](#failure-injection)) |
 | `--assets-dir` | `RD_ASSETS_DIR` | embedded | serve the viewer build from this directory instead of the copy embedded at compile time |
 | – | `RUST_LOG` | `info` | tracing filter, e.g. `rd_gateway=debug` |
 
-Startup fails if the production settings are missing, `RD_MACHINES_FILE` is invalid, or a
-listener cannot bind.
+Startup fails if the production settings are missing, `RD_MACHINES_FILE`, `RD_AGENT_PUBLIC_URL`
+or `devices.json` is invalid, `RD_STATE_DIR` cannot be created, or a listener cannot bind.
 
 ## Running in development
 
@@ -48,7 +50,9 @@ cargo run -p rd-gateway -- --dev --assets-dir viewer/dist
 ```
 
 In dev mode the agent can send any bearer token. The machine id comes from the token when the
-token has the form `rd1.<machine>.…`, and from `register` otherwise. The Vite dev server
+token has the form `rd1.<machine>.…`, and from `register` otherwise. *Add device* works too: its
+setup codes point at the local agent listener, and its devices are kept in memory unless
+`--state-dir` is given. The Vite dev server
 (`bun run dev`, port 5173) proxies `/api` and `/ws` to `127.0.0.1:8080`.
 
 Failure injection, for example a 5 Mbps bottleneck with 50 ms extra delay:
@@ -60,15 +64,17 @@ RD_CHAOS=bw_kbps=5000,delay_ms=50 cargo run -p rd-gateway -- --dev --assets-dir 
 ## Authentication
 
 **Agents** send `Authorization: Bearer rd1.<machine>.<secret>`. The gateway hashes the whole
-token with SHA-256 and compares it in constant time with `{RD_AGENT_TOKENS_DIR}/<machine>`. The
+token with SHA-256 and compares it in constant time with the device's hash in
+`{RD_STATE_DIR}/devices.json`, or for a provisioned token with `{RD_AGENT_TOKENS_DIR}/<machine>`. The
 `register.machine` must equal the machine in the token, or the control socket is closed with
 4002. The data socket (`/ws/agent/session/{id}`) needs the same token. It must also match a
 pending session of that machine that is no more than 10 s old, otherwise the gateway answers 404.
 
-To create a token and the file the gateway stores:
+To provision a token and the file the gateway stores (the portal's *Add device* does this for
+you):
 
 ```sh
-TOKEN="rd1.mbp.$(openssl rand -hex 32)"           # goes into the agent's Keychain
+TOKEN="rd1.mbp.$(openssl rand -hex 32)"           # goes into the agent's config (rd-agent setup)
 printf '%s' "$TOKEN" | shasum -a 256 | cut -d' ' -f1 > mbp   # goes into the tokens secret
 ```
 
@@ -80,7 +86,7 @@ token, until the budget refills (one attempt every 12 s). Every `401`/`429` is l
 
 **Viewers** need `X-authentik-email` to be in `RD_ALLOWED_EMAILS` on every viewer-port
 request. WebSocket upgrades (`/ws/*`) also need `Origin` to equal `RD_PUBLIC_ORIGIN`. State-changing
-requests (POST) that carry a foreign `Origin` are refused as well. A refused request gets
+requests (POST, DELETE) that carry a foreign `Origin` are refused as well. A refused request gets
 `403` and a `viewer forbidden` log line with `ip`, `path` and `reason`.
 
 Every response on the viewer port carries the CSP, COOP (`same-origin`), COEP
@@ -93,8 +99,9 @@ Every response on the viewer port carries the CSP, COOP (`same-origin`), COEP
 | `/`, `/m/{machine}`, `/probe`, `/latency-target`, `/keytest` | `index.html`, `viewer.html`, `probe.html`, `latency.html`, `keytest.html` with `Cache-Control: no-cache` (and an `ETag` when embedded). A page missing from the build gets a 503 placeholder that explains how to build the viewer. |
 | `/assets/*` | hashed Vite output, `Cache-Control: public, max-age=31536000, immutable` |
 | other `GET /<file>` | other top-level files of the build (favicon, …), `no-cache`; else 404 |
-| `GET /api/me` | `{"email":"…","uid":"…","dev":false}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`) |
+| `GET /api/me` | `{"email":"…","uid":"…","dev":false,"devices":true}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`; `devices`: whether *Add device* is on) |
 | `GET /api/machines` | see below |
+| `POST /api/devices`, `POST /api/devices/{machine}/token`, `DELETE /api/devices/{machine}` | add a device, replace its token, remove it; see [Devices](#devices) |
 | `GET /ws/view/{machine}` | viewer session |
 | `GET /ws/probe`, `GET /api/probe/down`, `POST /api/probe/up`, `POST /api/probe/report` | network probe (`protocol.md`); the report is logged as one `probe_report {…}` line (≤ 1 MiB, else 413) |
 
@@ -103,7 +110,39 @@ that has registered since start, sorted by id. Fields that are not known yet are
 `since_ms` (online since / offline since, Unix ms), `os` and `agent_version` (from the last
 registration, kept while offline), and `state` (last reported `AgentState`). `viewer` is
 `{"user","since_ms"}` while a session is pending or active, else `null`. `recovery` comes from
-the machines file (`[]` otherwise). `name` falls back to the machine id.
+the machines file (`[]` otherwise). `name` falls back to the device's name, then the machine id.
+Devices added in the portal follow the machines file, in the order they were added, and have
+`"managed": true`.
+
+## Devices
+
+The portal's *Add device* adds agent machines without touching the cluster: the gateway creates
+each device's token, keeps only its SHA-256 and hands the token out once, inside a setup code.
+It needs a writable `RD_STATE_DIR` (a persistent volume in Kubernetes) and
+`RD_AGENT_PUBLIC_URL`; without them `/api/me` reports `"devices": false` and the routes answer
+503. [devices.md](devices.md) is the user guide.
+
+`{RD_STATE_DIR}/devices.json` holds `{"version":1,"devices":[…]}`, each device with `machine`,
+`name`, `token_sha256`, `created_ms`, `created_by` and `token_ms`. Every change is written to a
+temporary file that is renamed over it; a change that cannot be saved is undone (500).
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /api/devices` | `{"machine":"studio","name":"Mac Studio"}` (`name` optional, ≤ 64 characters) | **201** `{"machine","name","gateway","token","setup_code"}` |
+| `POST /api/devices/{machine}/token` | `{}` | **200**, same fields; the old token stops working |
+| `DELETE /api/devices/{machine}` | – | **204** |
+
+Bodies must be JSON (`content-type: application/json`, ≤ 4 KiB), which a cross-site page
+cannot send without a CORS preflight; together with the `Origin` check this keeps other sites
+from adding devices. Answers that carry a token are `Cache-Control: no-store`. Errors are
+`{"error":"…"}` with **400** (invalid machine id or name), **404** (no such device), **409** (the
+id exists, or has a provisioned token in `RD_AGENT_TOKENS_DIR`), **503** (turned off) or **500**
+(the store could not be saved).
+
+Replacing a token or removing a device disconnects a connected agent: its control socket is
+closed with **4002** (`token replaced` / `device removed`), and a running session ends with
+4003 for the viewer. Every change is an audit line (`target: audit`): `device_add`,
+`device_token` or `device_remove`, with `user`, `ip` and `machine`.
 
 ## Sessions
 
@@ -171,7 +210,8 @@ messages are never dropped or reordered. Viewer→agent traffic is not affected.
 
 Without `--dev`, logs are JSON lines on stdout, with fields flattened. Useful messages:
 `rd-gateway listening`, `agent registered`, `agent control disconnected`, `session_start`,
-`session_end`, `viewer forbidden`, `agent auth failed`, `probe run`, `probe_report {…}`.
+`session_end`, `viewer forbidden`, `agent auth failed`, `device_add`, `device_token`,
+`device_remove`, `device store not saved`, `probe run`, `probe_report {…}`.
 
 `/metrics` exposes `rd_agents_online`, `rd_sessions_active`, `rd_sessions_started_total`,
 `rd_relay_bytes_{down,up}_total`, `rd_agent_auth_failures_total`,
@@ -191,14 +231,15 @@ docker buildx build --platform linux/arm64 -f deploy/Dockerfile -t rd-gateway:de
 
 The build runs in three stages. `oven/bun` builds `viewer/dist`. `rust` + `cargo-zigbuild`
 then cross-compiles a static `aarch64-unknown-linux-musl` binary with the viewer embedded.
-The result ships on `gcr.io/distroless/static-debian12:nonroot`. The image runs as non-root,
-needs no writable filesystem, and exposes 8080/8081/9090. Mount the token hashes at
-`/etc/rd/agents`.
+The result ships on `gcr.io/distroless/static-debian12:nonroot`. The image runs as non-root
+(uid/gid 65532) and exposes 8080/8081/9090. Its only writable path is `RD_STATE_DIR`: mount a
+persistent volume there (writable by gid 65532, e.g. `fsGroup: 65532`) and keep the root
+filesystem read-only. Mount provisioned token hashes, if any, at `/etc/rd/agents`.
 
 ## Tests
 
 ```sh
-cargo test -p rd-gateway      # unit tests + tests/{auth,session,probe,http,backpressure}.rs
+cargo test -p rd-gateway      # unit tests + tests/{auth,session,probe,http,devices,backpressure}.rs
 ```
 
 The integration tests start the gateway in-process on ephemeral loopback ports with short
