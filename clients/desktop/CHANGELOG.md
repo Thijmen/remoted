@@ -1,5 +1,11 @@
 # rd-desktop
 
+## 1.4.2
+
+### Patch Changes
+
+- 2b1bbb7: The Windows agent installer builds again when Chocolatey is unavailable, so releases that include it are no longer held up.
+
 ## 1.4.1
 
 ### Patch Changes
