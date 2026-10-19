@@ -9,6 +9,7 @@
 # - The SHA-256 goes into the 1Password item `rd-agent-tokens` (vault k3s-vault), field named
 #   after the machine; the ExternalSecret mounts it as /etc/rd/agents/<machine>.
 # Rotating: run again, update the 1Password field, re-run setup on the machine.
+# See docs/devices.md.
 set -euo pipefail
 
 machine="${1:-}"

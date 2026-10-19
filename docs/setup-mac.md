@@ -41,6 +41,9 @@ tools/new-agent-token.sh mbp
   field `mbp`. The gateway reads it as `/etc/rd/agents/mbp`.
 - Only the agent gets the **token** (next step). It never goes into the cluster or git.
 
+For a second device, use a different machine id. [devices.md](devices.md) explains how ids and
+tokens work, and how to rotate or remove them.
+
 ## 4. Setup (in person)
 
 ```sh

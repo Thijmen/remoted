@@ -39,7 +39,8 @@ tools/new-agent-token.sh pc
 ```
 
 Store the **sha256** where the gateway reads agent hashes (see [gateway.md](gateway.md)); only
-the agent gets the **token** (next step).
+the agent gets the **token** (next step). Every device needs its own machine id and token;
+[devices.md](devices.md) explains how they work, and how to rotate or remove them.
 
 ## 3. Setup (in person)
 

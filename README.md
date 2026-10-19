@@ -75,6 +75,8 @@ rd has three parts to set up. Each has its own guide:
    your machine. Or install [rd Desktop](clients/desktop/README.md) from the
    [releases](https://github.com/Thijmen/remoted/releases).
 
+To add another Mac later, see [docs/devices.md](docs/devices.md).
+
 ### Try it locally
 
 ```sh
@@ -98,6 +100,7 @@ agent against it.
 | [docs/gateway.md](docs/gateway.md) | Gateway configuration and operation |
 | [docs/setup-mac.md](docs/setup-mac.md) | Installing the Mac agent, local development |
 | [docs/setup-windows.md](docs/setup-windows.md) | Installing the Windows agent, local development, limits |
+| [docs/devices.md](docs/devices.md) | Adding, rotating and removing devices (machine ids, tokens) |
 | [docs/recovery.md](docs/recovery.md) | Recovery path (Screen Sharing / SSH via Guacamole) |
 | [docs/desktop-client.md](docs/desktop-client.md) | rd Desktop design and the page ⇄ app bridge ([install, build](clients/desktop/README.md)) |
 
