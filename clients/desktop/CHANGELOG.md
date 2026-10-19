@@ -1,5 +1,11 @@
 # rd-desktop
 
+## 1.4.1
+
+### Patch Changes
+
+- 461e19b: Fix the rd Desktop builds for macOS and Windows, which failed because the app's dependency lockfile was out of date.
+
 ## 1.4.0
 
 ### Minor Changes
