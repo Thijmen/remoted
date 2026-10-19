@@ -1,33 +1,103 @@
+<div align="center">
+
+<img src="clients/desktop/icon.svg" width="96" alt="rd icon">
+
 # rd
 
-A remote desktop that runs in a plain browser tab over one WebSocket on port 443. It is
-meant for a work laptop that can't run remote-desktop clients and only reaches the outside
-world over 80/443.
+**A low-latency remote desktop that runs in a plain browser tab.**
+
+One WebSocket. Port 443. No client to install, no inbound ports at home.
+
+[![CI](https://github.com/Thijmen/remoted/actions/workflows/ci.yml/badge.svg)](https://github.com/Thijmen/remoted/actions/workflows/ci.yml)
+[![Desktop](https://github.com/Thijmen/remoted/actions/workflows/desktop.yml/badge.svg)](https://github.com/Thijmen/remoted/actions/workflows/desktop.yml)
+[![Gateway image](https://github.com/Thijmen/remoted/actions/workflows/gateway-image.yml/badge.svg)](https://github.com/Thijmen/remoted/actions/workflows/gateway-image.yml)
+
+</div>
+
+---
+
+## Why
+
+Some machines can't run remote-desktop software. A locked-down work laptop may block
+VNC, RDP, SSH and anything else that isn't a web browser talking HTTPS on port 80 or 443.
+
+rd works within those limits. The Mac you want to reach dials **out** to a small gateway, and
+you open the gateway in any modern browser. Screen, keyboard, mouse and audio all travel over
+a single secure WebSocket, the same kind of traffic as any other web app.
+
+## How it works
 
 ```
-browser (WebCodecs) ──WSS──▶ rd-gateway (K3s, behind Traefik + Authentik) ◀──WSS── rd-agent (Mac; Windows later)
+┌──────────────────────┐        ┌──────────────────────────┐        ┌──────────────────────┐
+│  Browser             │  WSS   │  rd-gateway              │  WSS   │  rd-agent            │
+│  (or rd Desktop)     │ ─────▶ │  Kubernetes, behind      │ ◀───── │  on the Mac at home  │
+│  WebCodecs decoding  │  :443  │  Traefik + Authentik     │  :443  │  dials out, always   │
+└──────────────────────┘        └──────────────────────────┘        └──────────────────────┘
 ```
 
-- **rd-agent** captures the screen (ScreenCaptureKit), encodes hardware H.264
-  (VideoToolbox) and injects mouse/keyboard input. It dials *out* to the gateway, so there
-  are no inbound ports at home.
-- **rd-gateway** serves the viewer, checks who you are, and joins the viewer and agent
-  sockets without buffering.
-- **viewer** decodes with WebCodecs and acknowledges every frame. The agent drops frames
-  *before* encoding when the link can't keep up, so latency stays low instead of queueing.
+| Component | What it does |
+|---|---|
+| **rd-agent** | Captures the screen with ScreenCaptureKit, encodes hardware H.264 with VideoToolbox, streams Opus audio and injects mouse and keyboard input. It connects *out* to the gateway, so nothing listens at home. |
+| **rd-gateway** | Serves the portal and the viewer, checks who you are (Authentik + an email allowlist), and joins the viewer and agent sockets without buffering. Ships as a small distroless image. |
+| **viewer** | A TypeScript web app that decodes video with WebCodecs and acknowledges every frame. |
+| **rd Desktop** | An optional Windows/macOS app that shows the same viewer in a window and also captures the shortcuts a browser never sees (Alt+Tab, Cmd+Tab, the Windows key, …). |
 
-The lock screen, the login window and reboots are handled by Apple Screen Sharing through
-Guacamole: see [docs/recovery.md](docs/recovery.md).
+### Why it stays responsive
+
+Most streaming tools fill a buffer when the network slows down, and the picture falls further
+and further behind. rd works the other way around: the viewer acknowledges each frame, and
+when the link can't keep up the agent **drops frames before encoding** and lowers the bitrate.
+You may see fewer frames for a moment, but what you see is current.
+
+## Features
+
+- 🖥️ **Runs in a browser tab.** Any modern browser with WebCodecs. Nothing to install.
+- 🔒 **Outbound only.** The agent dials out, so you open no ports on your home router.
+- ⚡ **Low latency.** Hardware H.264, up to 60 or 120 fps, adaptive bitrate tuned in a network simulator.
+- 🔊 **Audio** over Opus with an adaptive jitter buffer.
+- ⌨️ **Keyboard that works.** Physical key codes, Caps Lock sync, an optional Windows → Mac modifier mapping, and full shortcut capture with rd Desktop.
+- 🖱️ **Multiple displays**, pointer lock and scaling that keeps the right aspect ratio.
+- 👤 **Single sign-on** through Authentik, with an email allowlist and a separate token per agent.
+- 📶 **Network probe.** A built-in test (`/probe`) checks whether your connection can carry a session, before you rely on it.
+- 🛟 **Recovery path.** Lock screen, login window or a reboot? Apple Screen Sharing over Guacamole takes over. See [recovery](docs/recovery.md).
+
+## Getting started
+
+rd has three parts to set up. Each has its own guide:
+
+1. **Run the gateway**: [docs/gateway.md](docs/gateway.md). The image is published as
+   `ghcr.io/thijmen/rd-gateway`.
+2. **Install the agent on your Mac**: [docs/setup-mac.md](docs/setup-mac.md). This step
+   must be done at the Mac itself, because macOS asks a person to approve Screen Recording and
+   Accessibility.
+3. **Connect**: open your gateway (for example `https://rd.example.com`), sign in and pick
+   your machine. Or install [rd Desktop](clients/desktop/README.md) from the
+   [releases](https://github.com/Thijmen/remoted/releases).
+
+### Try it locally
+
+```sh
+# build the viewer
+cd viewer && bun install && bun run build && cd ..
+
+# start the gateway with auth turned off, on localhost only
+cargo run -p rd-gateway -- --dev --assets-dir viewer/dist
+```
+
+The portal is now at <http://127.0.0.1:8080>, and agents connect to `ws://127.0.0.1:8081`.
+See [docs/setup-mac.md](docs/setup-mac.md) for running an agent against it.
+
+## Documentation
 
 | | |
 |---|---|
-| [docs/protocol.md](docs/protocol.md) | wire protocol v1 |
-| [docs/gateway.md](docs/gateway.md) | gateway configuration and operation |
-| [docs/setup-mac.md](docs/setup-mac.md) | installing the Mac agent, local development |
-| [docs/recovery.md](docs/recovery.md) | recovery path (Screen Sharing / SSH via Guacamole) |
-| [docs/desktop-client.md](docs/desktop-client.md) | rd Desktop: Windows/macOS app that also grabs Alt+Tab, Cmd+Tab, the Windows key, … ([install, build](clients/desktop/README.md)) |
+| [docs/protocol.md](docs/protocol.md) | Wire protocol v1: the contract between all components |
+| [docs/gateway.md](docs/gateway.md) | Gateway configuration and operation |
+| [docs/setup-mac.md](docs/setup-mac.md) | Installing the Mac agent, local development |
+| [docs/recovery.md](docs/recovery.md) | Recovery path (Screen Sharing / SSH via Guacamole) |
+| [docs/desktop-client.md](docs/desktop-client.md) | rd Desktop design and the page ⇄ app bridge ([install, build](clients/desktop/README.md)) |
 
-## Layout
+## Repository layout
 
 ```
 crates/rd-proto            wire protocol (shared by agent and gateway), HID keymap
@@ -43,10 +113,26 @@ packaging/macos            app bundle, signing, LaunchAgent
 deploy/Dockerfile          gateway image (linux/arm64)
 ```
 
-## Checks
+## Development
+
+Run the same checks as CI before you push:
 
 ```sh
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 (cd viewer && bun run typecheck && bun run test && bun run build)
 bun tools/gen-keymap/gen.ts --check
 ```
+
+## Platform support
+
+| | Status |
+|---|---|
+| Agent on macOS | ✅ Supported |
+| Agent on Windows | 🚧 Planned |
+| Viewer in a browser | ✅ Any browser with WebCodecs, over HTTPS |
+| rd Desktop | ✅ Windows 10/11 and macOS 12+ |
+
+## Acknowledgements
+
+The key code tables are generated from Chromium's DOM key code data (BSD-3-Clause).
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
