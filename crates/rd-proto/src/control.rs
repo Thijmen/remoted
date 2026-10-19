@@ -133,6 +133,89 @@ pub struct AgentState {
     pub in_session: bool,
 }
 
+/// What an agent knows about updates of itself (docs/updates.md), reported to the gateway with
+/// `update_status` after `register` and whenever it changes. Added in rd-agent 1.5.0; older
+/// gateways ignore it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UpdateStatus {
+    /// A newer version from the update manifest; `None` when up to date, not checked yet, or
+    /// checks are off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available: Option<AvailableUpdate>,
+    /// The agent can install updates itself (it was installed the normal way). When false,
+    /// `cannot_install` says why, for the portal.
+    #[serde(default)]
+    pub can_install: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cannot_install: String,
+    /// What the agent is doing about updates right now.
+    #[serde(default)]
+    pub phase: UpdatePhase,
+    /// Why the last check or update request failed (empty: it did not).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+    /// Last successful check, Unix ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_ms: Option<u64>,
+    /// Outcome of the last update attempt (kept until the next one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<UpdateOutcome>,
+}
+
+/// A newer agent version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AvailableUpdate {
+    pub version: String,
+    /// Release notes of every version newer than the running one, newest first, as Markdown
+    /// (at most 16 KiB; cut at a version boundary).
+    #[serde(default)]
+    pub notes: String,
+    /// The release page of `version`.
+    #[serde(default)]
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdatePhase {
+    #[default]
+    Idle,
+    Checking,
+    Downloading,
+    /// The update helper took over; the agent restarts shortly.
+    Installing,
+    #[serde(other)]
+    Unknown,
+}
+
+/// How an update attempt ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UpdateOutcome {
+    pub from: String,
+    pub to: String,
+    pub result: UpdateResult,
+    /// What went wrong (empty when `result` is `ok`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+    /// When it ended, Unix ms.
+    #[serde(default)]
+    pub at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateResult {
+    /// The new version is running.
+    #[default]
+    Ok,
+    /// The new version did not come back in time; the previous one was put back.
+    RolledBack,
+    /// Nothing was installed (download, signature or install failed before the switch).
+    Failed,
+    #[serde(other)]
+    Unknown,
+}
+
 /// Once-per-second agent statistics for the viewer HUD.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AgentStats {
@@ -266,6 +349,8 @@ pub enum AgentToGateway {
         #[serde(default)]
         reason: String,
     },
+    /// Sent after `register` and whenever it changes (rd-agent 1.5.0 and later).
+    UpdateStatus(UpdateStatus),
     #[serde(other)]
     Unknown,
 }
@@ -288,6 +373,11 @@ pub enum GatewayToAgent {
         session: String,
         #[serde(default)]
         reason: String,
+    },
+    /// Install `version` now (the portal's Update button). The agent acts only if it is the
+    /// version its own last check found; otherwise it reports an error in `update_status`.
+    Update {
+        version: String,
     },
     #[serde(other)]
     Unknown,
@@ -507,5 +597,65 @@ mod tests {
         })
         .unwrap();
         assert!(d.starts_with(r#"{"t":"done","test":"up""#));
+    }
+
+    #[test]
+    fn update_messages() {
+        // An agent that has never checked: only the defaults that are always sent.
+        let idle = AgentToGateway::UpdateStatus(UpdateStatus::default());
+        assert_eq!(
+            serde_json::to_string(&idle).unwrap(),
+            r#"{"t":"update_status","can_install":false,"phase":"idle"}"#
+        );
+
+        let status = UpdateStatus {
+            available: Some(AvailableUpdate {
+                version: "1.6.0".into(),
+                notes: "## 1.6.0\n\n- Faster.".into(),
+                url: "https://github.com/Thijmen/remoted/releases/tag/agent-v1.6.0".into(),
+            }),
+            can_install: true,
+            phase: UpdatePhase::Downloading,
+            checked_ms: Some(1),
+            last: Some(UpdateOutcome {
+                from: "1.4.2".into(),
+                to: "1.5.0".into(),
+                result: UpdateResult::RolledBack,
+                error: "1.5.0 did not reconnect within 120 s".into(),
+                at_ms: 2,
+            }),
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&AgentToGateway::UpdateStatus(status.clone())).unwrap();
+        assert!(
+            text.starts_with(r#"{"t":"update_status","available":{"version":"1.6.0""#),
+            "{text}"
+        );
+        assert!(text.contains(r#""result":"rolled_back""#), "{text}");
+        assert_eq!(
+            serde_json::from_str::<AgentToGateway>(&text).unwrap(),
+            AgentToGateway::UpdateStatus(status)
+        );
+
+        // Newer phases and results from a future agent do not break an older gateway.
+        let future: AgentToGateway = serde_json::from_str(
+            r#"{"t":"update_status","phase":"verifying","last":{"from":"1","to":"2","result":"partial"},"x":1}"#,
+        )
+        .unwrap();
+        let AgentToGateway::UpdateStatus(future) = future else {
+            panic!("not update_status: {future:?}")
+        };
+        assert_eq!(future.phase, UpdatePhase::Unknown);
+        assert_eq!(future.last.unwrap().result, UpdateResult::Unknown);
+
+        let update = GatewayToAgent::Update {
+            version: "1.6.0".into(),
+        };
+        let text = serde_json::to_string(&update).unwrap();
+        assert_eq!(text, r#"{"t":"update","version":"1.6.0"}"#);
+        assert_eq!(
+            serde_json::from_str::<GatewayToAgent>(&text).unwrap(),
+            update
+        );
     }
 }

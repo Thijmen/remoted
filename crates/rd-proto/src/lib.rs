@@ -38,6 +38,9 @@ pub mod close {
     pub const IDLE_TIMEOUT: u16 = 4008;
     /// An agent connection was replaced by a newer one for the same machine.
     pub const REPLACED: u16 = 4009;
+    /// The agent is installing an update (docs/updates.md). It comes back by itself, usually
+    /// within a minute: viewers should keep reconnecting meanwhile.
+    pub const AGENT_UPDATING: u16 = 4010;
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

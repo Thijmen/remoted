@@ -30,7 +30,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - id: version
         run: |
-          bun tools/release/sync-desktop-version.ts --check
+          bun tools/release/sync-versions.ts --check
           v="$(sed -n 's/^version = "\(.*\)"$/\1/p' clients/desktop/src-tauri/Cargo.toml | head -n1)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
           if [[ "$GITHUB_REF" == refs/tags/desktop-v* && "${GITHUB_REF_NAME#desktop-v}" != "$v" ]]; then
