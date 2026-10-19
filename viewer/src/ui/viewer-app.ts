@@ -1,5 +1,5 @@
 import { AudioPlayer } from '../audio/player';
-import { CHORD_LABEL, type ChordAction } from '../input/chords';
+import type { ChordAction } from '../input/chords';
 import { InputController, type InputOptions } from '../input/controller';
 import { resolveMapping } from '../input/modifiers';
 import { fetchMachine } from '../net/api';
@@ -21,10 +21,19 @@ import {
 import { LatencyTest } from '../video/latency-test';
 import { VideoPipeline, probeDecoders } from '../video/pipeline';
 import { type Banner, type BannerAction, Banners } from './banner';
-import { downloadJson, h, setChildren, timeAgo } from './dom';
+import { type Child, downloadJson, h, setChildren, timeAgo } from './dom';
 import { Hud, type HudSnapshot } from './hud';
-import { type Settings, loadSettings, resolveSize, saveSettings, streamParams } from './settings';
-import { settingsPanel } from './settings-panel';
+import { type IconName, icon } from './icons';
+import {
+  type Settings,
+  displaySize,
+  loadSettings,
+  pickDisplay,
+  resolveSize,
+  saveSettings,
+  streamParams,
+} from './settings';
+import { settingsPanel, shortcutsHint } from './settings-panel';
 import { ScreenWakeLock } from './wakelock';
 
 /** Keyboard Lock API (Chromium; not in TypeScript's DOM lib). */
@@ -72,7 +81,9 @@ export class ViewerApp {
   private readonly canvas = h('canvas', { tabIndex: 0, width: 1728, height: 1118 });
   private readonly stage = h('div', { className: 'stage', hidden: true }, this.canvas);
   private readonly connectView = h('main', { className: 'connect' });
-  private readonly toolbar = h('div', { className: 'toolbar card stack', hidden: true });
+  private readonly toolbar = h('div', { className: 'toolbar', hidden: true });
+  /** The settings section of the session menu is open. */
+  private toolbarSettings = false;
   private readonly session: Session;
   private readonly video: VideoPipeline;
   private readonly input: InputController;
@@ -111,6 +122,7 @@ export class ViewerApp {
           this.agentHello = m;
           // "auto" modifier mapping depends on the agent's OS.
           this.input.setOptions(this.inputOptions(this.settings));
+          this.refreshToolbar();
         },
         control: (m) => this.onControl(m),
         video: (m: VideoMsg, rxUs: number) => this.video.onVideo(m, rxUs),
@@ -155,9 +167,21 @@ export class ViewerApp {
     });
     const handle = h(
       'button',
-      { type: 'button', className: 'toolbar-handle', title: 'Menu', onclick: () => this.toggleToolbar() },
-      '▾',
+      {
+        type: 'button',
+        className: 'toolbar-handle',
+        title: 'Menu',
+        ariaLabel: 'Menu',
+        onclick: () => this.toggleToolbar(),
+      },
+      icon('chevronDown', 14),
     );
+    this.toolbar.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.toggleToolbar(false);
+      }
+    });
     this.stage.append(handle, this.toolbar, this.hud.el);
     root.append(this.connectView, this.stage, this.banners.el);
     window.addEventListener('beforeunload', (e) => {
@@ -191,12 +215,11 @@ export class ViewerApp {
       problems.push('This browser has no WebCodecs VideoDecoder. Use a current Chrome or Edge.');
     const connect = h(
       'button',
-      { type: 'button', className: 'primary big', disabled: problems.length > 0, onclick: () => this.connect() },
+      { type: 'button', className: 'primary big block', disabled: problems.length > 0, onclick: () => this.connect() },
       'Connect',
     );
     const badges: HTMLElement[] = [];
     if (info) {
-      badges.push(h('span', { className: `badge ${info.online ? 'ok' : 'bad'}` }, info.online ? 'online' : 'offline'));
       if (info.state?.locked) badges.push(h('span', { className: 'badge warn' }, 'locked'));
       if (info.state && !info.state.perms.screen)
         badges.push(h('span', { className: 'badge bad' }, 'no screen permission'));
@@ -207,36 +230,48 @@ export class ViewerApp {
           h('span', { className: 'badge warn' }, `in use by ${info.viewer.user} (${timeAgo(info.viewer.since_ms)})`),
         );
     }
+    const details = info
+      ? [osLabel(info.os), info.agent_version && `agent ${info.agent_version}`].filter(Boolean).join(' · ')
+      : 'Machine status unavailable.';
+    const recovery = this.recoveryActions();
     setChildren(
       this.connectView,
       h(
         'div',
-        { className: 'card stack' },
-        h('div', { className: 'row spread' }, h('h1', null, name), h('a', { href: '/' }, 'All machines')),
-        info
-          ? h(
-              'div',
-              { className: 'muted' },
-              [info.os, info.agent_version && `agent ${info.agent_version}`].filter(Boolean).join(' · '),
-            )
-          : h('div', { className: 'muted' }, 'Machine status unavailable.'),
+        { className: 'connect-card stack' },
+        h('a', { className: 'back-link', href: '/' }, icon('back', 16), 'All machines'),
+        h(
+          'header',
+          { className: 'machine-head' },
+          h('div', { className: 'machine-avatar' }, icon('monitor', 26)),
+          h('div', { className: 'machine-title' }, h('h1', null, name), h('div', { className: 'muted' }, details)),
+          info ? statusPill(info.online) : null,
+        ),
         badges.length ? h('div', { className: 'row' }, ...badges) : null,
         info?.viewer ? h('div', { className: 'muted' }, 'Connecting takes over the existing session.') : null,
-        ...problems.map((p) => h('div', { className: 'badge bad' }, p)),
-        settingsPanel(this.settings, (s) => this.applySettings(s)),
+        ...problems.map((p) => h('div', { className: 'notice bad' }, p)),
+        connect,
+        recovery.length
+          ? h(
+              'div',
+              { className: 'row' },
+              h('span', { className: 'muted' }, 'Recovery:'),
+              ...recovery.map((a) =>
+                h(
+                  'a',
+                  { className: 'button small', href: a.href!, target: '_blank', rel: 'noopener noreferrer' },
+                  a.label,
+                ),
+              ),
+            )
+          : null,
         h(
-          'div',
-          { className: 'row' },
-          connect,
-          ...this.recoveryActions().map((a) =>
-            h('a', { className: 'button', href: a.href!, target: '_blank', rel: 'noopener noreferrer' }, a.label),
-          ),
+          'details',
+          { className: 'disclosure' },
+          h('summary', null, icon('settings', 16), 'Stream settings'),
+          settingsPanel(this.settings, (s) => this.applySettings(s)),
         ),
-        h(
-          'div',
-          { className: 'muted' },
-          `In session: ${CHORD_LABEL}+F fullscreen, +L pointer lock, +H stats, +D disconnect.`,
-        ),
+        shortcutsHint(),
       ),
     );
   }
@@ -303,6 +338,7 @@ export class ViewerApp {
     if (document.pointerLockElement) document.exitPointerLock();
     if (document.fullscreenElement) void document.exitFullscreen();
     this.toolbar.hidden = true;
+    this.toolbarSettings = false;
     this.stage.hidden = true;
     this.connectView.hidden = false;
     this.banners.clear();
@@ -334,7 +370,7 @@ export class ViewerApp {
   }
 
   private startParams(hello: AgentHello): StreamParams {
-    const display = hello.agent.displays[0];
+    const display = pickDisplay(hello.agent.displays, this.settings.display);
     const size = resolveSize(this.settings.preset, display, this.viewport());
     this.requested = streamParams(this.settings, size, display?.id ?? 0);
     return this.requested;
@@ -402,6 +438,7 @@ export class ViewerApp {
       case 'video_config':
         this.input.setVideoSize(m.width, m.height);
         this.banners.set('agent-error', null);
+        this.banners.set('display', null);
         void this.video.configure(m);
         return;
       case 'audio_config':
@@ -414,6 +451,7 @@ export class ViewerApp {
         this.setAgentState(m);
         return;
       case 'error':
+        this.banners.set('display', null);
         this.banners.set('agent-error', {
           level: 'error',
           text: AGENT_ERRORS[m.code] ?? `Agent error: ${m.code}${m.msg ? ` — ${m.msg}` : ''}`,
@@ -468,8 +506,10 @@ export class ViewerApp {
   // -------------------------------------------------------------------------
   // settings, visibility, resize
 
-  private applySettings(next: Settings): void {
+  private applySettings(changed: Settings): void {
     const prev = this.settings;
+    // The display is chosen in the session menu, not in the settings form (which may hold an older one).
+    const next = { ...changed, display: prev.display };
     this.settings = next;
     saveSettings(this.machine, next);
     this.video.setRenderMode(next.renderMode);
@@ -495,8 +535,12 @@ export class ViewerApp {
   private sendParams(): void {
     const req = this.requested;
     if (!req || !this.session.streaming) return;
-    const display = this.agentHello?.agent.displays.find((d) => d.id === req.display);
-    const next = streamParams(this.settings, resolveSize(this.settings.preset, display, this.viewport()), req.display);
+    const display = pickDisplay(this.agentHello?.agent.displays ?? [], this.settings.display);
+    const next = streamParams(
+      this.settings,
+      resolveSize(this.settings.preset, display, this.viewport()),
+      display?.id ?? req.display,
+    );
     const patch: StreamParamsPatch = {};
     for (const k of Object.keys(next) as Array<keyof StreamParams>) {
       if (next[k] !== req[k]) (patch as Record<string, unknown>)[k] = next[k];
@@ -504,6 +548,37 @@ export class ViewerApp {
     if (Object.keys(patch).length === 0) return;
     this.requested = next;
     this.session.sendJson({ t: 'set', ...patch });
+  }
+
+  // -------------------------------------------------------------------------
+  // displays
+
+  private get displays() {
+    return this.agentHello?.agent.displays ?? [];
+  }
+
+  /** The display being streamed (as last requested). */
+  private get currentDisplay(): number | null {
+    return this.requested?.display ?? null;
+  }
+
+  private selectDisplay(id: number): void {
+    if (this.settings.display !== id) {
+      this.settings = { ...this.settings, display: id };
+      saveSettings(this.machine, this.settings);
+    }
+    if (this.currentDisplay === id || !this.session.streaming) return;
+    const index = this.displays.findIndex((d) => d.id === id);
+    this.banners.set('display', { level: 'info', text: `Switching to display ${index + 1}…` });
+    this.sendParams();
+    this.refreshToolbar();
+  }
+
+  private nextDisplay(): void {
+    const list = this.displays;
+    if (list.length < 2) return;
+    const i = list.findIndex((d) => d.id === this.currentDisplay);
+    this.selectDisplay(list[(i + 1) % list.length]!.id);
   }
 
   private onResize(): void {
@@ -542,6 +617,7 @@ export class ViewerApp {
       case 'hud':
         this.hud.toggle();
         this.tickHud();
+        this.refreshToolbar();
         return;
       case 'disconnect':
         this.disconnect();
@@ -549,6 +625,9 @@ export class ViewerApp {
       case 'latency-test':
         if (this.latency.active) this.stopLatencyTest();
         else this.latency.start();
+        return;
+      case 'next-display':
+        this.nextDisplay();
     }
   }
 
@@ -574,34 +653,115 @@ export class ViewerApp {
     this.canvas.focus();
   }
 
-  private toggleToolbar(): void {
-    this.toolbar.hidden = !this.toolbar.hidden;
-    if (this.toolbar.hidden) {
+  private toggleToolbar(open = this.toolbar.hidden): void {
+    this.toolbar.hidden = !open;
+    if (!open) {
       this.canvas.focus();
       return;
     }
-    const button = (label: string, run: () => void) => h('button', { type: 'button', onclick: run }, label);
+    this.renderToolbar();
+  }
+
+  /** Re-render the session menu if it is open (displays, toggles). */
+  private refreshToolbar(): void {
+    if (!this.toolbar.hidden) this.renderToolbar();
+  }
+
+  private renderToolbar(): void {
+    const tool = (name: IconName, label: string, run: () => void, pressed?: boolean) =>
+      h(
+        'button',
+        {
+          type: 'button',
+          className: `tool${pressed ? ' on' : ''}`,
+          title: label,
+          ariaLabel: label,
+          ...(pressed === undefined ? {} : { ariaPressed: String(pressed) }),
+          onclick: run,
+        },
+        icon(name),
+      );
+    const displays = this.displays;
+    const current = this.currentDisplay;
+    const displayPicker =
+      displays.length > 1
+        ? h(
+            'div',
+            { className: 'segmented', role: 'group', ariaLabel: 'Displays' },
+            ...displays.map((d, i) =>
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: d.id === current ? 'on' : '',
+                  title: `Display ${i + 1}${d.id === 0 ? ' (main)' : ''} · ${displaySize(d)}`,
+                  ariaLabel: `Display ${i + 1}`,
+                  ariaPressed: String(d.id === current),
+                  onclick: () => this.selectDisplay(d.id),
+                },
+                icon('monitor', 16),
+                String(i + 1),
+              ),
+            ),
+          )
+        : null;
+    const name = this.info?.name ?? this.machine;
+    const bar: Child[] = [
+      h('div', { className: 'toolbar-title', title: name }, h('span', { className: 'dot ok' }), name),
+      displayPicker ? h('span', { className: 'sep' }) : null,
+      displayPicker,
+      h('span', { className: 'sep' }),
+      tool('fullscreen', 'Fullscreen', () => void this.toggleFullscreen()),
+      tool('pointer', 'Pointer lock', () => {
+        this.toggleToolbar(false);
+        void this.input.togglePointerLock();
+      }),
+      tool('stats', 'Stats', () => this.onChord('hud'), this.hud.visible),
+      tool(
+        'settings',
+        'Settings',
+        () => {
+          this.toolbarSettings = !this.toolbarSettings;
+          this.renderToolbar();
+        },
+        this.toolbarSettings,
+      ),
+      h('span', { className: 'sep' }),
+      h(
+        'button',
+        { type: 'button', className: 'danger', onclick: () => this.disconnect() },
+        icon('power', 16),
+        'Disconnect',
+      ),
+      tool('close', 'Close menu', () => this.toggleToolbar(false)),
+    ];
     setChildren(
       this.toolbar,
-      h(
-        'div',
-        { className: 'row' },
-        button('Fullscreen', () => void this.toggleFullscreen()),
-        button('Pointer lock', () => {
-          this.toolbar.hidden = true;
-          void this.input.togglePointerLock();
-        }),
-        button('Stats', () => this.onChord('hud')),
-        button('Latency test', () => this.onChord('latency-test')),
-        button('Download stats', () => this.downloadStats()),
-        h('button', { type: 'button', className: 'primary', onclick: () => this.disconnect() }, 'Disconnect'),
-      ),
-      settingsPanel(this.settings, (s) => this.applySettings(s), 'tb'),
-      h(
-        'div',
-        { className: 'row' },
-        button('Close', () => this.toggleToolbar()),
-      ),
+      h('div', { className: 'toolbar-bar' }, ...bar),
+      this.toolbarSettings
+        ? h(
+            'div',
+            { className: 'toolbar-panel stack' },
+            settingsPanel(this.settings, (s) => this.applySettings(s), 'tb'),
+            h(
+              'div',
+              { className: 'row' },
+              h(
+                'button',
+                { type: 'button', onclick: () => this.onChord('latency-test') },
+                icon('timer', 16),
+                'Latency test',
+              ),
+              h(
+                'button',
+                { type: 'button', onclick: () => this.downloadStats() },
+                icon('download', 16),
+                'Download stats',
+              ),
+            ),
+            shortcutsHint(),
+          )
+        : null,
     );
   }
 
@@ -639,6 +799,19 @@ export class ViewerApp {
       samples: this.statsLog,
     });
   }
+}
+
+function osLabel(os: string): string {
+  return ({ macos: 'macOS', windows: 'Windows' } as Record<string, string>)[os] ?? os;
+}
+
+function statusPill(online: boolean): HTMLElement {
+  return h(
+    'span',
+    { className: `pill ${online ? 'ok' : 'bad'}` },
+    h('span', { className: `dot ${online ? 'ok' : 'bad'}` }),
+    online ? 'Online' : 'Offline',
+  );
 }
 
 function describeClose(code: number, reason: string): string {

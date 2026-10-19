@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultSettings, resolveSize, sanitizeSettings, streamParams } from './settings';
+import { defaultSettings, displaySize, pickDisplay, resolveSize, sanitizeSettings, streamParams } from './settings';
 
 const mac = { id: 0, w_pt: 1728, h_pt: 1117, scale: 2 };
 const win = { platform: 'Win32' };
@@ -74,5 +74,28 @@ describe('streamParams', () => {
       audio: true,
       display: 0,
     });
+  });
+});
+
+describe('displays', () => {
+  const list = [
+    { id: 0, w_pt: 1920, h_pt: 1080, scale: 1.5 },
+    { id: 2, w_pt: 1920, h_pt: 1080, scale: 1 },
+  ];
+  it('keeps a valid stored display id and drops an invalid one', () => {
+    const d = defaultSettings(win);
+    expect(d.display).toBe(0);
+    expect(sanitizeSettings({ display: 2 }, d).display).toBe(2);
+    expect(sanitizeSettings({ display: -1 }, d).display).toBe(0);
+    expect(sanitizeSettings({ display: 1.5 }, d).display).toBe(0);
+    expect(sanitizeSettings({ display: '2' }, d).display).toBe(0);
+  });
+  it('picks the wanted display, or the main one when it is gone', () => {
+    expect(pickDisplay(list, 2)?.id).toBe(2);
+    expect(pickDisplay(list, 7)?.id).toBe(0);
+    expect(pickDisplay([], 0)).toBeUndefined();
+  });
+  it('labels a display with its pixel size', () => {
+    expect(displaySize(list[0]!)).toBe('2880×1620');
   });
 });

@@ -23,7 +23,7 @@ function select<T extends string | number>(
 }
 
 function checkbox(id: string, checked: boolean, onChange: (v: boolean) => void): HTMLInputElement {
-  const el = h('input', { id, type: 'checkbox', checked });
+  const el = h('input', { id, type: 'checkbox', className: 'switch', checked });
   el.addEventListener('change', () => onChange(el.checked));
   return el;
 }
@@ -136,11 +136,24 @@ export function settingsPanel(initial: Settings, onChange: (s: Settings) => void
         (v) => update('mapping', v),
       ),
     ),
-    h('span', { className: 'muted' }, 'Shortcuts'),
-    h(
-      'span',
-      { className: 'muted' },
-      `${CHORD_LABEL} + F fullscreen · L pointer lock · H HUD · T latency test · D disconnect`,
-    ),
+  );
+}
+
+const SHORTCUTS: ReadonlyArray<[key: string, label: string]> = [
+  ['F', 'fullscreen'],
+  ['M', 'next display'],
+  ['L', 'pointer lock'],
+  ['H', 'stats'],
+  ['T', 'latency test'],
+  ['D', 'disconnect'],
+];
+
+/** The in-session shortcuts, as key caps. */
+export function shortcutsHint(): HTMLElement {
+  return h(
+    'div',
+    { className: 'shortcuts' },
+    h('span', { className: 'muted' }, h('kbd', null, CHORD_LABEL), ' +'),
+    ...SHORTCUTS.map(([key, label]) => h('span', { className: 'shortcut' }, h('kbd', null, key), ' ', label)),
   );
 }
