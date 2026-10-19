@@ -39,6 +39,8 @@ crates/rd-gateway          relay, portal, network probe; embeds viewer/dist
 viewer/                    TypeScript viewer (Vite + Bun)
 clients/desktop            rd Desktop (Tauri): the viewer in a window + keyboard grab (Windows, macOS); own Cargo.lock
 tools/gen-keymap           Chromium key table -> Rust/TS keymaps
+tools/release              changesets helper: rd Desktop version -> Cargo.toml/Cargo.lock
+.changeset                 pending release notes (changesets)
 packaging/macos            app bundle, signing, LaunchAgent
 deploy/Dockerfile          gateway image (linux/arm64)
 ```
@@ -50,3 +52,10 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 (cd viewer && bun run typecheck && bun run test && bun run build)
 bun tools/gen-keymap/gen.ts --check
 ```
+
+## Releases
+
+rd Desktop is released with [changesets](https://github.com/changesets/changesets): add one
+with `bun changeset` in a PR, merge the generated *Version packages* PR to tag and publish.
+See [clients/desktop/README.md](clients/desktop/README.md#releasing). The gateway image keeps
+its own versioning (`gateway-v*`, on every push to main; `.github/workflows/gateway-image.yml`).

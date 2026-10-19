@@ -144,15 +144,28 @@ cd src-tauri && cargo test && cargo clippy --all-targets -- -D warnings
 
 CI (`.github/workflows/desktop.yml`) builds on `windows-latest` and `macos-15` (a universal
 arm64 + x86_64 app, ad-hoc signed) for pushes to `main` that touch `clients/desktop/**` or
-`crates/rd-proto/**`, and on demand. To release: bump `version` in `src-tauri/Cargo.toml`,
-commit, then
+`crates/rd-proto/**`, and on demand.
 
-```sh
-git tag desktop-v0.2.0 && git push origin desktop-v0.2.0
-```
+### Releasing
 
-The workflow checks that the tag matches the version and publishes both exes, the .dmg and
-`SHA256SUMS.txt` as a GitHub Release.
+Releases go through [changesets](https://github.com/changesets/changesets). The version lives in
+`package.json`; `tools/release/sync-desktop-version.ts` copies it into `src-tauri/Cargo.toml` and
+`Cargo.lock` (CI fails if they differ).
+
+1. In a PR that changes the app, add a changeset from the repository root:
+   ```sh
+   bun install && bun changeset   # pick rd-desktop, patch/minor/major, one line for the changelog
+   ```
+   This writes a `.changeset/*.md` file; commit it with the change.
+2. After merging, `.github/workflows/release.yml` opens (or updates) a **Version packages** PR
+   that bumps the version, writes `CHANGELOG.md` and syncs the Rust crate. Several changesets
+   collect into one release.
+3. Merging the version PR tags `desktop-vX.Y.Z` and starts the Desktop workflow on the tag. It
+   checks that the tag matches the version and publishes both exes, the .dmg and
+   `SHA256SUMS.txt` as a GitHub Release, with this version's changelog section as notes.
+
+A manual `bun run version` (from the root) does step 2's edits locally. Pushing a
+`desktop-v*` tag by hand still works too.
 
 Icons: `icon.svg` is the source; `bun run tauri icon icon.svg -o src-tauri/icons`, then delete
 the generated `android/`, `ios/`, `Square*`, `StoreLogo.png` and `64x64.png`.
