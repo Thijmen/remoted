@@ -1,5 +1,13 @@
 # rd-desktop
 
+## 1.4.0
+
+### Minor Changes
+
+- 275865c: Switch between the host's screens from the viewer: the session menu now has a display picker (and Ctrl+Alt+Shift+M
+  jumps to the next display), and the chosen screen is remembered for the next connect. The portal, connect screen and
+  session menu also got a cleaner look.
+
 ## 1.3.0
 
 ### Minor Changes
