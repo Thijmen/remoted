@@ -2477,6 +2477,7 @@ dependencies = [
 name = "rd-proto"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
