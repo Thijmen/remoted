@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rd Desktop update</title>
+<link rel="stylesheet" href="update.css">
+<script src="update.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <p id="about" class="about" hidden><strong>rd Desktop</strong> <span id="about-version"></span></p>
+    <h1 id="title">rd Desktop</h1>
+    <p id="status" class="status"></p>
+    <progress id="progress" max="1" hidden></progress>
+    <p id="error" class="error" role="alert" hidden></p>
+  </header>
+  <section id="notes" class="notes" aria-label="Release notes" hidden></section>
+  <footer>
+    <a id="release" href="https://github.com/Thijmen/remoted/releases" rel="noreferrer">Release on GitHub</a>
+    <button id="action" type="button" hidden></button>
+  </footer>
+</main>
+</body>
+</html>

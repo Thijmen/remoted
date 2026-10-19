@@ -1,6 +1,7 @@
 //! rd Desktop: the rd web viewer (loaded from the gateway) in its own window. It grabs the keys
 //! a browser tab cannot see (Windows: Alt+Tab, the Windows key, …; macOS: Cmd+Tab, Cmd+Space,
-//! …) while a session has the keyboard. Bridge contract: docs/desktop-client.md.
+//! …) while a session has the keyboard, and updates itself from GitHub (`update.rs`). Bridge
+//! contract: docs/desktop-client.md; updates: docs/updates.md.
 
 // Release builds are GUI apps on Windows (no console window); tests keep the console.
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
@@ -11,8 +12,15 @@ mod grab;
 mod grab_macos;
 #[cfg(windows)]
 mod grab_windows;
+mod installable;
 mod keys;
 mod keys_mac;
+mod menus;
+mod notes;
+mod notice;
+#[cfg(windows)]
+mod sysmenu_windows;
+mod update;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -31,7 +39,7 @@ const MAIN: &str = "main";
 const SETTINGS_FILE: &str = "settings.json";
 
 /// The gateway the window uses now (`None` until the setup page saves one), and the origins
-/// already granted `rd_set_grab`.
+/// already granted `rd_set_grab` and `rd_whats_new`.
 #[derive(Default)]
 struct Current {
     settings: RwLock<Option<config::Settings>>,
@@ -46,7 +54,8 @@ impl Current {
             .clone()
     }
 
-    /// Makes `settings` current and lets its gateway origin (only) call `rd_set_grab`.
+    /// Makes `settings` current and lets its gateway origin (only) call `rd_set_grab`, and
+    /// `rd_whats_new` (the notice after an update).
     fn apply<R: tauri::Runtime>(
         &self,
         app: &impl Manager<R>,
@@ -60,9 +69,10 @@ impl Current {
                     .remote(origin.clone())
                     .local(false)
                     .window(MAIN)
-                    .permission("allow-rd-set-grab"),
+                    .permission("allow-rd-set-grab")
+                    .permission("allow-rd-whats-new"),
             )?;
-            log::info!("{origin} may call rd_set_grab");
+            log::info!("{origin} may call rd_set_grab and rd_whats_new");
             granted.insert(origin);
         }
         *self.settings.write().unwrap_or_else(|e| e.into_inner()) = Some(settings);
@@ -159,13 +169,20 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(log_plugin())
+        // Used from Rust only (update.rs); no page is granted its commands.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(grab::Grab::default())
         .manage(Current::default())
         .invoke_handler(tauri::generate_handler![
             rd_set_grab,
             rd_setup_info,
-            rd_save_gateway
+            rd_save_gateway,
+            update::rd_update_state,
+            update::rd_update_check,
+            update::rd_update_install,
+            update::rd_whats_new
         ])
+        .on_menu_event(|app, event| menus::on_event(app, event.id().as_ref()))
         .setup(move |app| setup(app, args))
         .run(tauri::generate_context!())
         .expect("rd Desktop failed to start");
@@ -195,7 +212,7 @@ fn log_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 }
 
 fn setup(app: &mut tauri::App, args: config::Args) -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("rd Desktop {}", env!("CARGO_PKG_VERSION"));
+    log::info!("rd Desktop {}", app.package_info().version);
     let saved = settings_path(app.handle())
         .inspect_err(|e| log::warn!("{e}"))
         .ok()
@@ -223,6 +240,8 @@ fn setup(app: &mut tauri::App, args: config::Args) -> Result<(), Box<dyn std::er
     if let Some(s) = settings {
         app.state::<Current>().apply(app, s)?;
     }
+    // Before the window: its page loads report to the updater.
+    update::setup(app.handle());
 
     let nav = app.handle().clone();
     let handle = app.handle().clone();
@@ -251,6 +270,8 @@ fn setup(app: &mut tauri::App, args: config::Args) -> Result<(), Box<dyn std::er
             if payload.event() == PageLoadEvent::Started {
                 handle.state::<grab::Grab>().page_changed();
             }
+            // The update window waits while a session page is open; the notice after an update.
+            update::main_page(&handle, payload.url(), payload.event());
             #[cfg(debug_assertions)]
             selftest.on_page_load(&_window, &payload);
         });
@@ -264,10 +285,25 @@ fn setup(app: &mut tauri::App, args: config::Args) -> Result<(), Box<dyn std::er
         let grab = handle.state::<grab::Grab>();
         match event {
             WindowEvent::Focused(focused) => grab.focus_changed(*focused),
-            WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => grab.shutdown(),
+            WindowEvent::CloseRequested { .. } => {
+                grab.shutdown();
+                // Closing the main window quits the app, also while the update window is open.
+                if let Some(update) = handle.get_webview_window(update::WINDOW) {
+                    let _ = update.destroy();
+                }
+            }
+            WindowEvent::Destroyed => grab.shutdown(),
             _ => {}
         }
     });
+
+    if let Err(e) = menus::setup(app.handle()) {
+        log::warn!("no tray menu: {e}");
+    }
+    #[cfg(windows)]
+    if let Err(e) = sysmenu_windows::install(&window) {
+        log::warn!("no title-bar menu items: {e}");
+    }
     Ok(())
 }
 

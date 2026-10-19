@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "setup",
-  "description": "The bundled setup page (dist/index.html) may read and save the gateway. Gateway pages get rd_set_grab from a capability added at runtime for the configured origin only (src/main.rs).",
+  "description": "The bundled setup page (dist/index.html) may read and save the gateway, and open the release notes from the notice shown after an update. Gateway pages get rd_set_grab and rd_whats_new from a capability added at runtime for the configured origin only (src/main.rs).",
   "local": true,
   "windows": ["main"],
-  "permissions": ["allow-rd-setup-info", "allow-rd-save-gateway"]
+  "permissions": ["allow-rd-setup-info", "allow-rd-save-gateway", "allow-rd-whats-new"]
 }
