@@ -1,9 +1,10 @@
 name: Desktop
 
 # rd Desktop (clients/desktop): Windows (portable exe + per-user NSIS installer) and macOS
-# (universal .dmg) builds as workflow artifacts; a desktop-v* tag also publishes them as a
-# GitHub Release. (Path filters do not apply to tag pushes, so every desktop-v* tag builds.)
-# release.yml (changesets) creates the tags and dispatches this workflow on them.
+# (universal .dmg) builds, plus the Windows agent (rd-agent.exe + rd-agentw.exe, zipped), as
+# workflow artifacts; a desktop-v* tag also publishes them as a GitHub Release. (Path filters do
+# not apply to tag pushes, so every desktop-v* tag builds.) release.yml (changesets) creates the
+# tags and dispatches this workflow on them.
 on:
   push:
     branches: [main]
@@ -88,6 +89,55 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  windows-agent:
+    name: Windows agent (zip)
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked --release -p rd-agent
+
+      # Windows Server images have no Media Foundation (mfplat.dll) unless the feature is added;
+      # without it rd-agent.exe does not even start.
+      - name: Media Foundation
+        shell: pwsh
+        run: |
+          $mf = Join-Path $env:WINDIR 'System32\mfplat.dll'
+          if (-not (Test-Path $mf)) { Install-WindowsFeature Server-Media-Foundation | Out-Null }
+          if (-not (Test-Path $mf)) { throw 'Media Foundation is missing' }
+
+      # The shipped exe starts and encodes (no GPU here: the software encoder).
+      - name: Smoke test
+        run: |
+          target/release/rd-agent.exe --version
+          target/release/rd-agent.exe selftest --synthetic --encoder software --size 640x360 --seconds 2
+
+      - name: Collect
+        shell: pwsh
+        run: |
+          $v = '${{ needs.version.outputs.version }}'
+          New-Item -ItemType Directory -Force out, pkg | Out-Null
+          # The key tables in rd-agent derive from Chromium (BSD-3-Clause): ship the notice.
+          Copy-Item target/release/rd-agent.exe, target/release/rd-agentw.exe, THIRD_PARTY_NOTICES.md pkg
+          Compress-Archive -Path pkg/* -DestinationPath "out/rd-agent-$v-windows-x64.zip"
+          Get-ChildItem out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rd-agent-${{ needs.version.outputs.version }}-windows-x64
+          path: out/*
+          if-no-files-found: error
+
   macos:
     name: macOS (universal .dmg)
     needs: version
@@ -143,7 +193,7 @@ jobs:
   release:
     name: Release
     if: startsWith(github.ref, 'refs/tags/desktop-v')
-    needs: [version, windows, macos]
+    needs: [version, windows, windows-agent, macos]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -152,7 +202,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: rd-desktop-*
+          pattern: rd-*
           path: out
           merge-multiple: true
       - name: Checksums
@@ -177,6 +227,9 @@ jobs:
 
           macOS 12+ (Apple silicon and Intel). First start: System Settings -> Privacy & Security -> Open Anyway. Grabbing Cmd+Tab etc. needs the Accessibility permission (the app asks).
           - rd-desktop-$V-macos-universal.dmg
+
+          Windows agent, for the PC you connect to (Windows 10 1703+/11, x64; setup: docs/setup-windows.md). Unblock the zip before extracting (Properties -> Unblock).
+          - rd-agent-$V-windows-x64.zip: rd-agent.exe and its background launcher rd-agentw.exe
           NOTES
           } > notes.md
           cat notes.md

@@ -16,16 +16,21 @@ screen and injects input for whoever is logged in.
   (`MFPlat.DLL was not found`).
 - The agent runs in your logged-in session, not as a service: someone has to be logged in.
 
-## 1. Build
+## 1. Get the programs
 
-On the PC (or any Windows machine with the Rust toolchain from `rust-toolchain.toml`):
+Download `rd-agent-<version>-windows-x64.zip` from the
+[GitHub Releases](https://github.com/Thijmen/remoted/releases) (every rd Desktop release from
+1.1.0 on includes it). Unblock the zip before extracting it (right-click → Properties →
+Unblock, or `Unblock-File` in PowerShell), so SmartScreen does not stop the unsigned programs.
+
+Or build them, on any Windows machine with the Rust toolchain from `rust-toolchain.toml`:
 
 ```powershell
 cargo build --release -p rd-agent
 ```
 
-This builds two programs in `target\release`; keep them together in one folder, for example
-`%LOCALAPPDATA%\Programs\rd-agent\`:
+which puts them in `target\release`. Either way, keep the two programs together in one folder,
+for example `%LOCALAPPDATA%\Programs\rd-agent\`:
 
 - `rd-agent.exe`: the agent and its commands (`setup`, `status`, …);
 - `rd-agentw.exe`: the background launcher the autostart runs (see below).
