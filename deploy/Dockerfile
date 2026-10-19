@@ -6,7 +6,7 @@
 #
 #   docker buildx build --platform linux/arm64 -f deploy/Dockerfile -t rd-gateway:dev .
 
-ARG BUN_VERSION=1.3
+ARG BUN_VERSION=1.4
 ARG RUST_VERSION=1.99.1
 ARG CARGO_ZIGBUILD_VERSION=0.23.4
 ARG ZIG_VERSION=0.16.0
