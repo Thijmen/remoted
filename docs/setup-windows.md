@@ -16,14 +16,24 @@ screen and injects input for whoever is logged in.
   (`MFPlat.DLL was not found`).
 - The agent runs in your logged-in session, not as a service: someone has to be logged in.
 
-## 1. Get the programs
+## 1. Install
 
-Download `rd-agent-<version>-windows-x64.zip` from the
-[GitHub Releases](https://github.com/Thijmen/remoted/releases) (every rd Desktop release from
-1.1.0 on includes it). Unblock the zip before extracting it (right-click → Properties →
-Unblock, or `Unblock-File` in PowerShell), so SmartScreen does not stop the unsigned programs.
+Download `rd-agent-<version>-windows-x64-setup.exe` from the
+[GitHub Releases](https://github.com/Thijmen/remoted/releases) and run it. It installs for your
+account only (no administrator rights) into `%LOCALAPPDATA%\Programs\rd-agent`, adds Start menu
+shortcuts (*rd agent setup*, *rd agent status*, *rd agent logs*) and an entry in Settings → Apps,
+and offers the setup (step 3) at the end. The installer is not signed, so SmartScreen asks once:
+*More info* → *Run anyway*.
 
-Or build them, on any Windows machine with the Rust toolchain from `rust-toolchain.toml`:
+Running a newer installer updates the agent in place: it stops the running agent, replaces the
+programs and starts it again with the existing configuration. Silent installs work too:
+`setup.exe /S`, then `rd-agent.exe setup` in a terminal.
+
+Without the installer: every release also has `rd-agent-<version>-windows-x64.zip` with the same
+programs (the zip from 1.1.0 on, the installer from 1.2.0 on). Unblock the zip before extracting
+it (right-click → Properties → Unblock, or `Unblock-File`), so SmartScreen does not stop the
+unsigned programs. Or build them, on any Windows machine with the Rust toolchain from
+`rust-toolchain.toml`:
 
 ```powershell
 cargo build --release -p rd-agent
@@ -48,6 +58,8 @@ the agent gets the **token** (next step). Every device needs its own machine id 
 [devices.md](devices.md) explains how they work, and how to rotate or remove them.
 
 ## 3. Setup (in person)
+
+The installer's finish page and the *rd agent setup* shortcut run it; from a terminal:
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\rd-agent\rd-agent.exe" setup
@@ -144,6 +156,12 @@ Useful while working on `crates/rd-platform-windows`:
 - `RD_MF_ENCODER=hardware|software` forces the encoder choice for `run`.
 
 ## Uninstall
+
+Installed with the installer: remove *rd agent* in Settings → Apps. That stops the agent,
+removes the autostart, the programs and the shortcuts, and asks whether to delete the
+configuration (with the token) and the logs as well.
+
+Unpacked from the zip:
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\rd-agent\rd-agent.exe" uninstall

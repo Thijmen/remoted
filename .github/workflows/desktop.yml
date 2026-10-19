@@ -1,8 +1,8 @@
 name: Desktop
 
 # rd Desktop (clients/desktop): Windows (portable exe + per-user NSIS installer) and macOS
-# (universal .dmg) builds, plus the Windows agent (rd-agent.exe + rd-agentw.exe, zipped), as
-# workflow artifacts; a desktop-v* tag also publishes them as a GitHub Release. (Path filters do
+# (universal .dmg) builds, plus the Windows agent (per-user installer, and rd-agent.exe +
+# rd-agentw.exe zipped), as workflow artifacts; a desktop-v* tag also publishes them as a GitHub Release. (Path filters do
 # not apply to tag pushes, so every desktop-v* tag builds.) release.yml (changesets) creates the
 # tags and dispatches this workflow on them.
 on:
@@ -90,7 +90,7 @@ jobs:
           if-no-files-found: error
 
   windows-agent:
-    name: Windows agent (zip)
+    name: Windows agent (installer + zip)
     needs: version
     runs-on: windows-latest
     timeout-minutes: 30
@@ -131,6 +131,45 @@ jobs:
           Copy-Item target/release/rd-agent.exe, target/release/rd-agentw.exe, THIRD_PARTY_NOTICES.md pkg
           Compress-Archive -Path pkg/* -DestinationPath "out/rd-agent-$v-windows-x64.zip"
           Get-ChildItem out
+
+      - name: NSIS
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            $nsis = 'C:\Program Files (x86)\NSIS'
+            if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis -y --no-progress }
+            Add-Content $env:GITHUB_PATH $nsis
+          }
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $v = '${{ needs.version.outputs.version }}'
+          makensis -V2 "-DVERSION=$v" "-DSRC=$PWD\pkg" "-DOUTFILE=$PWD\out\rd-agent-$v-windows-x64-setup.exe" packaging/windows/rd-agent.nsi
+          if ($LASTEXITCODE) { throw "makensis failed: $LASTEXITCODE" }
+          Get-ChildItem out
+
+      # Silent install and uninstall (no config here, so the agent is not started).
+      - name: Installer smoke test
+        shell: pwsh
+        run: |
+          $v = '${{ needs.version.outputs.version }}'
+          $dir = Join-Path $env:RUNNER_TEMP 'rd-agent'
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\rd-agent'
+          $p = Start-Process "out\rd-agent-$v-windows-x64-setup.exe" -ArgumentList '/S', "/D=$dir" -PassThru
+          $p.WaitForExit()
+          if ($p.ExitCode) { throw "installer exit code $($p.ExitCode)" }
+          foreach ($f in 'rd-agent.exe', 'rd-agentw.exe', 'uninstall.exe') {
+            if (-not (Test-Path "$dir\$f")) { throw "$f was not installed" }
+          }
+          if ((Get-ItemProperty $key).DisplayVersion -ne $v) { throw 'no Apps entry for this version' }
+          & "$dir\rd-agent.exe" --version
+          # The uninstaller copies itself to %TEMP% and returns at once.
+          Start-Process "$dir\uninstall.exe" -ArgumentList '/S' -Wait
+          $deadline = (Get-Date).AddSeconds(30)
+          while ((Test-Path $key) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+          if ((Test-Path $key) -or (Test-Path "$dir\rd-agent.exe")) { throw 'the uninstall left files or the Apps entry' }
+          'install and uninstall OK'
 
       - uses: actions/upload-artifact@v4
         with:
@@ -228,8 +267,9 @@ jobs:
           macOS 12+ (Apple silicon and Intel). First start: System Settings -> Privacy & Security -> Open Anyway. Grabbing Cmd+Tab etc. needs the Accessibility permission (the app asks).
           - rd-desktop-$V-macos-universal.dmg
 
-          Windows agent, for the PC you connect to (Windows 10 1703+/11, x64; setup: docs/setup-windows.md). Unblock the zip before extracting (Properties -> Unblock).
-          - rd-agent-$V-windows-x64.zip: rd-agent.exe and its background launcher rd-agentw.exe
+          Windows agent, for the PC you connect to (Windows 10 1703+/11, x64; setup: docs/setup-windows.md). SmartScreen asks once: More info -> Run anyway.
+          - rd-agent-$V-windows-x64-setup.exe: per-user installer (no admin rights); it offers the setup (gateway, machine id, token) at the end
+          - rd-agent-$V-windows-x64.zip: the same programs to unpack yourself (unblock the zip first: Properties -> Unblock)
           NOTES
           } > notes.md
           cat notes.md
