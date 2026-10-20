@@ -333,6 +333,11 @@ impl SecureDesktop {
         self.state() == SecureState::Ready && self.active.lock().is_some()
     }
 
+    /// Whether Windows currently shows a secure desktop (lock screen or UAC).
+    pub fn locked(&self) -> bool {
+        crate::session::lock_state() == rd_agent_core::LockState::Locked
+    }
+
     /// Creates the data pipe, asks the service for a helper, and waits for it to connect.
     /// Runs on the pipeline's blocking thread.
     pub fn start(&self, cfg: VideoConfig) -> anyhow::Result<Arc<Pipe>> {
@@ -809,10 +814,17 @@ impl InputInjector for SecureInputInjector {
         if self.desktop.input_ready() {
             let mut wire = Vec::with_capacity(16);
             ev.write(&mut wire);
-            if self.desktop.send_input(&wire).is_ok() {
-                return;
+            if let Err(e) = self.desktop.send_input(&wire) {
+                // Do not fall back to the local desktop: this can race an unlock and type
+                // into the newly unlocked session. Dropping the event is safer.
+                warn!("secure desktop input failed: {e:#}");
             }
-            warn!("secure desktop input failed; falling back to the local session");
+            return;
+        }
+        if self.desktop.locked() {
+            // The helper is stopping while the host is still locked (or UAC is up): drop,
+            // rather than inject into whatever desktop comes next.
+            return;
         }
         self.normal.inject(ev);
     }

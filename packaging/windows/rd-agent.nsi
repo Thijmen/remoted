@@ -172,6 +172,15 @@ Section "Uninstall"
   nsExec::ExecToLog '"$INSTDIR\rd-agent.exe" uninstall'
   Pop $0
 
+  ; The secure-desktop service lives in Program Files and runs as SYSTEM: remove it before the
+  ; agent (whose secure uninstall command does that) disappears. Only prompt when it is there.
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" query rd-agent-secure'
+  Pop $0
+  ${If} $0 == "0"
+    DetailPrint "Removing the rd secure desktop service (administrator)"
+    ExecShellWait "runas" '"$INSTDIR\rd-agent.exe" secure uninstall'
+  ${EndIf}
+
   Delete "$INSTDIR\rd-agent.exe"
   Delete "$INSTDIR\rd-agentw.exe"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES.md"
