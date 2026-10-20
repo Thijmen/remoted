@@ -293,7 +293,22 @@ function machineCard(m: MachineInfo): HTMLElement {
       'div',
       { className: 'row spread actions' },
       m.managed ? deviceActions(m) : h('span'),
-      h('a', { className: 'button primary', href: `/m/${encodeURIComponent(m.machine)}` }, 'Connect'),
+      h(
+        'div',
+        { className: 'row' },
+        m.files && m.online
+          ? h(
+              'a',
+              {
+                className: 'button',
+                href: `/m/${encodeURIComponent(m.machine)}#files`,
+                title: 'Browse, download and upload files without taking over the screen',
+              },
+              'Files',
+            )
+          : null,
+        h('a', { className: 'button primary', href: `/m/${encodeURIComponent(m.machine)}` }, 'Connect'),
+      ),
     ),
   );
 }

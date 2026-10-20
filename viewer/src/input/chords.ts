@@ -1,5 +1,6 @@
 /** Viewer shortcuts on Ctrl+Alt+Shift+<key>; never forwarded to the remote machine. */
-export type ChordAction = 'fullscreen' | 'pointer-lock' | 'hud' | 'disconnect' | 'latency-test' | 'next-display';
+export type ChordAction =
+  'fullscreen' | 'pointer-lock' | 'hud' | 'disconnect' | 'latency-test' | 'next-display' | 'files';
 
 const CHORDS: Readonly<Record<string, ChordAction>> = {
   KeyF: 'fullscreen',
@@ -8,6 +9,7 @@ const CHORDS: Readonly<Record<string, ChordAction>> = {
   KeyD: 'disconnect',
   KeyT: 'latency-test',
   KeyM: 'next-display',
+  KeyE: 'files',
 };
 
 export const CHORD_LABEL = 'Ctrl+Alt+Shift';

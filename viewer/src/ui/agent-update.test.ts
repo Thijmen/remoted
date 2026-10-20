@@ -37,6 +37,7 @@ function machine(over: Partial<MachineInfo> = {}): MachineInfo {
     viewer: null,
     recovery: [],
     update: status(),
+    files: false,
     ...over,
   };
 }
