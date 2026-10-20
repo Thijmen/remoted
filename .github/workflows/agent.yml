@@ -56,7 +56,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       release: ${{ steps.version.outputs.release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - id: version
         run: |
@@ -85,7 +85,7 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.1"
@@ -184,7 +184,7 @@ jobs:
           bun run tauri signer sign --app-version "$v" "$GITHUB_WORKSPACE/out/rd-agent-$v-windows-x64-setup.exe"
           ls -l "$GITHUB_WORKSPACE/out"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rd-agent-${{ needs.version.outputs.version }}-windows-x64
           path: out/*
@@ -199,7 +199,7 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.1"
@@ -257,7 +257,7 @@ jobs:
           bun run tauri signer sign --app-version "$v" "$GITHUB_WORKSPACE/out/rd-agent-$v-macos-universal.zip"
           ls -l "$GITHUB_WORKSPACE/out"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rd-agent-${{ needs.version.outputs.version }}-macos-universal
           path: out/*
@@ -272,9 +272,9 @@ jobs:
     permissions:
       contents: write # gh release create / upload
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: rd-agent-*
           path: out

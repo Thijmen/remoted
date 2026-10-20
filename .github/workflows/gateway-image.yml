@@ -38,24 +38,24 @@ jobs:
         env:
           PAT: ${{ secrets.INFRA_ARGOCD_PAT }}
         run: echo "present=$([ -n "$PAT" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Generate version
         id: version
-        uses: paulhatch/semantic-version@v5.4.0
+        uses: paulhatch/semantic-version@v6.0.4
         with:
           tag_prefix: "gateway-v"
           version_format: "${major}.${minor}.${patch}"
       # The Dockerfile cross-compiles Rust with cargo-zigbuild on the build
       # platform, so no QEMU is needed.
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/Dockerfile
@@ -76,7 +76,7 @@ jobs:
     needs: build
     if: needs.build.outputs.has_infra_pat == 'true' && vars.GITOPS_REPO != ''
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: ${{ vars.GITOPS_REPO }}
           token: ${{ secrets.INFRA_ARGOCD_PAT }}
@@ -89,7 +89,7 @@ jobs:
           }' "$VALUES"
           grep -q "tag: ${VERSION}" "$VALUES" || { echo "::error::image.tag not updated"; exit 1; }
           git diff -- "$VALUES"
-      - uses: peter-evans/create-pull-request@v7
+      - uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.INFRA_ARGOCD_PAT }}
           commit-message: "chore(rd): update gateway image to ${{ needs.build.outputs.version }}"
