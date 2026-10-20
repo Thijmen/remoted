@@ -106,6 +106,17 @@ accepts the token. It never prints the token. The agent logs the same source at 
 `~/Library/Logs/rd-agent/` (daily files), plus the unified log:
 `log stream --predicate 'subsystem == "dev.thijmen.rd.agent"'`.
 
+## File transfer
+
+The agent serves the file browser ([files.md](files.md)) as your user: it sees what you can
+see. macOS still asks before an app reads the Desktop, Documents and Downloads folders,
+removable volumes and network shares: the first time the file browser opens one of them, the
+Mac shows *"RD Agent" would like to access files in your … folder*. Until someone clicks
+**Allow** (you can, from a screen session) that folder answers "access denied". To skip these
+prompts, turn on **RD Agent** in System Settings → Privacy & Security → **Full Disk Access**
+(then restart the agent: `launchctl kickstart -k gui/$(id -u)/dev.thijmen.rd.agent`). Deleted
+files go to the Trash.
+
 ## Updates
 
 RD Agent.app from a release updates itself from the portal: the Mac's card shows **Update

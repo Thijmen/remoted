@@ -18,6 +18,7 @@
 
 mod backoff;
 mod control;
+mod files;
 mod flow;
 mod input;
 mod net;
@@ -68,6 +69,8 @@ pub struct Timings {
     pub stall_warn: Duration,
     /// Oldest in-flight frame older than this: end the session (close 4006).
     pub stall_end: Duration,
+    /// How long an upload whose file channel was lost can be resumed (docs/files.md).
+    pub upload_resume_keep: Duration,
 }
 
 impl Default for Timings {
@@ -81,6 +84,7 @@ impl Default for Timings {
             hello_timeout: Duration::from_secs(10),
             stall_warn: Duration::from_millis(1500),
             stall_end: Duration::from_secs(8),
+            upload_resume_keep: Duration::from_secs(600),
         }
     }
 }
@@ -206,6 +210,8 @@ struct Ctx {
     state: watch::Sender<AgentState>,
     /// Connected sessions, and the binary's holds that end them for an update.
     gate: Arc<SessionGate>,
+    /// Uploads of lost file channels, kept for resuming.
+    interrupted: Arc<files::Interrupted>,
     /// The binary's update status and where `update` / `registered` go; `None` without an
     /// update hookup.
     updates: Option<(
@@ -234,9 +240,14 @@ impl Ctx {
             Some(link) => (link.gate, Some((link.status, link.events))),
             None => (Arc::default(), None),
         };
+        let interrupted = files::Interrupted::new(
+            timings.upload_resume_keep,
+            tokio::runtime::Handle::current(),
+        );
         let ctx = Ctx {
             cfg,
             platform,
+            interrupted,
             timings,
             version,
             gateway,

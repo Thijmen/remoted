@@ -88,6 +88,11 @@ impl Gateway {
         format!("{}/ws/agent/session/{session}", self.base)
     }
 
+    /// A file channel; `channel` must already be validated with [`valid_session_id`].
+    pub(crate) fn files_url(&self, channel: &str) -> String {
+        format!("{}/ws/agent/files/{channel}", self.base)
+    }
+
     /// Opens a WebSocket to `url` (one of this gateway's endpoints) on a fresh, tuned TCP
     /// connection. Incoming messages are limited to `max_message` bytes.
     pub(crate) async fn dial(&self, url: &str, max_message: usize) -> Result<WsStream, DialError> {
@@ -254,6 +259,10 @@ mod tests {
             "wss://rd-agent.example.com/ws/agent/session/ab12"
         );
         assert_eq!(g.port, 443);
+        assert_eq!(
+            g.files_url("cd34"),
+            "wss://rd-agent.example.com/ws/agent/files/cd34"
+        );
         let g = Gateway::new("ws://127.0.0.1:8081", "t").unwrap();
         assert_eq!(g.control_url(), "ws://127.0.0.1:8081/ws/agent");
         assert_eq!(g.port, 8081);

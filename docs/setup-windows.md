@@ -158,6 +158,11 @@ which also captures the shortcuts a browser never sees.
 - **HDR desktops** are converted to SDR by Windows.
 - During a session the agent keeps the display and the PC awake, and wakes a dark display when
   a viewer connects: Desktop Duplication only delivers frames from a lit display.
+- **File transfer** ([files.md](files.md)) runs as your user, unelevated: it reaches what you
+  can reach in Explorer without "Continue" (administrator) prompts. The file browser offers
+  your Desktop, Documents and Downloads where Windows keeps them (also when OneDrive moved
+  them) and every drive. Deleted files go to the Recycle Bin; on drives without one (network
+  shares) Windows deletes them for good.
 
 ## Local development (no cluster)
 

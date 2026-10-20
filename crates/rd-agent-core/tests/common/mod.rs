@@ -63,6 +63,8 @@ pub enum Event {
     AwakeAcquired,
     AwakeReleased,
     UserActivity,
+    /// `Platform::trash` (the fake deletes the path).
+    Trashed(std::path::PathBuf),
 }
 
 pub struct FakePlatform {
@@ -191,6 +193,18 @@ impl Platform for FakePlatform {
     }
     fn input_injector(&self) -> anyhow::Result<Box<dyn InputInjector>> {
         Ok(Box::new(RecordingInjector(self.events.clone())))
+    }
+    fn can_trash(&self) -> bool {
+        true
+    }
+    fn trash(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if std::fs::symlink_metadata(path)?.is_dir() {
+            std::fs::remove_dir_all(path)?;
+        } else {
+            std::fs::remove_file(path)?;
+        }
+        self.record(Event::Trashed(path.to_path_buf()));
+        Ok(())
     }
 }
 
