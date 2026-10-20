@@ -520,8 +520,10 @@ pub fn install() -> anyhow::Result<()> {
             .with_context(|| format!("copying {file} to {}", dest.display()))?;
     }
 
-    let binary = dest.join("rd-agent-svc.exe");
-    let binary = HSTRING::from(binary.to_string_lossy().as_ref());
+    // Quote the path: it lives under "Program Files", and an unquoted service path is the
+    // classic unquoted-service-path weakness.
+    let binary = format!("\"{}\"", dest.join("rd-agent-svc.exe").display());
+    let binary = HSTRING::from(binary);
     // SAFETY: the SCM handles are opened and closed in this block.
     let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ALL_ACCESS) }
         .context("opening the service manager (run as administrator)")?;
