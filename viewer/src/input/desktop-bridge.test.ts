@@ -286,3 +286,52 @@ describe('rd_set_grab', () => {
     expect(plain.grabbing).toBe(true);
   });
 });
+
+describe('refusal and other commands', () => {
+  it('remembers why the app refused a grab until one is accepted, and reports each answer', async () => {
+    const { host, calls } = fakeTauri();
+    let changes = 0;
+    const bridge = new DesktopBridge(host, { key: () => {}, release: () => {}, changed: () => changes++ }, () => {});
+    expect(bridge.inApp).toBe(true);
+    expect(bridge.refusal).toBeNull();
+    bridge.setActive(true);
+    // Tauri rejects with the command's error string.
+    calls[0]!.reject('rd Desktop needs the Accessibility permission to grab the keyboard');
+    await flush();
+    expect(bridge.refusal).toMatch(/Accessibility permission/);
+    expect(changes).toBe(1);
+    // Turning the grab off keeps the reason (the Troubleshoot screen takes the focus, and so the grab).
+    bridge.setActive(false);
+    calls[1]!.resolve();
+    await flush();
+    expect(bridge.refusal).toMatch(/Accessibility permission/);
+    bridge.setActive(true);
+    calls[2]!.resolve();
+    await flush();
+    expect(bridge.refusal).toBeNull();
+    expect(bridge.grabbing).toBe(true);
+    expect(changes).toBe(3);
+  });
+
+  it('call() reaches the app, and rejects outside it or without an answer', async () => {
+    const { host, calls } = fakeTauri();
+    const { bridge } = setup(host);
+    const status = bridge.call('rd_keyboard_status');
+    expect(calls.map((c) => c.cmd)).toEqual(['rd_keyboard_status']);
+    calls[0]!.resolve();
+    await expect(status).resolves.toBeUndefined();
+
+    vi.useFakeTimers();
+    try {
+      const late = bridge.call('rd_keyboard_status');
+      vi.advanceTimersByTime(INVOKE_TIMEOUT_MS);
+      await expect(late).rejects.toThrow('no answer');
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const plain = setup({}).bridge;
+    expect(plain.inApp).toBe(false);
+    await expect(plain.call('rd_keyboard_status')).rejects.toThrow('not in the desktop app');
+  });
+});

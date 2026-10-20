@@ -1,7 +1,7 @@
 import { AudioPlayer } from '../audio/player';
 import type { ChordAction } from '../input/chords';
 import { InputController, type InputOptions } from '../input/controller';
-import { resolveMapping } from '../input/modifiers';
+import { isMacViewer, isWindowsViewer, resolveMapping } from '../input/modifiers';
 import { fetchMachine } from '../net/api';
 import { Session, type SessionStatus } from '../net/session';
 import type { AudioMsg, VideoMsg } from '../proto/bin';
@@ -34,6 +34,14 @@ import {
   streamParams,
 } from './settings';
 import { settingsPanel, shortcutsHint } from './settings-panel';
+import {
+  type CheckAction,
+  type StatusState,
+  needsAccessibility,
+  parseKeyboardStatus,
+  troubleshootChecks,
+  troubleshootPanel,
+} from './troubleshoot';
 import { ScreenWakeLock } from './wakelock';
 
 /** Keyboard Lock API (Chromium; not in TypeScript's DOM lib). */
@@ -84,6 +92,12 @@ export class ViewerApp {
   private readonly toolbar = h('div', { className: 'toolbar', hidden: true });
   /** The settings section of the session menu is open. */
   private toolbarSettings = false;
+  /** What that section shows: the settings form, or the Troubleshoot checks. */
+  private toolbarView: 'settings' | 'troubleshoot' = 'settings';
+  /** rd Desktop's keyboard status (`rd_keyboard_status`), once asked. */
+  private keyboardStatus: StatusState | null = null;
+  /** The user dismissed the missing-permission banner (for this page). */
+  private keyboardBannerDismissed = false;
   private readonly session: Session;
   private readonly video: VideoPipeline;
   private readonly input: InputController;
@@ -151,6 +165,7 @@ export class ViewerApp {
             'pointer-lock',
             locked ? { level: 'info', text: 'Pointer locked — press Esc to release.' } : null,
           ),
+        grabChanged: () => this.onGrabChanged(),
       },
       this.inputOptions(this.settings),
     );
@@ -339,6 +354,7 @@ export class ViewerApp {
     if (document.fullscreenElement) void document.exitFullscreen();
     this.toolbar.hidden = true;
     this.toolbarSettings = false;
+    this.toolbarView = 'settings';
     this.stage.hidden = true;
     this.connectView.hidden = false;
     this.banners.clear();
@@ -732,6 +748,7 @@ export class ViewerApp {
         'Settings',
         () => {
           this.toolbarSettings = !this.toolbarSettings;
+          this.toolbarView = 'settings';
           this.renderToolbar();
         },
         this.toolbarSettings,
@@ -748,31 +765,125 @@ export class ViewerApp {
     setChildren(
       this.toolbar,
       h('div', { className: 'toolbar-bar' }, ...bar),
-      this.toolbarSettings
+      this.toolbarSettings && this.toolbarView === 'troubleshoot'
         ? h(
             'div',
-            { className: 'toolbar-panel stack' },
-            settingsPanel(this.settings, (s) => this.applySettings(s), 'tb'),
-            h(
-              'div',
-              { className: 'row' },
-              h(
-                'button',
-                { type: 'button', onclick: () => this.onChord('latency-test') },
-                icon('timer', 16),
-                'Latency test',
-              ),
-              h(
-                'button',
-                { type: 'button', onclick: () => this.downloadStats() },
-                icon('download', 16),
-                'Download stats',
-              ),
+            { className: 'toolbar-panel' },
+            troubleshootPanel(
+              troubleshootChecks({
+                machine: name,
+                viewer: isMacViewer(navigator) ? 'mac' : isWindowsViewer(navigator) ? 'windows' : 'other',
+                grab: this.input.keyboardGrab,
+                status: this.keyboardStatus,
+                mapping: this.inputOptions(this.settings).mapping,
+                remoteOs: this.agentHello?.agent.os,
+                hostInput: this.agentState?.perms.input ?? null,
+              }),
+              (a) => this.onTroubleshootAction(a),
+              () => {
+                this.toolbarView = 'settings';
+                this.renderToolbar();
+              },
             ),
-            shortcutsHint(),
           )
+        : this.toolbarSettings
+          ? h(
+              'div',
+              { className: 'toolbar-panel stack' },
+              settingsPanel(this.settings, (s) => this.applySettings(s), 'tb'),
+              h(
+                'div',
+                { className: 'row' },
+                h(
+                  'button',
+                  { type: 'button', onclick: () => this.onChord('latency-test') },
+                  icon('timer', 16),
+                  'Latency test',
+                ),
+                h(
+                  'button',
+                  { type: 'button', onclick: () => this.downloadStats() },
+                  icon('download', 16),
+                  'Download stats',
+                ),
+                h('button', { type: 'button', onclick: () => this.openTroubleshoot() }, 'Troubleshoot'),
+              ),
+              shortcutsHint(),
+            )
+          : null,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // keyboard grab: banner and Troubleshoot
+
+  /** The desktop app accepted or refused a keyboard grab. */
+  private onGrabChanged(): void {
+    // A refusal: ask the app why (is the permission missing, or was the window just not in front?).
+    if (this.input.keyboardGrab.refusal !== null) void this.refreshKeyboardStatus();
+    else this.updateKeyboardBanner();
+  }
+
+  private async refreshKeyboardStatus(): Promise<void> {
+    if (!this.input.keyboardGrab.inApp) return;
+    if (this.keyboardStatus === null) this.keyboardStatus = 'loading';
+    try {
+      this.keyboardStatus = parseKeyboardStatus(await this.input.callApp('rd_keyboard_status')) ?? 'unavailable';
+    } catch {
+      // An rd Desktop from before rd_keyboard_status (or no answer): only its refusal tells.
+      this.keyboardStatus = 'unavailable';
+    }
+    this.updateKeyboardBanner();
+    if (this.toolbarView === 'troubleshoot') this.refreshToolbar();
+  }
+
+  /** Shortcuts stay on this Mac because rd Desktop lacks the Accessibility permission: say so. */
+  private updateKeyboardBanner(): void {
+    const grab = this.input.keyboardGrab;
+    const show =
+      grab.inApp &&
+      !grab.grabbing &&
+      grab.refusal !== null &&
+      !this.keyboardBannerDismissed &&
+      needsAccessibility(grab, this.keyboardStatus);
+    this.banners.set(
+      'keyboard',
+      show
+        ? {
+            level: 'warn',
+            text: 'Shortcuts like Cmd+Tab stay on this Mac: rd Desktop needs the Accessibility permission.',
+            actions: [
+              { label: 'Troubleshoot', run: () => this.openTroubleshoot() },
+              {
+                label: 'Dismiss',
+                run: () => {
+                  this.keyboardBannerDismissed = true;
+                  this.banners.set('keyboard', null);
+                },
+              },
+            ],
+          }
         : null,
     );
+  }
+
+  private openTroubleshoot(): void {
+    this.toolbarSettings = true;
+    this.toolbarView = 'troubleshoot';
+    void this.refreshKeyboardStatus();
+    this.toggleToolbar(true);
+  }
+
+  private onTroubleshootAction(a: CheckAction): void {
+    switch (a) {
+      case 'open-accessibility':
+        this.input.callApp('rd_open_keyboard_settings').catch((e: unknown) => {
+          console.warn('rd: cannot open the Accessibility settings', e);
+        });
+        return;
+      case 'recheck':
+        void this.refreshKeyboardStatus();
+    }
   }
 
   private tickHud(): void {

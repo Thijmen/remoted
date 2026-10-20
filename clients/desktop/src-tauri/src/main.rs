@@ -39,7 +39,8 @@ const MAIN: &str = "main";
 const SETTINGS_FILE: &str = "settings.json";
 
 /// The gateway the window uses now (`None` until the setup page saves one), and the origins
-/// already granted `rd_set_grab` and `rd_whats_new`.
+/// already granted the gateway commands (`rd_set_grab`, `rd_whats_new`, `rd_keyboard_status`,
+/// `rd_open_keyboard_settings`).
 #[derive(Default)]
 struct Current {
     settings: RwLock<Option<config::Settings>>,
@@ -54,8 +55,9 @@ impl Current {
             .clone()
     }
 
-    /// Makes `settings` current and lets its gateway origin (only) call `rd_set_grab`, and
-    /// `rd_whats_new` (the notice after an update).
+    /// Makes `settings` current and lets its gateway origin (only) call `rd_set_grab`,
+    /// `rd_whats_new` (the notice after an update), and the Troubleshoot screen's
+    /// `rd_keyboard_status` and `rd_open_keyboard_settings`.
     fn apply<R: tauri::Runtime>(
         &self,
         app: &impl Manager<R>,
@@ -70,9 +72,14 @@ impl Current {
                     .local(false)
                     .window(MAIN)
                     .permission("allow-rd-set-grab")
-                    .permission("allow-rd-whats-new"),
+                    .permission("allow-rd-whats-new")
+                    .permission("allow-rd-keyboard-status")
+                    .permission("allow-rd-open-keyboard-settings"),
             )?;
-            log::info!("{origin} may call rd_set_grab and rd_whats_new");
+            log::info!(
+                "{origin} may call rd_set_grab, rd_whats_new, rd_keyboard_status and \
+                 rd_open_keyboard_settings"
+            );
             granted.insert(origin);
         }
         *self.settings.write().unwrap_or_else(|e| e.into_inner()) = Some(settings);
@@ -94,6 +101,28 @@ async fn rd_set_grab(
         return Err("not the main window".into());
     }
     grab.set_active(active, seq).await
+}
+
+/// Page -> app: can the app grab the keyboard here, and what stands in the way (the viewer's
+/// Troubleshoot screen). Read-only.
+#[tauri::command]
+fn rd_keyboard_status(webview: tauri::Webview) -> Result<grab::KeyboardStatus, String> {
+    if webview.label() != MAIN {
+        return Err("not the main window".into());
+    }
+    let version = webview.app_handle().package_info().version.to_string();
+    Ok(grab::keyboard_status(version))
+}
+
+/// Page -> app: open the system settings page the grab needs (macOS: Privacy & Security ›
+/// Accessibility). Opens that one fixed page, nothing else.
+#[tauri::command]
+fn rd_open_keyboard_settings(webview: tauri::Webview) -> Result<(), String> {
+    if webview.label() != MAIN {
+        return Err("not the main window".into());
+    }
+    log::info!("opening the keyboard permission settings (Troubleshoot)");
+    grab::open_keyboard_settings()
 }
 
 #[derive(serde::Serialize)]
@@ -175,6 +204,8 @@ fn main() {
         .manage(Current::default())
         .invoke_handler(tauri::generate_handler![
             rd_set_grab,
+            rd_keyboard_status,
+            rd_open_keyboard_settings,
             rd_setup_info,
             rd_save_gateway,
             update::rd_update_state,

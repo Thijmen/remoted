@@ -31,6 +31,18 @@ export interface InputOptions {
 export interface InputCallbacks {
   chord(action: ChordAction): void;
   pointerLockChanged(locked: boolean): void;
+  /** The desktop app accepted or refused a keyboard grab (see `keyboardGrab`). */
+  grabChanged?(): void;
+}
+
+/** The desktop app's keyboard grab, for the Troubleshoot screen. */
+export interface KeyboardGrabState {
+  /** Inside rd Desktop (a browser tab cannot grab system shortcuts). */
+  inApp: boolean;
+  /** System shortcuts go to the remote machine right now. */
+  grabbing: boolean;
+  /** Why the app last refused to grab; null when it last grabbed (or was never asked). */
+  refusal: string | null;
 }
 
 /** ~250 Hz cap for absolute moves and the relative-motion flush period. */
@@ -99,6 +111,7 @@ export class InputController {
     this.bridge = new DesktopBridge(window, {
       key: (code, down, repeat) => this.onNativeKey(code, down, repeat),
       release: () => this.onNativeRelease(),
+      changed: () => this.cb.grabChanged?.(),
     });
     this.wheel = new WheelNormalizer(window.devicePixelRatio, opts.invertScroll);
     new ResizeObserver(() => this.updateRect()).observe(surface);
@@ -123,6 +136,15 @@ export class InputController {
   setVideoSize(w: number, h: number): void {
     this.videoW = w;
     this.videoH = h;
+  }
+
+  get keyboardGrab(): KeyboardGrabState {
+    return { inApp: this.bridge.inApp, grabbing: this.bridge.grabbing, refusal: this.bridge.refusal };
+  }
+
+  /** Call a desktop app command (rejects outside the app or when the app does not have it). */
+  callApp(cmd: string): Promise<unknown> {
+    return this.bridge.call(cmd);
   }
 
   /** Last absolute pointer position (normalised 0..65535). */

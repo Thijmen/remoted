@@ -1047,3 +1047,50 @@ progress {
   width: 100%;
   accent-color: var(--accent);
 }
+
+/* ---------------------------------------------------------------- troubleshoot */
+
+.troubleshoot h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.check {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+}
+
+.check:first-child {
+  border-top: 0;
+}
+
+.check-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.check-title {
+  font-weight: 600;
+}
+
+.check.bad .check-title {
+  color: var(--bad);
+}
+
+.check.warn .check-title {
+  color: var(--warn);
+}
+
+.check .row {
+  margin-top: 4px;
+}
