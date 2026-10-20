@@ -14,7 +14,7 @@ session or without one (browsing files never takes over the screen).
   its card in the portal).
 - **Download:** double-click a file, or select files and click **Download**. One file arrives as
   itself; several files or a folder arrive as one `.zip`. Downloads land in the browser's
-  download folder.
+  download folder (rd Desktop: your Downloads folder).
 - **Upload:** drop files or folders onto the file list (or onto a folder in it), or use
   **Upload**. During a session you can also drop files straight onto the remote screen: they go
   to the folder the file browser shows (the remote Desktop until you open it).
@@ -141,25 +141,31 @@ Entry: `{"name":"a.txt","kind":"file","size":1234,"mtime_ms":1729160000000,"hidd
 is `other`). `hidden`: a dot name, or the hidden attribute on Windows. `parent` is null at a
 root. `list` returns at most 20 000 entries (`truncated: true` beyond), unsorted. `delete` with
 `trash: false`, or on an agent without the `trash` cap, deletes permanently (folders
-recursively). A `delete` that fails part-way reports the first error and the paths it did not
-delete in `msg`.
+recursively). A path that does not exist counts as deleted (so a re-sent `delete` is harmless);
+a root cannot be deleted (`bad_path`). A `delete` that fails part-way reports the first error
+and the paths it did not delete in `msg`.
 
 Changes (`mkdir`, `rename`, `delete`, `write`) and upload data are applied in the order they
-arrive, one at a time; `list` and `stat` are answered concurrently and may overtake them.
+arrive, one at a time; `list` and `stat` are answered concurrently and may overtake them. A
+request sent before `hello` is answered with `bad_request`.
 
 **Download.** `{"t":"read","id":6,"path":"/Users/me/a.txt","offset":0}`. Optional:
 `"expect":{"size":N,"mtime_ms":M}` (when resuming: fail with `changed` unless the file still has
 that size and time). The agent answers `{"t":"read","id":6,"name":"a.txt","size":1234,"mtime_ms":…}`
-and then sends the bytes from `offset` as FILE_DATA frames; the last one has the END flag (also
-for an empty file: one empty frame with END). An error during the transfer ends it with `err`.
+and then sends the bytes from `offset` as FILE_DATA frames; the last one has the END flag. The
+agent sends END as a separate empty frame after the data (an empty file is just that frame), so
+receivers must accept an END frame without bytes. An error during the transfer ends it with `err`.
 
 A **zip** download: `{"t":"read","id":8,"paths":["/Users/me/Photos","/Users/me/a.txt"],"zip":true,"name":"Photos.zip"}`.
-The paths must share one parent folder; the archive holds them under their own names.
+The paths must share one parent folder; the archive holds them under their own names. Without a
+`name`, one path gives `<its name>.zip` and several give `<parent>.zip`.
 The agent first walks the tree and answers `{"t":"read","id":8,"name":"Photos.zip","total":5368709120,"files":1234}`
 (`total`: bytes of all files; there is no `size`, the archive is produced as it goes), then
 FILE_DATA frames, `{"t":"progress","id":8,"done":…}` (source bytes zipped so far, about 4 times a
-second) and, before the END frame, `{"t":"skipped","id":8,"paths":["Photos/locked.jpg"]}` if files
-could not be read. The archive stores files uncompressed (fast, and most large files are
+second, and once more with the final total) and, before the END frame,
+`{"t":"skipped","id":8,"paths":["Photos/locked.jpg"]}` if files could not be read. A symbolic link
+to a folder is followed when it is one of `paths`, and skipped silently deeper down; devices,
+sockets and pipes are left out. The archive stores files uncompressed (fast, and most large files are
 compressed already), with ZIP64 records where sizes need them, UTF-8 names, modification times
 (DOS, Unix and NTFS) and empty folders. Zip downloads cannot resume.
 
@@ -169,7 +175,9 @@ acknowledged and dropped). The agent sends downloads one at a time, in request o
 **Upload.** `{"t":"write","id":9,"path":"/Users/me/Documents/report.pdf","size":1234,"mtime_ms":…,"conflict":"fail","token":"<16 hex>"}`
 immediately followed by its FILE_DATA frames (the last with END; an empty file sends one empty
 END frame). The viewer does not wait for an answer before sending data, so many small files
-stream back to back. The agent writes to a temporary file next to the target
+stream back to back. Several uploads may be open at once and their FILE_DATA may interleave (the
+viewer pauses one and continues another); the agent keeps open uploads by `id`, and an open
+upload without data simply waits. The agent writes to a temporary file next to the target
 (`.report.pdf.<token>.rdpart`) and, after the END frame, moves it into place according to
 `conflict`:
 
@@ -187,7 +195,9 @@ when merging) for each folder before the files in it.
 
 **Resume.** A `write` with `"resume":true` (and the same `token` as before) asks to continue an
 interrupted upload: the agent answers `{"t":"write","id":10,"offset":N}` with the length of the
-temporary file it kept for that token (0 if none) and the viewer sends FILE_DATA from `N`. The
+temporary file it kept for that token (0 if none, also when the upload had already finished and
+only its `done` was lost: the viewer then gets `exists` and checks the target with `stat`) and the
+viewer sends FILE_DATA from `N`. The
 agent keeps the temporary file of an upload whose channel was lost for 10 minutes. A download
 resumes with `read` from the offset the viewer already has, with `expect`.
 
@@ -205,6 +215,9 @@ resumes with `read` from the offset the viewer already has, with `expect`.
   `seq` up to and including this one. Receivers acknowledge every frame, in order, once it is
   written (so a slow disk slows the sender down too).
 - A frame carries at most 256 KiB of bytes.
+- PING (0x30) and PONG (0x31) work as on a session socket: the agent answers every PING at once
+  (also while its disk is busy), and the viewer pings every 5 s and reconnects after 20 s of
+  silence.
 
 ### Flow control
 

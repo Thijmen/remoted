@@ -103,6 +103,7 @@ export class FilesBrowser {
   private opened = false;
   private unsubscribe: (() => void) | null = null;
   private renderQueued = false;
+  private lastClick: { name: string; at: number } | null = null;
 
   constructor(
     private readonly files: FilesController,
@@ -523,10 +524,18 @@ export class FilesBrowser {
     );
     row.addEventListener('pointerdown', (ev) => {
       if (ev.button !== 0 || this.renaming === e.name) return;
+      // Rows are redrawn on every selection change, so the browser's dblclick (same element twice) never
+      // fires: count the clicks here.
+      const now = performance.now();
+      const double =
+        !ev.shiftKey && !ev.metaKey && !ev.ctrlKey && this.lastClick?.name === e.name && now - this.lastClick.at < 450;
+      this.lastClick = double ? null : { name: e.name, at: now };
+      if (double) {
+        ev.preventDefault();
+        this.openEntry(e);
+        return;
+      }
       this.clickRow(index, ev);
-    });
-    row.addEventListener('dblclick', () => {
-      if (this.renaming !== e.name) this.openEntry(e);
     });
     row.addEventListener('contextmenu', (ev) => {
       ev.preventDefault();
