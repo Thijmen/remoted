@@ -70,7 +70,7 @@ fn record_failure(failure: &Mutex<Option<String>>, why: impl FnOnce() -> String)
     }
 }
 
-fn validate(cfg: &VideoConfig) -> anyhow::Result<()> {
+pub(crate) fn validate(cfg: &VideoConfig) -> anyhow::Result<()> {
     ensure!(
         cfg.width >= 64
             && cfg.height >= 64
@@ -88,7 +88,7 @@ fn validate(cfg: &VideoConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn encoder_config(cfg: &VideoConfig, preference: EncoderPreference) -> EncoderConfig {
+pub(crate) fn encoder_config(cfg: &VideoConfig, preference: EncoderPreference) -> EncoderConfig {
     EncoderConfig {
         width: cfg.width,
         height: cfg.height,

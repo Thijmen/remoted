@@ -31,6 +31,7 @@ pub mod geometry;
 pub mod input;
 pub mod mf;
 pub mod power;
+pub mod secure;
 pub mod session;
 
 use std::sync::Arc;
@@ -59,6 +60,8 @@ pub struct WinPlatform {
     /// Published by the screen pipeline, followed by the input injector, so pointer
     /// coordinates map onto the captured display through the same content rect.
     geometry: Arc<CaptureGeometry>,
+    /// The Windows lock screen / UAC helper (None until the service is installed).
+    secure: Arc<secure::SecureDesktop>,
 }
 
 impl WinPlatform {
@@ -78,6 +81,7 @@ impl WinPlatform {
             video,
             encoder,
             geometry: Arc::default(),
+            secure: secure::SecureDesktop::new(),
         }))
     }
 }
@@ -117,9 +121,22 @@ impl Platform for WinPlatform {
         })
     }
     fn input_injector(&self) -> anyhow::Result<Box<dyn InputInjector>> {
-        Ok(Box::new(
-            input::SendInputInjector::new()?.with_capture_geometry(self.geometry.clone()),
-        ))
+        Ok(Box::new(secure::SecureInputInjector::new(
+            self.secure.clone(),
+            self.geometry.clone(),
+        )?))
+    }
+    fn secure_state(&self) -> rd_agent_core::platform::SecureState {
+        self.secure.state()
+    }
+    fn secure_video_pipeline(&self) -> Option<Box<dyn VideoPipeline>> {
+        Some(Box::new(secure::SecurePipeline::new(self.secure.clone())))
+    }
+    fn secure_input_ready(&self) -> bool {
+        self.secure.input_ready()
+    }
+    fn send_sas(&self) -> anyhow::Result<()> {
+        self.secure.send_sas()
     }
     fn file_places(&self) -> Vec<Place> {
         files::places()

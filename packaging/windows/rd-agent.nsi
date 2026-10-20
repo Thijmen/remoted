@@ -117,6 +117,8 @@ Section "${NAME}" Main
   SetOutPath "$INSTDIR"
   File "${SRC}\rd-agent.exe"
   File "${SRC}\rd-agentw.exe"
+  File "${SRC}\rd-agent-svc.exe"
+  File "${SRC}\rd-agent-sec.exe"
   File "${SRC}\THIRD_PARTY_NOTICES.md"
   File "/oname=rd-agent.ico" "${ICON}"
   WriteUninstaller "$INSTDIR\uninstall.exe"

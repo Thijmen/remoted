@@ -149,13 +149,48 @@ which also captures the shortcuts a browser never sees.
 - **Displays**: every monitor can be picked; the primary one is the default. Coordinates are
   physical pixels, so scaling (125 %, 150 %, …) does not shift clicks.
 
+## Lock screen and UAC (secure desktop)
+
+Windows shows the lock screen and UAC prompts on a *secure desktop*
+that a program in your session cannot capture or control. `rd-agent` can install a small
+LocalSystem service that runs a helper in your session while it is locked, so the viewer shows
+the real desktop and your input reaches it:
+
+```powershell
+# In an elevated terminal (administrator):
+& "$env:LOCALAPPDATA\Programs\rd-agent\rd-agent.exe" secure install
+```
+
+The service starts at boot. From then on, when the PC is locked or a UAC prompt is up, the
+viewer shows the actual screen: type the Windows password in the picture, click UAC buttons,
+and use **Send Ctrl+Alt+Del** from the banner. Nothing is stored; the password only travels
+through the session to the helper. The portal shows the secure state (`starting` while the
+helper comes up, `ready` when it is in the picture, `failed` if it could not start).
+
+- `rd-agent secure status` shows whether the service is installed and running;
+  `rd-agent secure uninstall` stops and removes it. Both need an administrator. The service
+  and helper log to `%ProgramData%\rd\agent\logs` (`secure-service.log`,
+  `secure-helper.log`) for diagnosing a start failure.
+- The install copies `rd-agent-svc.exe` and `rd-agent-sec.exe` to `%ProgramFiles%\rd-agent`.
+  The per-user agent updates itself, but not those copies: run `secure install` again after
+  updating the agent so they match.
+- Ctrl+Alt+Del needs
+  `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\SoftwareSASGeneration`
+  to allow services (`1` or `3`); the viewer reports an error when the policy blocks it.
+- **Trust boundary:** the service accepts requests from the console user's processes (it checks
+  the session and the user SID). Any code running as that user can therefore be shown the
+  secure desktop; use this on a machine you control. It does not cover BitLocker or the
+  pre-boot screen, and v1 only serves a locked session with the agent running (not the
+  signed-out screen after a reboot). The lock screen is captured from the primary display;
+  the viewer's display picker does not move it on a multi-monitor PC.
+
 ## Limits
 
-- **Lock screen, UAC prompts, Ctrl+Alt+Del** show on Windows' secure desktop, which no program
-  in your session can capture or control. While it is up the viewer reports the PC as locked,
-  keeps the last picture and drops input; capture resumes when you are back on the desktop.
-  Unlock at the PC. Ctrl+Alt+Del cannot be sent.
-  There is no remote recovery path yet (the Mac's is Screen Sharing; see
+- **Lock screen, UAC prompts, Ctrl+Alt+Del** stay on Windows' secure desktop unless the
+  secure-desktop service is installed (see above). Without it the viewer reports the PC as
+  locked, keeps the last picture and drops input; capture resumes when you are back on the
+  desktop, and you unlock at the PC. BitLocker and the pre-boot screen are never covered; a
+  KVM/vPro or the recovery key is needed there (the Mac's path is Screen Sharing; see
   [recovery.md](recovery.md)).
 - **Elevated windows** (run as administrator) ignore input from a program that is not
   elevated. The autostart runs the agent unelevated; run `rd-agent run` from an elevated

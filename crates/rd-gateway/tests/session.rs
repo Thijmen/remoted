@@ -80,7 +80,7 @@ async fn registration_replacement_4009_and_portal_listing() {
     assert_eq!(mbp["agent_version"], "0.1.0");
     assert_eq!(
         mbp["state"],
-        serde_json::json!({"locked": false, "perms": {"screen": false, "input": false}, "in_session": false})
+        serde_json::json!({"locked": false, "perms": {"screen": false, "input": false}, "in_session": false, "secure": "unavailable"})
     );
     assert!(mbp["since_ms"].as_u64().unwrap() > 1_600_000_000_000);
     assert_eq!(

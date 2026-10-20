@@ -39,7 +39,9 @@ use super::task::TaskGuard;
 use super::video::{self, EncodeWindow};
 use super::{ActiveSession, Ctx};
 use crate::clock::now_us;
-use crate::platform::{FrameGate, Guard, InputEvent, Platform, VideoPipeline};
+use crate::platform::{
+    FrameGate, Guard, InputEvent, LockState, Platform, SecureState, VideoPipeline,
+};
 
 /// Control messages (PONG, PING, JSON, close) waiting for the writer.
 const CONTROL_QUEUE: usize = 32;
@@ -401,6 +403,7 @@ impl Session {
                     if !awaiting_hello {
                         self.out.json(&AgentMsg::State(s));
                     }
+                    self.sync_stream(&s).await;
                     Ok(())
                 }
                 () = &mut hello_deadline, if awaiting_hello => {
@@ -443,6 +446,12 @@ impl Session {
             }
             ViewerMsg::Pause => self.set_paused(true),
             ViewerMsg::Resume => self.set_paused(false),
+            ViewerMsg::Sas => {
+                if let Err(e) = self.ctx.platform.send_sas() {
+                    self.out
+                        .error("sas", format!("sending Ctrl+Alt+Del: {e:#}"));
+                }
+            }
         }
         Ok(())
     }
@@ -516,7 +525,17 @@ impl Session {
         if !screen_ok {
             warn!("Screen Recording preflight says no; trying capture anyway");
         }
-        match self.start_stream(requested, params).await {
+        // A viewer may connect while the host is already locked (the secure desktop was up
+        // before this session): start the helper pipeline directly.
+        let secure = self.secure_recommended();
+        let result = match self.start_stream(requested.clone(), params, secure).await {
+            Err(e) if secure => {
+                warn!("secure desktop video failed ({e:#}); starting normal capture");
+                self.start_stream(requested, params, false).await
+            }
+            result => result,
+        };
+        match result {
             Ok(stream) => {
                 self.stream = Some(stream);
                 self.timers.restart();
@@ -529,10 +548,66 @@ impl Session {
         }
     }
 
+    /// True when the host is locked and the platform has a secure-desktop helper to show it.
+    fn secure_recommended(&self) -> bool {
+        self.ctx.platform.lock_state() == LockState::Locked
+            && matches!(
+                self.ctx.platform.secure_state(),
+                SecureState::Starting | SecureState::Ready
+            )
+    }
+
+    /// While a stream is running, follow lock/unlock: the secure desktop is a different
+    /// pipeline (the Windows helper); the normal one cannot capture it.
+    async fn sync_stream(&mut self, s: &crate::platform::AgentState) {
+        let Some(stream) = self.stream.as_ref() else {
+            return;
+        };
+        let want_secure =
+            s.locked && matches!(s.secure, SecureState::Starting | SecureState::Ready);
+        if stream.secure == want_secure {
+            return;
+        }
+        info!(
+            secure = want_secure,
+            "switching the video pipeline for the {} desktop",
+            if want_secure { "secure" } else { "normal" }
+        );
+        self.swap_stream(want_secure).await;
+    }
+
+    /// Stops the current stream and starts the other pipeline with the same parameters. A
+    /// failed secure start falls back to normal capture, so the session keeps its last picture
+    /// and the viewer can offer the Recovery links instead.
+    async fn swap_stream(&mut self, secure: bool) {
+        let Some(stream) = self.stream.take() else {
+            return;
+        };
+        let (requested, params) = (stream.requested.clone(), stream.params);
+        stream.stop().await;
+        let result = match self.start_stream(requested.clone(), params, secure).await {
+            Err(e) if secure => {
+                warn!("secure desktop video failed ({e:#}); falling back to normal capture");
+                self.start_stream(requested, params, false).await
+            }
+            result => result,
+        };
+        match result {
+            Ok(stream) => {
+                self.stream = Some(stream);
+                self.timers.restart();
+            }
+            Err(e) => self
+                .out
+                .error("internal", format!("restarting video: {e:#}")),
+        }
+    }
+
     async fn start_stream(
         &mut self,
         requested: StreamParams,
         params: Effective,
+        secure: bool,
     ) -> anyhow::Result<Streaming> {
         let flow = match self.shared.flow.get() {
             // An earlier start failed after creating the flow.
@@ -550,7 +625,7 @@ impl Session {
         };
         flow.set_paused(self.paused);
         let platform = self.ctx.platform.clone();
-        let mut pipeline = Pipeline::create(platform.clone()).await?;
+        let mut pipeline = Pipeline::create(platform.clone(), secure).await?;
         let (sink, frames) = mpsc::channel(FRAME_SINK_CAPACITY);
         let gate: Arc<dyn FrameGate> = flow.clone();
         let config = params.video_config(flow.target_bps());
@@ -580,6 +655,7 @@ impl Session {
         Ok(Streaming {
             requested,
             params,
+            secure,
             mark: StatsMark::new(&flow),
             flow,
             pipeline,
@@ -819,6 +895,8 @@ struct Streaming {
     requested: StreamParams,
     /// As applied.
     params: Effective,
+    /// This pipeline captures the secure desktop (Windows lock screen / UAC).
+    secure: bool,
     flow: Arc<Flow>,
     pipeline: Pipeline,
     sender: TaskGuard<()>,
@@ -927,10 +1005,18 @@ impl StatsMark {
 struct Pipeline(Option<Box<dyn VideoPipeline>>);
 
 impl Pipeline {
-    async fn create(platform: Arc<dyn Platform>) -> anyhow::Result<Self> {
-        let pipeline = tokio::task::spawn_blocking(move || platform.video_pipeline())
-            .await
-            .context("creating the video pipeline panicked")??;
+    async fn create(platform: Arc<dyn Platform>, secure: bool) -> anyhow::Result<Self> {
+        let pipeline = tokio::task::spawn_blocking(move || {
+            if secure {
+                platform
+                    .secure_video_pipeline()
+                    .context("this platform has no secure desktop pipeline")
+            } else {
+                platform.video_pipeline()
+            }
+        })
+        .await
+        .context("creating the video pipeline panicked")??;
         Ok(Pipeline(Some(pipeline)))
     }
 

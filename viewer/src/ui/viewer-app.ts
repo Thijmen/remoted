@@ -543,10 +543,37 @@ export class ViewerApp {
     if (wasLocked && !st.locked && this.session.streaming) this.input.releaseAll();
     const name = this.info?.name ?? this.machine;
     const recovery = this.recoveryActions();
+    const sas: BannerAction = {
+      label: 'Send Ctrl+Alt+Del',
+      run: () => this.session.sendJson({ t: 'sas' }),
+    };
     let banner: Banner | null = null;
-    if (st.locked)
-      banner = { level: 'warn', text: `${name} is locked — use Recovery to unlock it.`, actions: recovery };
-    else if (!st.perms.screen)
+    if (st.locked) {
+      if (st.secure === 'ready')
+        banner = {
+          level: 'warn',
+          text: `${name} is on the secure desktop (lock screen or UAC) — sign in or answer the prompt in the picture.`,
+          actions: [sas, ...recovery],
+        };
+      else if (st.secure === 'starting')
+        banner = {
+          level: 'warn',
+          text: `${name} is locked — starting the secure desktop…`,
+          actions: recovery,
+        };
+      else if (st.secure === 'failed')
+        banner = {
+          level: 'error',
+          text: `${name} is locked — the secure desktop could not start. Use Recovery, or check the agent logs.`,
+          actions: recovery,
+        };
+      else
+        banner = {
+          level: 'warn',
+          text: `${name} is locked — use Recovery to unlock it.`,
+          actions: recovery,
+        };
+    } else if (!st.perms.screen)
       banner = { level: 'error', text: `Screen Recording permission is missing on ${name}.`, actions: recovery };
     else if (!st.perms.input)
       banner = {

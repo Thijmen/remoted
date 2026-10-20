@@ -1,8 +1,9 @@
 //! The input thread: owns the session's [`InputInjector`] so injection (which may block in the
 //! OS) never stalls the network tasks. Events are applied strictly in arrival order.
 //!
-//! The agent never types into the lock screen: while the host is locked, every event except
-//! RELEASE_ALL is dropped.
+//! While the host is locked, input is dropped — unless the secure-desktop helper is active
+//! (Windows), in which case the injector forwards it to the helper and the helper types it at
+//! the real lock screen.
 
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -86,7 +87,7 @@ fn input_loop(
                         injector.release_all();
                         true
                     }
-                    _ if lock.locked(Instant::now()) => {
+                    _ if lock.locked(Instant::now()) && !platform.secure_input_ready() => {
                         if lock.dropped == 0 {
                             info!("the host is locked: dropping viewer input until it is unlocked");
                             // Keys held when the lock came up (say, the lock shortcut itself)

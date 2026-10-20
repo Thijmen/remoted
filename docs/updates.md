@@ -197,6 +197,11 @@ Only agents installed the normal way update themselves: on Windows by the instal
 `RD Agent.app` started by its LaunchAgent, in a folder the user can write to. Others report
 `can_install: false` with the reason; the portal then says to install by hand.
 
+Windows agents with the secure-desktop service (`rd-agent secure install`) update the per-user
+programs, not the `%ProgramFiles%\rd-agent` copies of `rd-agent-svc.exe` and `rd-agent-sec.exe`.
+Run `rd-agent secure install` again (elevated) after an update so the service and helper match;
+`rd-agent secure status` shows whether the service is running.
+
 `rd-agent update` does the same from a terminal (`--check` only reports). On macOS it waits
 for the outcome; on Windows it ends at once (the installer must replace `rd-agent.exe`) and
 `rd-agent update --check` shows the outcome later.

@@ -380,6 +380,12 @@ pub mod service {
         if stop_agent(STOP_WAIT)? {
             println!("stopped the running agent");
         }
+        if rd_platform_windows::secure::service::installed() {
+            println!(
+                "note: the secure desktop service is still installed; run \
+                 `rd-agent secure uninstall` as administrator to remove it"
+            );
+        }
         Ok(())
     }
 

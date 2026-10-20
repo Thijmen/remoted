@@ -39,3 +39,11 @@ browser → Guacamole (K3s, Authentik) → Tailscale → guacd-home (home-server
 | Agent crashed / hung | Mac – SSH → `launchctl kickstart -k gui/$(id -u)/dev.thijmen.rd.agent` |
 | Reboot with FileVault | Mac – SSH to the pre-boot unlock prompt (macOS 26 "unlock FileVault over SSH"; reportedly needs ≥ 26.5 on Wi-Fi — verify), then recovery VNC to log in |
 | Mac asleep | Wake-on-LAN from another home machine, or it should not happen on AC with the pmset settings above |
+
+## Windows
+
+With the secure-desktop service installed (`rd-agent secure install` in an elevated terminal),
+a locked Windows PC is shown in the rd viewer: type the Windows password at the lock screen in
+the picture; UAC prompts work the same way. Without it, use a configured Recovery link (an RDP
+or VNC connection) or unlock the PC itself. BitLocker and the pre-boot screen always need a
+KVM/vPro (or the recovery key), never the agent.

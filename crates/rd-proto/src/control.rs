@@ -122,6 +122,19 @@ pub struct StreamParamsPatch {
     pub display: Option<u32>,
 }
 
+/// Whether a secure-desktop helper can show the Windows lock screen or UAC prompt in the
+/// viewer. Only Windows with the secure-desktop service installed reports anything but
+/// `unavailable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SecureState {
+    #[default]
+    Unavailable,
+    Starting,
+    Ready,
+    Failed,
+}
+
 /// Agent state, reported to the gateway and forwarded to viewers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentState {
@@ -131,6 +144,9 @@ pub struct AgentState {
     pub perms: Perms,
     #[serde(default)]
     pub in_session: bool,
+    /// The secure-desktop helper (docs/setup-windows.md). Older agents omit it.
+    #[serde(default)]
+    pub secure: SecureState,
 }
 
 /// What an agent knows about updates of itself (docs/updates.md), reported to the gateway with
@@ -266,6 +282,8 @@ pub enum ViewerMsg {
     },
     Pause,
     Resume,
+    /// Ctrl+Alt+Del on the Windows secure desktop (the helper calls `SendSAS`).
+    Sas,
     #[serde(other)]
     Unknown,
 }
@@ -501,6 +519,14 @@ mod tests {
             serde_json::to_string(&ViewerMsg::Pause).unwrap(),
             r#"{"t":"pause"}"#
         );
+        assert_eq!(
+            serde_json::to_string(&ViewerMsg::Sas).unwrap(),
+            r#"{"t":"sas"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ViewerMsg>(r#"{"t":"sas"}"#).unwrap(),
+            ViewerMsg::Sas
+        );
         let u: ViewerMsg = serde_json::from_str(r#"{"t":"from_the_future","x":1}"#).unwrap();
         assert_eq!(u, ViewerMsg::Unknown);
         let set: ViewerMsg = serde_json::from_str(r#"{"t":"set","max_kbps":5000}"#).unwrap();
@@ -536,7 +562,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             st,
-            r#"{"t":"state","locked":true,"perms":{"screen":false,"input":false},"in_session":false}"#
+            r#"{"t":"state","locked":true,"perms":{"screen":false,"input":false},"in_session":false,"secure":"unavailable"}"#
         );
         let stats = serde_json::to_string(&AgentMsg::Stats(AgentStats::default())).unwrap();
         assert!(

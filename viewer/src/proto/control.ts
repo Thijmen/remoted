@@ -35,7 +35,12 @@ export interface AgentState {
   locked: boolean;
   perms: Perms;
   in_session: boolean;
+  /** Windows secure-desktop helper; agents before this feature omit it. */
+  secure: SecureState;
 }
+
+/** Whether the Windows lock screen / UAC prompt can be shown in the viewer. */
+export type SecureState = 'unavailable' | 'starting' | 'ready' | 'failed';
 
 export interface DisplayDesc {
   id: number;
@@ -109,7 +114,8 @@ export type ViewerMsg =
   | ({ t: 'set' } & StreamParamsPatch)
   | { t: 'keyframe_req'; reason: string }
   | { t: 'pause' }
-  | { t: 'resume' };
+  | { t: 'resume' }
+  | { t: 'sas' };
 
 // ---------------------------------------------------------------------------
 // agent -> viewer, gateway -> viewer (same socket)
@@ -321,7 +327,12 @@ export function agentStateFrom(v: unknown): AgentState {
     locked: bool(o, 'locked'),
     perms: { screen: bool(p, 'screen'), input: bool(p, 'input') },
     in_session: bool(o, 'in_session'),
+    secure: secureFrom(o.secure),
   };
+}
+
+function secureFrom(v: unknown): SecureState {
+  return v === 'starting' || v === 'ready' || v === 'failed' ? v : 'unavailable';
 }
 
 function displayFrom(v: unknown): DisplayDesc | null {

@@ -7,7 +7,12 @@ describe('parseViewerIncoming', () => {
       t: 'session',
       machine: 'mbp',
       session: 'abc',
-      agent: { locked: false, perms: { screen: false, input: false }, in_session: false },
+      agent: {
+        locked: false,
+        perms: { screen: false, input: false },
+        in_session: false,
+        secure: 'unavailable',
+      },
     });
   });
 
@@ -40,7 +45,13 @@ describe('parseViewerIncoming', () => {
       locked: true,
       perms: { screen: true, input: false },
       in_session: true,
+      secure: 'unavailable',
     });
+    expect(
+      parseViewerIncoming(
+        '{"t":"state","locked":true,"perms":{"screen":true,"input":true},"in_session":true,"secure":"ready"}',
+      ),
+    ).toMatchObject({ locked: true, secure: 'ready' });
     expect(parseViewerIncoming('{"t":"stats","target_kbps":8000,"enc_ms_p50":4.5}')).toMatchObject({
       t: 'stats',
       target_kbps: 8000,
@@ -110,7 +121,12 @@ describe('parseMachines', () => {
       'junk',
     ]);
     expect(ms).toHaveLength(1);
-    expect(ms[0]!.state).toEqual({ locked: true, perms: { screen: false, input: false }, in_session: false });
+    expect(ms[0]!.state).toEqual({
+      locked: true,
+      perms: { screen: false, input: false },
+      in_session: false,
+      secure: 'unavailable',
+    });
     expect(ms[0]!.recovery).toEqual([{ label: 'VNC', url: 'https://guac.example/#/client/x' }]);
     expect(ms[0]!.viewer).toEqual({ user: 'a@b', since_ms: 2 });
     expect(ms[0]!.managed).toBe(false);

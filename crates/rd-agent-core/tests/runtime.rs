@@ -23,7 +23,7 @@ async fn registers_and_reports_state_changes() {
     assert_eq!(reg["agent_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(
         reg["state"],
-        json!({"locked": false, "perms": {"screen": true, "input": true}, "in_session": false})
+        json!({"locked": false, "perms": {"screen": true, "input": true}, "in_session": false, "secure": "unavailable"})
     );
 
     s.platform.set_locked(true);
@@ -821,4 +821,62 @@ async fn proxy_errors_are_retried_fast_and_refusals_slowly() {
     let agent = Agent::start(&gw.url, FakePlatform::new(100), timings);
     assert!(gw.no_control_within(Duration::from_secs(2)).await);
     agent.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn input_reaches_the_secure_desktop_when_ready() {
+    let mut s = setup().await;
+    let (mut viewer, _) = s.streaming_session(SESSION_A).await;
+    let key = |down| InputEvent::Key {
+        down,
+        repeat: false,
+        hid: 0x0007_0004,
+    };
+
+    s.platform.set_secure(rd_agent_core::SecureState::Ready);
+    s.platform.set_locked(true);
+    // Let the input thread's cached lock state expire.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    send_bin(&mut viewer.ws, key(true).to_message()).await;
+    s.platform
+        .wait_for("input forwarded to the secure desktop", |e| {
+            e.iter().any(|e| matches!(e, Event::Input(_)))
+        })
+        .await;
+    s.agent.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn video_swaps_to_the_secure_pipeline_while_locked() {
+    let mut s = setup().await;
+    let (mut viewer, _) = s.streaming_session(SESSION_A).await;
+    let starts = |e: &[Event]| {
+        e.iter()
+            .filter(|e| matches!(e, Event::PipelineStart(_)))
+            .count()
+    };
+    let stops = |e: &[Event]| {
+        e.iter()
+            .filter(|e| matches!(e, Event::PipelineStop))
+            .count()
+    };
+    assert_eq!(starts(&s.platform.events()), 1);
+
+    s.platform.set_secure(rd_agent_core::SecureState::Starting);
+    s.platform.set_locked(true);
+    s.platform
+        .wait_for("the secure pipeline", |e| starts(e) == 2 && stops(e) == 1)
+        .await;
+    // The secure pipeline starts a new video epoch (video_config) for the viewer.
+    viewer.expect("video_config").await;
+
+    s.platform.set_locked(false);
+    s.platform
+        .wait_for("the normal pipeline again", |e| {
+            starts(e) == 3 && stops(e) == 2
+        })
+        .await;
+    viewer.expect("video_config").await;
+    s.agent.stop().await;
 }

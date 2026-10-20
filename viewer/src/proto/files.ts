@@ -1,7 +1,7 @@
 // File channel messages — mirror of crates/rd-proto/src/files.rs (the source of truth), see
 // docs/files.md. JSON text frames tagged by "t"; receivers ignore unknown "t" values and fields.
 
-import type { AgentState } from './control';
+import { agentStateFrom, type AgentState } from './control';
 
 export const FILES_PROTO_VERSION = 1;
 
@@ -114,13 +114,7 @@ const bool = (o: Obj, k: string): boolean => o[k] === true;
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
 function agentState(v: unknown): AgentState | null {
-  if (!isObj(v)) return null;
-  const perms = isObj(v.perms) ? v.perms : {};
-  return {
-    locked: bool(v, 'locked'),
-    perms: { screen: bool(perms, 'screen'), input: bool(perms, 'input') },
-    in_session: bool(v, 'in_session'),
-  };
+  return isObj(v) ? agentStateFrom(v) : null;
 }
 
 export function entryFrom(v: unknown): Entry | null {
