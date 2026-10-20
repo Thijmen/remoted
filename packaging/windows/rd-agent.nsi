@@ -44,7 +44,16 @@ InstallDir "$LOCALAPPDATA\Programs\rd-agent"
 InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 BrandingText "${NAME} ${VERSION}"
 
-VIProductVersion "${VERSION}.0"
+; VIProductVersion wants four numeric fields. A beta build is X.Y.Z-beta.N; put N in the
+; fourth field (1.6.1-beta.2 -> 1.6.1.2). Stable versions append .0.
+!define VERSION_NUM "${VERSION}"
+!searchreplace VERSION_NUM "${VERSION}" "-beta." "."
+!if "${VERSION_NUM}" == "${VERSION}"
+  VIProductVersion "${VERSION}.0"
+!else
+  VIProductVersion "${VERSION_NUM}"
+!endif
+
 VIAddVersionKey "ProductName" "${NAME}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "FileVersion" "${VERSION}"
