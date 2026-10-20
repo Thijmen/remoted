@@ -21,7 +21,7 @@ traffic as any web app, and the computer you sit at needs only a browser.
 
 | Part | Runs on | What it does |
 | --- | --- | --- |
-| **rd-agent** | the Mac or PC you want to reach | Captures the screen (ScreenCaptureKit on macOS, Desktop Duplication on Windows), encodes hardware H.264 (VideoToolbox; Media Foundation with NVENC, Quick Sync or AMF) and injects mouse and keyboard input. It connects _out_ to the gateway, so nothing listens at home. |
+| **rd-agent** | the Mac or PC you want to reach | Captures the screen (ScreenCaptureKit on macOS, Desktop Duplication on Windows, and GDI where Windows has no display driver for either), encodes hardware H.264 (VideoToolbox; Media Foundation with NVENC, Quick Sync or AMF) and injects mouse and keyboard input. It connects _out_ to the gateway, so nothing listens at home. |
 | **rd-gateway** | a server or cluster you run | Serves the portal and the viewer, checks who you are (single sign-on plus an email allowlist, a token per device), and joins the viewer's socket to the agent's without buffering. Ships as a small distroless image. |
 | **viewer** | any browser with WebCodecs | A TypeScript web app, served by the gateway: decodes video with WebCodecs, sends your input and acknowledges every frame. |
 | **rd Desktop** | Windows 10/11, macOS 12+ (optional) | The same viewer in its own window. It also captures the shortcuts a browser never sees (Alt+Tab, Cmd+Tab, the Windows key, …) and sends them to the remote machine. |

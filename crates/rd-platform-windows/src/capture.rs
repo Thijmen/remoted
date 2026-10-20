@@ -1,7 +1,9 @@
 //! Video pipelines: capture (or synthesize) frames, gate them, encode them.
 //!
 //! - [`ScreenPipeline`]: Desktop Duplication of one display; the pointer drawn in; scaled and
-//!   converted to NV12 on the GPU; encoded by [`H264Encoder`].
+//!   converted to NV12 on the GPU; encoded by [`H264Encoder`]. When the display's adapter has
+//!   no usable D3D11 device (no graphics driver, a virtual display) it falls back to GDI
+//!   capture and CPU conversion ([`crate::gdi`], [`GdiScreen`]).
 //! - [`SyntheticPipeline`]: a moving NV12 test pattern through the same gate and encoder, for
 //!   end-to-end tests without a desktop to capture.
 //!
@@ -43,7 +45,7 @@ use crate::display::{self, Monitor};
 use crate::duplication::{DuplError, Duplication, Update, desktop_texture};
 use crate::encoder::{BitrateTarget, EncoderConfig, EncoderPreference, H264Encoder, Nv12Image};
 use crate::geometry::{self, CaptureGeometry, CaptureLayout};
-use crate::mf;
+use crate::{gdi, mf};
 
 /// A wanted keyframe is carried by the last frame once the source has been quiet this long.
 /// Also the gap between attempts while the gate keeps refusing it.
@@ -248,7 +250,7 @@ impl VideoPipeline for ScreenPipeline {
                 let _com = mf::ComThread::init();
                 let _timer = TimerResolution::new();
                 raise_thread_priority();
-                let setup = Screen::open(
+                let setup = Source::open(
                     cfg,
                     preference,
                     thread_gate,
@@ -257,18 +259,18 @@ impl VideoPipeline for ScreenPipeline {
                     failure,
                     publish,
                 );
-                let mut screen = match setup {
-                    Ok(screen) => {
+                let mut source = match setup {
+                    Ok(source) => {
                         let _ = ready.send(Ok(()));
-                        screen
+                        source
                     }
                     Err(e) => {
                         let _ = ready.send(Err(e));
                         return;
                     }
                 };
-                screen.run(&commands);
-                screen.shut_down();
+                source.run(&commands);
+                source.shut_down();
             },
         )?);
         Ok(())
@@ -316,6 +318,87 @@ impl VideoPipeline for ScreenPipeline {
 impl Drop for ScreenPipeline {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// Environment override for the capture path: `auto` (the default, Desktop Duplication first)
+/// or `gdi`, which skips Desktop Duplication to exercise the fallback on a PC that has a
+/// graphics driver.
+pub const CAPTURE_ENV: &str = "RD_CAPTURE";
+
+/// `RD_CAPTURE=gdi`.
+fn gdi_forced() -> bool {
+    match std::env::var(CAPTURE_ENV) {
+        Err(_) => false,
+        Ok(v) if v.eq_ignore_ascii_case("gdi") => true,
+        Ok(v) => {
+            warn!("{CAPTURE_ENV}: expected auto or gdi, got {v:?}; using auto");
+            false
+        }
+    }
+}
+
+/// The capture thread's source of frames: Desktop Duplication (GPU), or GDI when the display's
+/// adapter cannot give a D3D11 device with video support (see [`crate::gdi`]).
+enum Source {
+    Duplication(Box<Screen>),
+    Gdi(Box<GdiScreen>),
+}
+
+impl Source {
+    /// Opens Desktop Duplication of the configured display, or GDI capture when that fails.
+    fn open(
+        cfg: VideoConfig,
+        preference: EncoderPreference,
+        gate: Arc<dyn FrameGate>,
+        sink: FrameSink,
+        bitrate: BitrateTarget,
+        failure: Failure,
+        publish: Option<(Arc<CaptureGeometry>, u64)>,
+    ) -> anyhow::Result<Self> {
+        let reason = if gdi_forced() {
+            info!("{CAPTURE_ENV}=gdi: capturing with GDI");
+            format!("{CAPTURE_ENV}=gdi")
+        } else {
+            match Screen::open(
+                cfg,
+                preference,
+                gate.clone(),
+                sink.clone(),
+                bitrate.clone(),
+                failure.clone(),
+                publish.clone(),
+            ) {
+                Ok(screen) => return Ok(Source::Duplication(Box::new(screen))),
+                Err(e) => {
+                    // A display without a usable graphics driver is the common case (the
+                    // Microsoft Basic Display Adapter gives no D3D11 device with video
+                    // support): GDI sees it just fine.
+                    warn!(
+                        display = cfg.display,
+                        "desktop duplication is not available ({e:#}); capturing with GDI"
+                    );
+                    format!("desktop duplication: {e:#}")
+                }
+            }
+        };
+        GdiScreen::open(cfg, preference, gate, sink, bitrate, failure, publish)
+            .map(|screen| Source::Gdi(Box::new(screen)))
+            .with_context(|| format!("GDI capture after {reason}"))
+    }
+
+    fn run(&mut self, commands: &Receiver<Command>) {
+        match self {
+            Source::Duplication(screen) => screen.run(commands),
+            Source::Gdi(screen) => screen.run(commands),
+        }
+    }
+
+    fn shut_down(self) {
+        match self {
+            Source::Duplication(screen) => screen.shut_down(),
+            Source::Gdi(screen) => screen.shut_down(),
+        }
     }
 }
 
@@ -902,6 +985,264 @@ fn layout_for(cfg: &VideoConfig, width: u32, height: u32) -> CaptureLayout {
 }
 
 // ---------------------------------------------------------------------------
+// GDI (no D3D11 on the display's adapter)
+
+/// How long between checks that the display is still there and the same size.
+const DISPLAY_CHECK: Duration = Duration::from_millis(500);
+/// A copy that fails this long is reported (a secure desktop or a mode switch passes).
+const CAPTURE_GRACE: Duration = Duration::from_secs(5);
+
+/// A display captured with GDI, screenshot-style, and encoded from system memory: the fallback
+/// when Desktop Duplication is unavailable (see [`Source::open`]).
+///
+/// It cannot be told when something changed, so it captures every tick and compares the image
+/// with the previous one; only changes reach the encoder, plus the refreshes a static image
+/// needs for keyframes, as the synthetic source and `Screen` do.
+struct GdiScreen {
+    cfg: VideoConfig,
+    preference: EncoderPreference,
+    /// The default adapter, for a hardware encoder to upload to; `None` for software encoding
+    /// (also when the machine has no D3D11 at all).
+    gpu: Option<Gpu>,
+    capture: gdi::Capture,
+    image: Nv12Image,
+    encoder: H264Encoder,
+    gate: Arc<dyn FrameGate>,
+    sink: FrameSink,
+    bitrate: BitrateTarget,
+    failure: Failure,
+    publish: Option<(Arc<CaptureGeometry>, u64)>,
+    /// When the display was last checked for a mode change.
+    checked: Instant,
+    last_submit: Instant,
+    /// Since when the desktop cannot be copied (see [`CAPTURE_GRACE`]).
+    failed_since: Option<Instant>,
+}
+
+impl GdiScreen {
+    fn open(
+        cfg: VideoConfig,
+        preference: EncoderPreference,
+        gate: Arc<dyn FrameGate>,
+        sink: FrameSink,
+        bitrate: BitrateTarget,
+        failure: Failure,
+        publish: Option<(Arc<CaptureGeometry>, u64)>,
+    ) -> anyhow::Result<Self> {
+        mf::ensure_started()?;
+        let monitor = display::resolve(cfg.display)
+            .with_context(|| format!("display {} is not attached", cfg.display))?;
+        let capture = open_capture(&cfg, &monitor)?;
+        // The default adapter's hardware encoder if there is one, else software: frames are
+        // uploaded from system memory when the encoder is a GPU's own MFT. A WARP device would
+        // bring nothing here (no hardware encoder on it).
+        let gpu = match preference {
+            EncoderPreference::Software => None,
+            _ => d3d::create_device(None)
+                .inspect_err(|e| debug!("no D3D11 device for the GDI capture: {e:#}"))
+                .ok()
+                .filter(|gpu| !gpu.software),
+        };
+        let encoder = H264Encoder::new(
+            encoder_config(&cfg, preference),
+            gpu.clone(),
+            gate.clone(),
+            sink.clone(),
+            bitrate.clone(),
+        )?;
+        info!(
+            display = cfg.display,
+            device = %monitor.device,
+            desktop = format_args!("{}x{}", monitor.rect.w, monitor.rect.h),
+            width = cfg.width,
+            height = cfg.height,
+            fps = cfg.fps.min(gdi::MAX_FPS),
+            encoder = %encoder.name(),
+            "GDI screen capture started"
+        );
+        let screen = GdiScreen {
+            capture,
+            image: Nv12Image::new(cfg.width, cfg.height),
+            cfg,
+            preference,
+            gpu,
+            encoder,
+            gate,
+            sink,
+            bitrate,
+            failure,
+            publish,
+            checked: Instant::now(),
+            last_submit: Instant::now(),
+            failed_since: None,
+        };
+        screen.publish_layout();
+        Ok(screen)
+    }
+
+    /// The frame rate is capped: this path copies the desktop through the CPU.
+    fn period(&self) -> Duration {
+        Duration::from_secs(1) / self.cfg.fps.clamp(1, gdi::MAX_FPS)
+    }
+
+    fn publish_layout(&self) {
+        if let Some((geometry, id)) = &self.publish {
+            let monitor = self.capture.monitor();
+            geometry.publish(*id, layout_for(&self.cfg, monitor.rect.w, monitor.rect.h));
+        }
+    }
+
+    fn reconfigure(&mut self, cfg: VideoConfig) -> anyhow::Result<()> {
+        let encoder = H264Encoder::new(
+            encoder_config(&cfg, self.preference),
+            self.gpu.clone(),
+            self.gate.clone(),
+            self.sink.clone(),
+            self.bitrate.clone(),
+        )?;
+        // New frame size: a new capture surface and image, beside the running ones until both
+        // exist.
+        let monitor = self.capture.monitor().clone();
+        let capture = open_capture(&cfg, &monitor)?;
+        self.capture = capture;
+        self.image = Nv12Image::new(cfg.width, cfg.height);
+        self.encoder = encoder;
+        self.cfg = cfg;
+        self.checked = Instant::now();
+        self.publish_layout();
+        info!(
+            width = cfg.width,
+            height = cfg.height,
+            fps = cfg.fps.min(gdi::MAX_FPS),
+            "GDI screen capture reconfigured"
+        );
+        Ok(())
+    }
+
+    /// Follows a display that was detached, added back, or resized (a mode change).
+    fn follow_display(&mut self) -> anyhow::Result<()> {
+        let monitor = display::resolve(self.cfg.display)
+            .with_context(|| format!("display {} is no longer attached", self.cfg.display))?;
+        if monitor == *self.capture.monitor() {
+            return Ok(());
+        }
+        let content = content_for(&self.cfg, &monitor.rect);
+        let (width, height) = (monitor.rect.w, monitor.rect.h);
+        self.capture
+            .resize(monitor, self.cfg.width, self.cfg.height, content)?;
+        self.publish_layout();
+        info!(
+            display = self.cfg.display,
+            desktop = format_args!("{width}x{height}"),
+            "display mode changed"
+        );
+        Ok(())
+    }
+
+    /// Captures at most `1/fps`; only a changed image is encoded, unless a keyframe is wanted.
+    fn run(&mut self, commands: &Receiver<Command>) {
+        let mut period = self.period();
+        let mut next = Instant::now();
+        loop {
+            match commands.recv_timeout(next.saturating_duration_since(Instant::now())) {
+                Ok(Command::Reconfigure(cfg, reply)) => {
+                    let result = self.reconfigure(cfg);
+                    if result.is_ok() {
+                        period = self.period();
+                    }
+                    let _ = reply.send(result);
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            next += period;
+            // After a stall (e.g. the machine slept) resume the cadence instead of bursting.
+            let now = Instant::now();
+            if next < now {
+                next = now + period;
+            }
+            self.encoder.maintain(now);
+            if let Some(fatal) = self.encoder.fatal() {
+                record_failure(&self.failure, || fatal.to_owned());
+            }
+            if now.saturating_duration_since(self.checked) >= DISPLAY_CHECK {
+                self.checked = now;
+                if let Err(e) = self.follow_display() {
+                    record_failure(&self.failure, || format!("{e:#}"));
+                    return;
+                }
+            }
+            let capture_us = now_us();
+            match self.capture.capture(&mut self.image) {
+                Ok(true) => {
+                    self.failed_since = None;
+                    self.submit(capture_us);
+                }
+                Ok(false) => {
+                    self.failed_since = None;
+                    let quiet = now.saturating_duration_since(self.last_submit) >= REFRESH_AFTER;
+                    if quiet && (self.gate.refresh_wanted() || self.encoder.keyframe_pending()) {
+                        debug!("quiet screen: re-submitting the current image to carry a keyframe");
+                        self.submit(now_us());
+                    }
+                }
+                // The desktop can refuse a copy for a while (a secure desktop, a mode switch):
+                // keep the last picture and try again, as Desktop Duplication does. Only a
+                // failure that lasts is reported.
+                Err(e) => match self.failed_since {
+                    None => {
+                        debug!(
+                            display = self.cfg.display,
+                            "the desktop cannot be copied ({e:#}); keeping the last picture"
+                        );
+                        self.failed_since = Some(now);
+                    }
+                    Some(since) if now.saturating_duration_since(since) >= CAPTURE_GRACE => {
+                        record_failure(&self.failure, || {
+                            format!("capturing display {}: {e:#}", self.cfg.display)
+                        });
+                        return;
+                    }
+                    Some(_) => {}
+                },
+            }
+        }
+    }
+
+    fn submit(&mut self, capture_us: u64) {
+        self.last_submit = Instant::now();
+        let Some(admitted) = self.gate.admit(capture_us) else {
+            return;
+        };
+        if let Err(e) = self.encoder.encode_image(
+            &self.image,
+            capture_us,
+            admitted.seq,
+            admitted.force_keyframe,
+        ) {
+            debug!(seq = admitted.seq, "encode failed: {e:#}");
+        }
+    }
+
+    fn shut_down(self) {
+        // The encoder drains (delivering what it still holds).
+        drop(self.encoder);
+    }
+}
+
+/// A GDI capture of `cfg.display`'s monitor, laid out for `cfg`'s frame.
+fn open_capture(cfg: &VideoConfig, monitor: &Monitor) -> anyhow::Result<gdi::Capture> {
+    let content = content_for(cfg, &monitor.rect);
+    gdi::Capture::new(monitor.clone(), cfg.width, cfg.height, content)
+}
+
+/// Where a display of `display` sits in `cfg`'s frame, pixels.
+fn content_for(cfg: &VideoConfig, display: &display::Rect) -> (i32, i32, i32, i32) {
+    geometry::content_pixels(&layout_for(cfg, display.w, display.h), display.w, display.h)
+}
+
+// ---------------------------------------------------------------------------
 // Synthetic
 
 /// Moving NV12 test pattern at the configured size and rate, through the real gate and
@@ -1351,9 +1692,26 @@ mod tests {
         assert_eq!(pipeline.failure(), None);
     }
 
-    /// Real Desktop Duplication of the primary display: frames arrive, carry the config and the
-    /// layout is published. Opt-in (it captures the desktop and needs a display that can wake
-    /// up): `cargo test -p rd-platform-windows -- --ignored`.
+    /// A display that is not attached fails both the Duplication and the GDI path, and the
+    /// error names both (the GDI one is the fallback for displays without a D3D11 device).
+    #[test]
+    fn missing_display_reports_both_capture_paths() {
+        let gate = Arc::new(TestGate::default());
+        let (tx, _rx) = mpsc::channel(8);
+        let mut pipeline = ScreenPipeline::new(EncoderPreference::Auto);
+        let mut cfg = video(320, 192);
+        cfg.display = u32::MAX - 1;
+        let err = pipeline.start(cfg, gate, tx).expect_err("no such display");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("is not attached"), "{msg}");
+        assert!(msg.contains("GDI capture after"), "{msg}");
+        assert_eq!(pipeline.failure(), None);
+    }
+
+    /// Real capture of the primary display (Desktop Duplication, or GDI where the display has
+    /// no D3D11 device): frames arrive, carry the config and the layout is published. Opt-in
+    /// (it captures the desktop and needs a display that can wake up):
+    /// `cargo test -p rd-platform-windows -- --ignored`.
     #[test]
     #[ignore]
     fn screen_capture_of_the_primary_display() {
