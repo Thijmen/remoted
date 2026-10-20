@@ -589,7 +589,8 @@ pub fn install() -> anyhow::Result<()> {
     // SAFETY: closes the manager handle.
     unsafe { CloseServiceHandle(scm) }.ok();
     println!(
-        "rd secure desktop installed; it starts at boot. Lock the PC and the viewer shows the lock screen."
+        "rd secure desktop installed; it starts at boot. Restart the agent (rd-agent install) \
+         so it finds the service, then lock the PC: the viewer shows the lock screen."
     );
     Ok(())
 }

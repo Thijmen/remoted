@@ -161,7 +161,8 @@ the real desktop and your input reaches it:
 & "$env:LOCALAPPDATA\Programs\rd-agent\rd-agent.exe" secure install
 ```
 
-The service starts at boot. From then on, when the PC is locked or a UAC prompt is up, the
+The service starts at boot. Restart the agent once (`rd-agent install`) so it finds the new
+service. From then on, when the PC is locked or a UAC prompt is up, the
 viewer shows the actual screen: type the Windows password in the picture, click UAC buttons,
 and use **Send Ctrl+Alt+Del** from the banner. Nothing is stored; the password only travels
 through the session to the helper. The portal shows the secure state (`starting` while the
