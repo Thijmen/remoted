@@ -108,7 +108,13 @@ jobs:
         run: |
           $v = '${{ steps.version.outputs.version }}'
           New-Item -ItemType Directory -Force out, pkg | Out-Null
-          Copy-Item target/release/rd-agent.exe, target/release/rd-agentw.exe, THIRD_PARTY_NOTICES.md pkg
+          # The secure-desktop service is optional: include its binaries when the branch has
+          # them, so this workflow also works on older pull requests.
+          $files = @('target/release/rd-agent.exe', 'target/release/rd-agentw.exe', 'THIRD_PARTY_NOTICES.md')
+          foreach ($f in 'target/release/rd-agent-svc.exe', 'target/release/rd-agent-sec.exe') {
+            if (Test-Path $f) { $files += $f }
+          }
+          Copy-Item $files pkg
           Compress-Archive -Path pkg/* -DestinationPath "out/rd-agent-$v-windows-x64.zip"
           Get-ChildItem out
 
