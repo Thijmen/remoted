@@ -104,6 +104,8 @@ export class FilesBrowser {
   private unsubscribe: (() => void) | null = null;
   private renderQueued = false;
   private lastClick: { name: string; at: number } | null = null;
+  /** Finished uploads already accounted for (the folder is refreshed when one lands in it). */
+  private readonly landed = new Set<number>();
 
   constructor(
     private readonly files: FilesController,
@@ -247,7 +249,6 @@ export class FilesBrowser {
       const folder = dest ?? (await this.files.defaultDropFolder());
       const name = this.folderName(folder);
       await this.files.upload(items, folder, (c) => clashDialog(c, name));
-      if (folder === this.dir) void this.reloadSoon();
     } catch (e) {
       await noticeDialog('Upload not started', errorText(e));
     }
@@ -1237,6 +1238,7 @@ export class FilesBrowser {
   }
 
   private renderAll(): void {
+    this.refreshOnLanding();
     this.titleName.textContent = this.opts.machineName();
     this.renderStatus();
     this.renderPlaces();
@@ -1249,6 +1251,17 @@ export class FilesBrowser {
     this.renderFoot();
     this.transfersView.render();
     this.el.classList.toggle('loading', this.loading);
+  }
+
+  /** An upload finished in (or below) the folder shown: show it. */
+  private refreshOnLanding(): void {
+    let refresh = false;
+    for (const v of this.files.transfers.views()) {
+      if (v.dir !== 'up' || (v.state !== 'done' && v.state !== 'failed') || this.landed.has(v.key)) continue;
+      this.landed.add(v.key);
+      if (this.listing && v.where === this.listing.path) refresh = true;
+    }
+    if (refresh) void this.reloadSoon();
   }
 
   private renderStatus(): void {
