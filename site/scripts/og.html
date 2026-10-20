@@ -1,0 +1,193 @@
+<!doctype html>
+<!-- The social preview card (public/og.png, 1200×630): `node scripts/screenshots.mjs og`. -->
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<style>
+			html,
+			body {
+				margin: 0;
+				width: 1200px;
+				height: 630px;
+				overflow: hidden;
+				background: #0d1016;
+				color: #e8eaf0;
+				font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+			}
+			body {
+				position: relative;
+				background:
+					radial-gradient(700px 420px at 85% 10%, rgb(165 77 255 / 30%), transparent 70%),
+					radial-gradient(800px 500px at 15% -10%, rgb(91 140 255 / 32%), transparent 70%),
+					#0d1016;
+			}
+			.copy {
+				position: absolute;
+				left: 80px;
+				top: 92px;
+				width: 600px;
+			}
+			.brand {
+				display: flex;
+				align-items: center;
+				gap: 18px;
+				font-size: 40px;
+				font-weight: 800;
+				letter-spacing: -0.02em;
+			}
+			.brand svg {
+				width: 64px;
+				height: 64px;
+				filter: drop-shadow(0 10px 24px rgb(37 99 235 / 45%));
+			}
+			h1 {
+				margin: 52px 0 0;
+				font-size: 70px;
+				line-height: 1.04;
+				letter-spacing: -0.035em;
+				font-weight: 800;
+			}
+			h1 em {
+				font-style: normal;
+				background: linear-gradient(100deg, #6f9bff 10%, #b48cff 90%);
+				-webkit-background-clip: text;
+				color: transparent;
+			}
+			p {
+				margin: 28px 0 0;
+				font-size: 26px;
+				line-height: 1.45;
+				color: #c3c8d3;
+			}
+			.chips {
+				position: absolute;
+				left: 80px;
+				bottom: 70px;
+				display: flex;
+				gap: 14px;
+			}
+			.chips span {
+				padding: 9px 18px;
+				border: 1px solid #272c38;
+				border-radius: 999px;
+				background: #14171e;
+				color: #c3c8d3;
+				font: 20px ui-monospace, 'SF Mono', Menlo, monospace;
+			}
+			.window {
+				position: absolute;
+				right: -40px;
+				top: 150px;
+				width: 520px;
+				border-radius: 18px;
+				border: 1px solid #272c38;
+				background: #14171e;
+				box-shadow: 0 40px 90px -20px rgb(0 0 0 / 70%), 0 30px 80px -30px rgb(37 99 235 / 50%);
+				overflow: hidden;
+				transform: rotate(-4deg);
+			}
+			.bar {
+				display: flex;
+				gap: 8px;
+				padding: 14px 16px;
+				background: #1b1f28;
+				border-bottom: 1px solid #272c38;
+			}
+			.bar i {
+				width: 13px;
+				height: 13px;
+				border-radius: 50%;
+				background: #ff5f57;
+			}
+			.bar i:nth-child(2) {
+				background: #febc2e;
+			}
+			.bar i:nth-child(3) {
+				background: #28c840;
+			}
+			.screen {
+				position: relative;
+				height: 330px;
+				background:
+					radial-gradient(110% 90% at 0% 0%, #4d7cff 0%, transparent 55%),
+					radial-gradient(90% 80% at 100% 15%, #a54dff 0%, transparent 55%),
+					radial-gradient(110% 80% at 60% 110%, #10b8a0 0%, transparent 60%),
+					#1b2152;
+			}
+			.win {
+				position: absolute;
+				left: 36px;
+				top: 58px;
+				width: 270px;
+				height: 170px;
+				border-radius: 12px;
+				background: rgb(17 20 28 / 92%);
+				border: 1px solid rgb(255 255 255 / 10%);
+			}
+			.win.b {
+				left: 220px;
+				top: 150px;
+				width: 230px;
+				height: 120px;
+				background: rgb(8 10 15 / 94%);
+			}
+			.pill {
+				position: absolute;
+				top: 16px;
+				left: 50%;
+				transform: translateX(-50%);
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				padding: 8px 16px;
+				border-radius: 14px;
+				background: rgb(16 19 26 / 92%);
+				border: 1px solid rgb(255 255 255 / 10%);
+				font-size: 16px;
+				font-weight: 600;
+				white-space: nowrap;
+			}
+			.pill b {
+				width: 9px;
+				height: 9px;
+				border-radius: 50%;
+				background: #3fcf8e;
+			}
+			.pill span {
+				color: #ff7a74;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="copy">
+			<div class="brand">
+				<svg viewBox="64 64 896 896" aria-hidden="true">
+					<defs>
+						<linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+							<stop offset="0" stop-color="#2563eb" />
+							<stop offset="1" stop-color="#1e3a8a" />
+						</linearGradient>
+					</defs>
+					<rect x="64" y="64" width="896" height="896" rx="200" fill="url(#g)" />
+					<g fill="none" stroke="#fff" stroke-width="110" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M292 740 V430 M292 545 C292 455 372 405 462 415" />
+						<circle cx="607" cy="615" r="125" />
+						<path d="M732 280 V740" />
+					</g>
+				</svg>
+				rd
+			</div>
+			<h1>Your desktop, <em>in a browser tab.</em></h1>
+			<p>A low-latency remote desktop over one WebSocket on port 443.</p>
+		</div>
+		<div class="chips"><span>WebCodecs</span><span>H.264</span><span>Mac &amp; Windows</span></div>
+		<div class="window">
+			<div class="bar"><i></i><i></i><i></i></div>
+			<div class="screen">
+				<div class="win"></div>
+				<div class="win b"></div>
+				<div class="pill"><b></b>MacBook Pro <span>Disconnect</span></div>
+			</div>
+		</div>
+	</body>
+</html>

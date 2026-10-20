@@ -1,0 +1,21 @@
+---
+title: Page not found
+description: This page doesn't exist.
+template: splash
+editUrl: false
+lastUpdated: false
+pagefind: false
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import LinkCard from '../../components/LinkCard.astro';
+
+There is nothing at this address. It may have moved: search with the box at the top, or start
+from one of these.
+
+<CardGrid>
+	<LinkCard title="Home" description="What rd is, at a glance." href="/" />
+	<LinkCard title="Introduction" description="The parts, and what you need." href="/introduction/" />
+	<LinkCard title="Quick start" description="Everything on your own computer." href="/quick-start/" />
+	<LinkCard title="Using rd" description="The portal, a session, shortcuts." href="/using-rd/" />
+</CardGrid>

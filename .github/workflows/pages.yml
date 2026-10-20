@@ -1,0 +1,80 @@
+# The documentation site (site/, Astro Starlight) on GitHub Pages: built for pull requests that
+# touch it or the Markdown files it publishes (site/integrations/pages.mjs), and deployed from
+# main. One-time setup: Settings -> Pages -> Source: GitHub Actions.
+name: Pages
+
+on:
+  pull_request:
+    paths:
+      - site/**
+      - docs/**
+      - clients/desktop/README.md
+      - viewer/README.md
+      - .github/workflows/pages.yml
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - docs/**
+      - clients/desktop/README.md
+      - viewer/README.md
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # "last updated" dates come from the history
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24 # Astro 7 needs Node 22.22 or later
+      - uses: oven-sh/setup-bun@v2
+
+      # The site's origin and base path as GitHub serves it (they change with a custom domain).
+      # Pull requests only build, with the defaults from astro.config.mjs.
+      - name: Pages settings
+        id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v6
+
+      - name: Build
+        working-directory: site
+        env:
+          SITE_ORIGIN: ${{ steps.pages.outputs.origin }}
+          SITE_BASE_PATH: ${{ github.event_name == 'pull_request' && '/remoted' || steps.pages.outputs.base_path }}
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - uses: actions/upload-pages-artifact@v5
+        if: github.event_name != 'pull_request'
+        with:
+          path: site/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

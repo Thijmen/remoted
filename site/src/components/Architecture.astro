@@ -1,0 +1,339 @@
+---
+// The three parts and how they connect: both ends dial the gateway over WSS on 443; frames flow
+// from the agent to the viewer, ACKs and input flow back. `compact` leaves out the bullet lists
+// (for the narrower docs pages). The layout follows the space it gets, not the window.
+import { Icon } from '@astrojs/starlight/components';
+
+interface Props {
+	compact?: boolean;
+}
+
+const { compact = false } = Astro.props;
+---
+
+<div class:list={['arch-wrap not-content', { compact }]}>
+<figure class="arch" aria-label="The viewer and the agent both connect to the gateway over WSS on port 443">
+	<div class="node">
+		<div class="icon"><Icon name="laptop" size="1.6rem" /></div>
+		<p class="kicker">Anywhere</p>
+		<h3>Viewer</h3>
+		<p class="what">A browser tab, or rd Desktop</p>
+		<ul>
+			<li>Decodes H.264 with WebCodecs</li>
+			<li>Acknowledges every frame</li>
+			<li>Sends keys, pointer, scroll</li>
+		</ul>
+	</div>
+
+	<div class="link">
+		<span class="label">WSS · 443</span>
+		<div class="wire"><i class="frame"></i><i class="frame"></i><i class="ack"></i></div>
+		<span class="note">you sign in</span>
+	</div>
+
+	<div class="node hub">
+		<div class="icon"><Icon name="server" size="1.6rem" /></div>
+		<p class="kicker">Your server</p>
+		<h3>rd-gateway</h3>
+		<p class="what">One small container</p>
+		<ul>
+			<li>Serves the portal and viewer</li>
+			<li>Checks sign-in and device tokens</li>
+			<li>Joins the two sockets, no buffering</li>
+		</ul>
+	</div>
+
+	<div class="link">
+		<span class="label">WSS · 443</span>
+		<div class="wire"><i class="frame"></i><i class="frame"></i><i class="ack"></i></div>
+		<span class="note">it dials out</span>
+	</div>
+
+	<div class="node">
+		<div class="icon"><Icon name="desktop" size="1.6rem" /></div>
+		<p class="kicker">At home</p>
+		<h3>rd-agent</h3>
+		<p class="what">On the Mac or Windows PC</p>
+		<ul>
+			<li>Captures the screen</li>
+			<li>Encodes on the GPU</li>
+			<li>Injects mouse and keyboard</li>
+		</ul>
+	</div>
+</figure>
+</div>
+
+<style>
+	.arch-wrap {
+		container-type: inline-size;
+		margin: 2.5rem 0 0;
+	}
+
+	.compact {
+		margin-top: 1.5rem;
+	}
+
+	.compact ul {
+		display: none;
+	}
+
+	.compact .node {
+		padding: 1.1rem 1.1rem 1rem;
+	}
+
+	.compact .what {
+		margin-bottom: 0;
+	}
+
+	.arch {
+		display: grid;
+		grid-template-columns: 1fr;
+		gap: 0.5rem;
+		margin: 0;
+	}
+
+	.node {
+		position: relative;
+		padding: 1.4rem 1.4rem 1.2rem;
+		border: 1px solid var(--rd-border);
+		border-radius: var(--rd-radius);
+		background: var(--rd-surface);
+		box-shadow: var(--rd-shadow);
+	}
+
+	.node.hub {
+		border-color: color-mix(in srgb, var(--sl-color-accent) 55%, var(--rd-border));
+		box-shadow:
+			var(--rd-shadow),
+			0 0 0 4px color-mix(in srgb, var(--sl-color-accent) 12%, transparent);
+	}
+
+	.icon {
+		display: grid;
+		place-items: center;
+		width: 2.9rem;
+		height: 2.9rem;
+		margin-bottom: 0.9rem;
+		border-radius: 12px;
+		background: var(--sl-color-accent-low);
+		color: var(--sl-color-accent-high);
+	}
+
+	.kicker {
+		margin: 0;
+		color: var(--sl-color-gray-3);
+		font-size: var(--sl-text-xs);
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	h3 {
+		margin: 0.15rem 0 0;
+		color: var(--sl-color-white);
+		font-size: var(--sl-text-xl);
+		font-family: var(--__sl-font-mono);
+		letter-spacing: -0.01em;
+	}
+
+	.what {
+		margin: 0.2rem 0 0.8rem;
+		color: var(--sl-color-gray-2);
+		font-size: var(--sl-text-sm);
+	}
+
+	ul {
+		margin: 0;
+		padding: 0.8rem 0 0;
+		border-top: 1px solid var(--rd-border);
+		list-style: none;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-2);
+	}
+
+	li {
+		position: relative;
+		margin: 0.3rem 0 0;
+		padding-left: 1.1rem;
+	}
+
+	li::before {
+		content: '';
+		position: absolute;
+		left: 0.15rem;
+		top: 0.62em;
+		width: 0.38rem;
+		height: 0.38rem;
+		border-radius: 50%;
+		background: var(--sl-color-accent);
+	}
+
+	/* The connections between the boxes. */
+	.link {
+		display: grid;
+		justify-items: center;
+		align-content: center;
+		gap: 0.4rem;
+		padding: 0.6rem 0;
+		color: var(--sl-color-gray-3);
+		font-size: var(--sl-text-xs);
+	}
+
+	.label {
+		padding: 0.15rem 0.6rem;
+		border: 1px solid var(--rd-border);
+		border-radius: 999px;
+		background: var(--rd-surface-2);
+		color: var(--sl-color-gray-2);
+		font-family: var(--__sl-font-mono);
+		white-space: nowrap;
+	}
+
+	.note {
+		white-space: nowrap;
+	}
+
+	.wire {
+		position: relative;
+		width: 2px;
+		height: 3.2rem;
+		background: repeating-linear-gradient(
+			to bottom,
+			var(--sl-color-gray-5) 0 6px,
+			transparent 6px 11px
+		);
+	}
+
+	/* Frames travel from the agent to the viewer (up, or left on wide screens), ACKs back. */
+	.wire i {
+		position: absolute;
+		left: 50%;
+		width: 0.55rem;
+		height: 0.55rem;
+		margin-left: -0.275rem;
+		border-radius: 3px;
+		background: var(--sl-color-accent);
+		box-shadow: 0 0 10px var(--sl-color-accent);
+		animation: up 2.4s linear infinite;
+	}
+
+	.wire i.frame:nth-child(2) {
+		animation-delay: -1.2s;
+	}
+
+	.wire i.ack {
+		width: 0.4rem;
+		height: 0.4rem;
+		margin-left: -0.2rem;
+		border-radius: 50%;
+		background: var(--rd-ok);
+		box-shadow: 0 0 8px var(--rd-ok);
+		animation-name: down;
+		animation-delay: -0.6s;
+	}
+
+	@keyframes down {
+		from {
+			top: 0;
+			opacity: 0;
+		}
+		15%,
+		85% {
+			opacity: 1;
+		}
+		to {
+			top: 100%;
+			opacity: 0;
+		}
+	}
+
+	@keyframes up {
+		from {
+			top: 100%;
+			opacity: 0;
+		}
+		15%,
+		85% {
+			opacity: 1;
+		}
+		to {
+			top: 0;
+			opacity: 0;
+		}
+	}
+
+	@container (min-width: 40rem) {
+		.arch {
+			grid-template-columns: 1fr 6.5rem 1fr 6.5rem 1fr;
+			align-items: center;
+			gap: 0;
+		}
+
+		.wire {
+			width: 100%;
+			height: 2px;
+			background: repeating-linear-gradient(
+				to right,
+				var(--sl-color-gray-5) 0 6px,
+				transparent 6px 11px
+			);
+		}
+
+		.wire i,
+		.wire i.ack {
+			top: 50%;
+			left: auto;
+			margin-left: 0;
+			margin-top: -0.275rem;
+		}
+
+		.wire i.ack {
+			margin-top: -0.2rem;
+		}
+
+		.wire i.frame {
+			animation-name: to-left;
+		}
+
+		.wire i.ack {
+			animation-name: to-right;
+		}
+	}
+
+	@keyframes to-left {
+		from {
+			left: 100%;
+			opacity: 0;
+		}
+		15%,
+		85% {
+			opacity: 1;
+		}
+		to {
+			left: 0;
+			opacity: 0;
+		}
+	}
+
+	@keyframes to-right {
+		from {
+			left: 0;
+			opacity: 0;
+		}
+		15%,
+		85% {
+			opacity: 1;
+		}
+		to {
+			left: 100%;
+			opacity: 0;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.wire i {
+			animation: none !important;
+			opacity: 0;
+		}
+	}
+</style>

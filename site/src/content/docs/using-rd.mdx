@@ -1,0 +1,212 @@
+---
+title: Using rd
+description: The portal, connecting, the session menu and shortcuts, the keyboard, the stats overlay, and the built-in latency, network and key tests.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Screenshot from '../../components/Screenshot.astro';
+import connect from '../../assets/screenshots/connect.webp';
+import portal from '../../assets/screenshots/portal.webp';
+import session from '../../assets/screenshots/session.webp';
+import settings from '../../assets/screenshots/settings.webp';
+
+Everything here works the same in a browser tab and in [rd Desktop](/guides/desktop-app/), which
+loads the same pages from your gateway.
+
+## The portal
+
+Open your gateway (for example `https://rd.example.com`) and sign in. The portal lists every
+machine the gateway knows, and refreshes by itself.
+
+<Screenshot
+	src={portal}
+	alt="The portal with a MacBook Pro online and a Mac Studio offline, which has a Screen Sharing recovery link"
+/>
+
+Each card shows the machine's name (and its id, when that differs), its operating system and
+agent version, and whether it is online (and since when). It also shows who is connected to it
+right now, recovery links (such as Screen Sharing for a locked Mac, see
+[Recovery](/guides/recovery/)), and, when the agent has found a newer version, **Update
+available: X.Y.Z** with **What's new** and **Update**, or how to update by hand when the agent
+can't install it itself (see [Updates](/guides/updates/)).
+
+**Add device** adds a machine and gives you its setup code ([Devices](/guides/devices/)). The
+links at the bottom open the [network probe](#network-probe), the [latency target](#latency-test)
+and the [key test](#key-test).
+
+## Connecting
+
+Click **Connect** on a card to open the machine's page (`/m/<machine>`), then **Connect** to start
+the session. **Stream settings** on that page are saved per machine, in this browser:
+
+<Screenshot
+	src={connect}
+	bare
+	width="27rem"
+	alt="A machine's page with the Connect button and the stream settings opened"
+/>
+
+| Setting | Default | Choices |
+| --- | --- | --- |
+| Resolution | 1728×1118 | Fit to window, 1728×1118, 2592×1676, Native, 1280×828 (gaming). The size is a bounding box: the picture keeps the remote display's aspect ratio and is never scaled up. |
+| Frame rate | 60 fps | 30, 60 or 120 fps (120 is only visible on a 120 Hz screen) |
+| Max bitrate | 20000 kbps | 1000 to 100000 kbps |
+| Adaptive bitrate | on | Off keeps the bitrate fixed at 8000 kbps (or the maximum, if that is lower). |
+| Audio, Volume | on, 100 % | For sound from the host. The agents don't send any yet. |
+| Render mode | Immediate (lowest latency) | Immediate paints each frame as soon as it is decoded; _Latest frame per display refresh_ paints once per refresh. |
+| Invert scrolling | off | |
+| Modifier keys | Automatic | Automatic, Windows keyboard → Mac, Mac keyboard → Windows, Pass through. See [The keyboard](#the-keyboard). |
+
+## In a session
+
+<Screenshot
+	src={session}
+	url="rd.example.com/m/mbp"
+	alt="A session with the session menu open at the top and the stats overlay at the top left"
+/>
+
+The small **▾** tab at the top of the picture opens the session menu: a display picker (when the
+remote machine has more than one screen), fullscreen, pointer lock, stats, settings and
+**Disconnect**. Settings changed here apply at once; a new size or display starts a new stream
+with a fresh keyframe.
+
+<Screenshot
+	src={settings}
+	url="rd.example.com/m/mbp"
+	alt="The settings panel open in the session menu"
+	caption="Settings during a session, with the latency test and a download of the stats."
+/>
+
+### Shortcuts
+
+All shortcuts are <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd> plus a letter, so they never
+collide with what you type on the remote machine:
+
+| Keys | Does |
+| --- | --- |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> | Fullscreen, with Keyboard Lock where the browser supports it |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> | Next display. The choice is remembered for the next session. |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> | Pointer lock (<kbd>Esc</kbd> releases it) |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> | Stats overlay |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> | Latency test |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> | Disconnect |
+
+When you switch to another tab, the stream pauses; it resumes with a fresh keyframe when you come
+back.
+
+## The keyboard
+
+- **Keys are sent by position**, not by the character they type, so the remote machine's own
+  keyboard layout applies, as with a keyboard plugged into it.
+- **Caps Lock** is kept in sync: the remote lock follows yours.
+- **Modifier keys** are mapped between Windows and Mac. With _Automatic_ (the default), the
+  viewer looks at your keyboard and the remote operating system:
+
+  | Keyboard → remote | What changes |
+  | --- | --- |
+  | Windows → Mac | Ctrl acts as Cmd, the Windows key as Ctrl, Alt as Option. Left Alt+Tab becomes Cmd+Tab (where the viewer gets Alt+Tab at all: in fullscreen with Keyboard Lock, or in rd Desktop). |
+  | Mac → Windows | Cmd acts as Ctrl, Ctrl as the Windows key, Option as Alt. Cmd+Tab becomes Alt+Tab (with rd Desktop, which can see Cmd+Tab). |
+
+  Any other combination (the same OS on both sides, or a Linux keyboard) passes keys through
+  unchanged.
+
+  So Cmd+C, Cmd+V and Cmd+Z do what you expect on a remote PC, and Ctrl+C does on a remote Mac.
+  _Pass through_ sends every key as it is.
+- **AltGr** (Right Alt on international layouts) arrives on a Mac as Right Option. Windows
+  sends an extra left Ctrl with it, which the viewer filters out.
+
+<Aside title="Shortcuts a browser can't see">
+	The operating system keeps some keys for itself (Alt+Tab, the Windows key, Cmd+Tab, Cmd+Space,
+	…), so a web page never receives them. In fullscreen, Chrome and Edge can lock the keyboard
+	and pass most of them on (macOS never passes Cmd+Tab to a page). For the rest, use [rd
+	Desktop](/guides/desktop-app/): while a session has the keyboard, it grabs those shortcuts and
+	sends them to the remote machine (on a Mac it needs the Accessibility permission for that).
+	Click outside the window to get them back. A few always stay local, on purpose: Ctrl+Alt+Del
+	and Win+L on Windows, Ctrl+Cmd+Q and Cmd+Option+Esc on a Mac.
+</Aside>
+
+## Pointer and displays
+
+The picture is scaled to fit the window with its aspect ratio kept, and clicks land where you
+point, letterboxing included. Pointer lock (for games and 3D tools) hides your cursor and sends
+relative movement; <kbd>Esc</kbd> releases it. With several displays on the remote machine, the
+menu has a display picker and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> cycles
+through them. On a Windows PC, trackpad scrolling arrives as smooth, high-resolution wheel
+input.
+
+## The stats overlay
+
+<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> shows what the stream is doing, once
+a second. **Download stats** in the settings saves its main figures for the session so far as
+JSON, with your settings and the last latency test.
+
+```text
+fps   rx 60  dec 61  drawn 61  (cap 59 enc 53)
+kbps  rx 2465  target 2376  enc 2409
+rtt   min 0.6  p50 2.1 ms  agent min 0.5  q 0.0 ms
+c→p   p50 9.8  p95 13.3 ms
+dec   1.40 ms  queue 0   enc p50 7.0 p99 9.4 ms
+drops discarded 0  skipped 0  window 7/s  post 0
+fly   0/4 frames  0 B/13.8 KiB  enc 7.0 ms  ws buf 0 B
+audio 0 ms (target 40)  underruns 0  drops 0  sab
+video avc1.640c2a 1728×1118 HW  epoch 1  kf req 0  dec err 0
+```
+
+| Line | Means |
+| --- | --- |
+| `fps` | Frames per second received, decoded and drawn by the viewer; in brackets, captured and encoded by the agent. |
+| `kbps` | Bitrate received; the agent's target; what the encoder actually produced. A mostly static screen uses far less than the target. |
+| `rtt` | Round-trip time measured by the viewer (minimum and median) and by the agent, and `q`, the agent's estimate of queueing delay on the way. |
+| `c→p` | Capture to paint: how old a frame is when it appears, median and 95th percentile. |
+| `dec` | Time to decode a frame, frames waiting in the decoder, and the agent's encode time. |
+| `drops` | Frames the viewer `discarded` without decoding (for example while waiting for a keyframe), draws `skipped` (in per-refresh render mode), frames the agent skipped before encoding because the `window` was full, per second, and frames dropped after encoding (`post`, normally 0). |
+| `fly` | Frames and bytes in flight against the window's limits, the encode time the window allows for, and bytes waiting in the browser's WebSocket buffer. |
+| `audio` | Audio buffered against the jitter buffer's target, underruns and drops (idle until the agents send sound). |
+| `video` | Codec, size, hardware (`HW`) or software (`SW`) decoding, stream epoch, keyframe requests and decoder errors. |
+
+`c→p` is the number to watch. On a good connection it stays low and level; when the network
+struggles, `window` drops go up and `target` comes down, and `c→p` stays level rather than
+climbing. See [How it works](/how-it-works/#flow-control).
+
+## Latency test
+
+Measures the whole loop, from your key press to the change appearing on your screen:
+
+1. On the remote machine, open your gateway's `/latency-target` page (the portal links to it).
+2. In the session, rest the pointer on its box.
+3. Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> (or **Latency test** in the
+   settings). The viewer sends F13, the page flips the box, and the viewer times how long the
+   flip takes to be painted.
+
+## Network probe
+
+`/probe` (in the portal's footer) checks whether the network you are on can carry a session,
+before you rely on it. It needs no machine: it talks to the gateway itself.
+
+- **Quick check** (about 2 minutes) and **Full suite** (about 34 minutes; the soak test's length
+  is adjustable) measure round-trip time, downstream throughput and queueing (through the same
+  flow control a session uses), whether long idle connections survive, upstream throughput, and
+  an HTTP streaming fallback.
+- The **Verdict** sums it up; **Download JSON** saves the details.
+- The **certificate check** helps you spot TLS inspection: if the padlock shows your employer's
+  certificate authority instead of a public one, a proxy is reading the traffic.
+
+## Key test
+
+Open `/keytest` on the remote machine, then type in the session: the page shows each key as it
+arrives there. Useful to check a modifier mapping or a layout.
+
+## When a session ends
+
+| The viewer says | Why | What happens |
+| --- | --- | --- |
+| Another viewer took over this machine. | You connected from somewhere else. | Stays disconnected. |
+| _Name_ is offline. Waiting for it to come back… | The agent is not connected to the gateway. | Connects when the machine is back, and offers its recovery links meanwhile. |
+| agent did not answer | The agent didn't open the session within 10 s. | Retries. |
+| Updating _Name_… Reconnecting when it is back. | The agent is installing an update. | Reconnects by itself, usually within a minute. |
+| Session closed after a long period without input. | No keyboard or mouse input for an hour (`RD_SESSION_IDLE_TIMEOUT`). | Stays disconnected. |
+| Signed out or not allowed | Your sign-in expired, or your account isn't on the list. | Reload the page to sign in. |
+
+While the remote machine is **locked**, the viewer says so and keeps the last picture; the agent
+drops all input until it is unlocked. Unlock it at the machine, or on a Mac through the
+[recovery path](/guides/recovery/).

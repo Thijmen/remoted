@@ -1,0 +1,22 @@
+{
+  "name": "rd-docs",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "screenshots": "node scripts/screenshots.mjs",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/markdown-satteri": "0.4.4",
+    "@astrojs/starlight": "0.42.6",
+    "astro": "7.4.1",
+    "sharp": "0.35.5"
+  },
+  "devDependencies": {
+    "playwright-core": "1.64.1"
+  }
+}

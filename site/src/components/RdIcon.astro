@@ -1,0 +1,63 @@
+---
+// Line icons in the style of the viewer's (viewer/src/ui/icons.ts: 24×24, stroked), so the
+// illustrations match the app. The first group is copied from there.
+const PATHS = {
+	monitor: ['M3 4.5h18v12H3z', 'M8.5 20.5h7', 'M12 16.5v4'],
+	fullscreen: ['M4 9V4h5', 'M20 9V4h-5', 'M4 15v5h5', 'M20 15v5h-5'],
+	pointer: ['M5 3.5l13 6.2-5.6 1.8-2.2 5.7z', 'M12.6 11.7l5.4 5.4'],
+	stats: ['M5 20V11', 'M12 20V5', 'M19 20v-6'],
+	settings: ['M4 7h10', 'M18 7h2', 'M4 17h3', 'M11 17h9', 'M16 4.5v5', 'M9 14.5v5'],
+	power: ['M12 3.5v8', 'M7.1 6.6a7.5 7.5 0 1 0 9.8 0'],
+	close: ['M6 6l12 12', 'M18 6L6 18'],
+	plus: ['M12 5v14', 'M5 12h14'],
+
+	lock: ['M6 11h12v9H6z', 'M8.5 11V8a3.5 3.5 0 0 1 7 0v3'],
+	browser: ['M3 4.5h18v15H3z', 'M3 9h18', 'M6 6.75h.5', 'M8.5 6.75h.5'],
+	outbound: ['M7 17L17 7', 'M8.5 7H17v8.5'],
+	bolt: ['M13 3L5 13.5h6L10 21l8-10.5h-6z'],
+	keyboard: ['M3 6.5h18v11H3z', 'M6.5 10h1', 'M10 10h1', 'M13.5 10h1', 'M17 10h.5', 'M7.5 14h9'],
+	command: ['M9 9H6.5A2.5 2.5 0 1 1 9 6.5V17.5A2.5 2.5 0 1 1 6.5 15H17.5A2.5 2.5 0 1 1 15 17.5V6.5A2.5 2.5 0 1 1 17.5 9z'],
+	displays: ['M5.5 13H3V4h13v2.5', 'M8 9h13v9H8z', 'M12.5 21h4'],
+	user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4.5 20.5a7.5 7.5 0 0 1 15 0'],
+	signal: ['M2.5 9a14 14 0 0 1 19 0', 'M5.5 12.5a9.5 9.5 0 0 1 13 0', 'M8.7 16a5 5 0 0 1 6.6 0', 'M12 19.5h.01'],
+	refresh: [
+		'M20 11a8 8 0 0 0-14.6-4.5L4 8',
+		'M4 3.5V8h4.5',
+		'M4 13a8 8 0 0 0 14.6 4.5L20 16',
+		'M20 20.5V16h-4.5',
+	],
+	lifebuoy: [
+		'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z',
+		'M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
+		'M5.6 5.6l3.6 3.6',
+		'M14.8 14.8l3.6 3.6',
+		'M18.4 5.6l-3.6 3.6',
+		'M9.2 14.8l-3.6 3.6',
+	],
+} as const;
+
+export type RdIconName = keyof typeof PATHS;
+
+interface Props {
+	name: keyof typeof PATHS;
+	size?: number | string;
+	class?: string;
+}
+
+const { name, size = 18, class: className } = Astro.props;
+---
+
+<svg
+	viewBox="0 0 24 24"
+	width={size}
+	height={size}
+	fill="none"
+	stroke="currentColor"
+	stroke-width="1.8"
+	stroke-linecap="round"
+	stroke-linejoin="round"
+	aria-hidden="true"
+	class={className}
+>
+	{PATHS[name].map((d) => <path d={d} />)}
+</svg>

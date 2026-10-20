@@ -1,0 +1,69 @@
+---
+// One item of a <FeatureGrid>: an icon tile, a title and a short text (the slot).
+import RdIcon, { type RdIconName } from './RdIcon.astro';
+
+interface Props {
+	icon: RdIconName;
+	title: string;
+}
+
+const { icon, title } = Astro.props;
+---
+
+<li class="feature">
+	<span class="tile"><RdIcon name={icon} size={20} /></span>
+	<div>
+		<h3>{title}</h3>
+		<div class="text"><slot /></div>
+	</div>
+</li>
+
+<style>
+	.feature {
+		display: flex;
+		gap: 0.9rem;
+		margin: 0;
+		padding: 1.1rem 1.15rem;
+		border: 1px solid var(--rd-border);
+		border-radius: var(--rd-radius);
+		background: var(--rd-surface);
+		transition: border-color 0.15s ease;
+	}
+
+	.feature:hover {
+		border-color: color-mix(in srgb, var(--sl-color-accent) 50%, var(--rd-border));
+	}
+
+	.tile {
+		flex: none;
+		display: grid;
+		place-items: center;
+		width: 2.4rem;
+		height: 2.4rem;
+		border-radius: 10px;
+		background: var(--sl-color-accent-low);
+		color: var(--sl-color-accent-high);
+	}
+
+	h3 {
+		margin: 0.1rem 0 0.2rem;
+		color: var(--sl-color-white);
+		font-size: var(--sl-text-base);
+		font-weight: 650;
+		letter-spacing: -0.01em;
+	}
+
+	.text {
+		color: var(--sl-color-gray-3);
+		font-size: var(--sl-text-sm);
+		line-height: 1.55;
+	}
+
+	.text :global(p) {
+		margin: 0;
+	}
+
+	.text :global(code) {
+		font-size: 0.85em;
+	}
+</style>

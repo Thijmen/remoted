@@ -1,0 +1,10 @@
+# build output
+dist/
+# generated types
+.astro/
+# pages synced from the repository's Markdown at build time (integrations/pages.mjs)
+src/content/docs/guides/
+src/content/docs/reference/
+
+node_modules/
+.DS_Store

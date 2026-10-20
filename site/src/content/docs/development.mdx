@@ -1,0 +1,133 @@
+---
+title: Development
+description: The repository layout, the checks CI runs, local development loops, tests, releases, and this documentation site.
+---
+
+import { Aside, FileTree } from '@astrojs/starlight/components';
+
+rd is a Rust workspace (the agent, the gateway, the protocol and flow control), a TypeScript
+viewer built with Vite and Bun, and a Tauri app. This page is the map; each part's own notes are
+linked from it.
+
+## Repository layout
+
+<FileTree>
+
+- crates/
+  - rd-proto/ wire protocol shared by agent and gateway, HID keymap, golden test vectors
+  - rd-flow/ flow control: in-flight window and delay-based bitrate controller
+  - rd-agent-core/ agent runtime, selftest harness, test pattern (platform independent)
+  - rd-platform-macos/ ScreenCaptureKit, VideoToolbox, CGEvent, IOKit, Keychain
+  - rd-platform-windows/ Desktop Duplication, D3D11 video processor, Media Foundation, SendInput
+  - rd-agent/ the agent binary (run, setup, install, uninstall, status, update, selftest) and rd-agentw, the Windows background launcher
+  - rd-gateway/ relay, portal, network probe; embeds viewer/dist
+- viewer/ TypeScript viewer (Vite + Bun)
+- clients/
+  - desktop/ rd Desktop (Tauri), with its own Cargo.lock
+- tools/
+  - gen-keymap/ Chromium key table → Rust and TypeScript keymaps
+  - release/ changesets helpers: versions, update manifests
+- packaging/
+  - macos/ app bundle, signing, LaunchAgent
+  - windows/ the agent's per-user NSIS installer
+  - home/guacd/ the recovery path's guacd at home
+- deploy/Dockerfile gateway image (linux/arm64)
+- tests/desktop-e2e/ rd Desktop keyboard grab, end to end on a Windows runner
+- site/ this documentation site
+- docs/ the guides this site publishes
+
+</FileTree>
+
+## Checks
+
+Before you push, run the checks CI runs (`.github/workflows/ci.yml`), plus the key table
+check, which CI leaves to you:
+
+```sh
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+(cd viewer && bun install --frozen-lockfile && bun run typecheck && bun run test && bun run build)
+bun tools/release/sync-versions.ts --check && bun test tools/release
+bun tools/gen-keymap/gen.ts --check
+```
+
+CI (`.github/workflows/ci.yml`) runs the platform-independent crates and the viewer on Linux, and
+the agent with its platform crate on macOS and on Windows. rd Desktop is built and tested by
+`desktop.yml`, the agent's installers by `agent.yml`, and the gateway image by
+`gateway-image.yml`.
+
+## Local loops
+
+- **Everything on one machine**: the [quick start](/quick-start/). `--dev` turns off
+  authentication and keeps devices added in the portal in memory (unless `--state-dir` is
+  given).
+- **Viewer**: `bun run dev` in `viewer/` serves it on port 5173 with hot reload, and proxies
+  `/api` and `/ws` to a gateway on `127.0.0.1:8080`. Or rebuild it (`bun run build`, or
+  `bunx vite build --watch`) and let the gateway serve `viewer/dist` with `--assets-dir`.
+- **Bad networks**: `RD_CHAOS=bw_kbps=5000,delay_ms=50` (development mode only) puts a bottleneck
+  between the agent and the viewer. It never drops or reorders messages, and backpressure still
+  reaches the agent.
+- **Agent without a screen**: `--source synthetic` streams a test pattern through the real
+  encoder; `rd-agent selftest` captures and encodes for ten seconds and reports frame rate,
+  encode latency and the stream's parameters (`--synthetic`, `--record out.rdv`).
+- **Windows platform code**: `cargo run -p rd-platform-windows --example probe` lists monitors,
+  GPUs and the H.264 encoders Media Foundation offers. More in
+  [Windows agent → Local development](/guides/windows-agent/#local-development-no-cluster).
+- **rd Desktop**: [Local testing](/guides/desktop-app/#local-testing), including an update end to
+  end with a throwaway key.
+
+## Tests worth knowing
+
+- **Golden vectors**: `crates/rd-proto/testvectors/binary.json` holds encoded messages that both
+  the Rust codec and the viewer's TypeScript codec must read and write identically.
+- **Gateway**: `cargo test -p rd-gateway` starts the gateway in-process on loopback ports with
+  short timers and drives it over real WebSockets: auth, sessions, the probe, HTTP, devices,
+  updates and backpressure.
+- **Flow control**: `crates/rd-flow/tests/sim.rs` runs the window and the bitrate controller
+  against simulated links; the thresholds were tuned there.
+- **Keyboard grab**: `tests/desktop-e2e` runs the debug rd Desktop, a dev gateway and a fake agent
+  on a GitHub-hosted Windows runner, types with `SendInput`, and checks which keys reach the
+  "remote" machine.
+- **Key tables**: `bun tools/gen-keymap/gen.ts` regenerates them from Chromium's DOM code table;
+  `--check` fails when they are out of date.
+
+## Releases
+
+rd Desktop and the rd agent are released separately with
+[changesets](https://github.com/changesets/changesets). Every pull request should include one:
+
+```sh
+bun install && bun changeset            # pick rd-desktop and/or rd-agent, then patch / minor / major
+bun changeset --empty                   # a change only to the gateway, the viewer or the docs
+```
+
+Write the text for the people who use rd: it is what they read in the update window (rd Desktop)
+or under **What's new** in the portal (agent). Merging to `main` opens or updates a **Version
+packages** pull request; merging that one tags `desktop-vX.Y.Z` and/or `agent-vX.Y.Z`, and the
+release workflows build, sign and publish them, after which installed copies offer the update.
+The gateway image is versioned on its own (`gateway-vX.Y.Z`, on every push to `main` that touches
+it). Details: [Updates](/guides/updates/) and [rd Desktop → Releasing](/guides/desktop-app/#releasing).
+
+## This site
+
+The site lives in `site/` and is built with [Astro Starlight](https://starlight.astro.build/)
+(Astro 7 needs Node 22.22 or later). Most guides are synced, not copied by hand: each build
+reads the Markdown files in `docs/`, `clients/desktop/README.md` and `viewer/README.md` (listed
+in `site/integrations/pages.mjs`) and turns their relative links into links between pages. So
+**edit those files**, not the copies, and the site follows.
+
+```sh
+cd site
+bun install
+bun run dev        # http://localhost:4321/remoted/
+bun run build      # → site/dist
+```
+
+<Aside>
+	The pages written for the site (the home page, Introduction, Quick start, How it works, Using
+	rd and this one) are in `site/src/content/docs/`. Screenshots come from
+	`site/scripts/screenshots.mjs`, run against a dev gateway with a test-pattern agent; see
+	`site/README.md`.
+</Aside>
+
+The **Pages** workflow (`.github/workflows/pages.yml`) builds the site for every pull request
+that touches it or the synced files, and publishes it to GitHub Pages from `main`.

@@ -1,0 +1,156 @@
+---
+// Replaces Starlight's hero (only the landing page has one): the copy on the left, the
+// illustration of a session on the right. Links in `hero.actions` that start with `/` get the
+// site's base path.
+import { LinkButton } from '@astrojs/starlight/components';
+import RemoteDesktop from './RemoteDesktop.astro';
+
+const { data } = Astro.locals.starlightRoute.entry;
+const { title = data.title, tagline, actions = [] } = data.hero || {};
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const withBase = (link: string) => (link.startsWith('/') && !link.startsWith('//') ? `${base}${link}` : link);
+---
+
+<div class="hero">
+	<div class="copy">
+		<a class="eyebrow" href={withBase('/guides/updates/')}>
+			<span class="badge">New</span> Agents and rd Desktop update themselves <span aria-hidden="true">→</span>
+		</a>
+		<h1 id="_top" data-page-title set:html={title} />
+		{tagline && <p class="tagline" set:html={tagline} />}
+		{
+			actions.length > 0 && (
+				<div class="actions">
+					{actions.map(({ attrs: { class: className, ...attrs } = {}, icon, link, text, variant }) => (
+						<LinkButton href={withBase(link)} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
+							{text}
+							{icon?.html && <Fragment set:html={icon.html} />}
+						</LinkButton>
+					))}
+				</div>
+			)
+		}
+		<ul class="facts">
+			<li>Mac and Windows hosts</li>
+			<li>Any browser with WebCodecs</li>
+			<li>No inbound ports</li>
+		</ul>
+	</div>
+	<RemoteDesktop />
+</div>
+
+<style>
+	.hero {
+		display: grid;
+		gap: 3rem;
+		align-items: center;
+		padding-block: 2rem 3rem;
+	}
+
+	.copy {
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		align-items: flex-start;
+	}
+
+	.eyebrow {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.6rem;
+		margin: 0;
+		padding: 0.3rem 0.85rem 0.3rem 0.35rem;
+		border: 1px solid var(--rd-border);
+		border-radius: 999px;
+		background: var(--rd-surface);
+		color: var(--sl-color-gray-2);
+		font-size: var(--sl-text-sm);
+		text-decoration: none;
+		transition: border-color 0.15s ease;
+	}
+
+	.eyebrow:hover {
+		border-color: var(--sl-color-accent);
+		color: var(--sl-color-white);
+	}
+
+	.eyebrow .badge {
+		padding: 0.05rem 0.55rem;
+		border-radius: 999px;
+		background: var(--sl-color-accent-low);
+		color: var(--sl-color-accent-high);
+		font-size: var(--sl-text-xs);
+		font-weight: 600;
+	}
+
+	h1 {
+		margin: 0;
+		font-size: clamp(2.4rem, 1.2rem + 4.2vw, 4.25rem);
+		line-height: 1.04;
+		font-weight: 750;
+		letter-spacing: -0.035em;
+		color: var(--sl-color-white);
+		text-wrap: balance;
+	}
+
+	h1 :global(em) {
+		font-style: normal;
+		background: linear-gradient(100deg, #6f9bff 10%, #b48cff 90%);
+		-webkit-background-clip: text;
+		background-clip: text;
+		color: transparent;
+	}
+
+	:global([data-theme='light']) h1 :global(em) {
+		background-image: linear-gradient(100deg, #2f63e8 10%, #7a3fe0 90%);
+	}
+
+	.tagline {
+		margin: 0;
+		max-width: 34rem;
+		font-size: clamp(var(--sl-text-base), 0.9rem + 0.6vw, var(--sl-text-xl));
+		line-height: 1.6;
+		color: var(--sl-color-gray-2);
+	}
+
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem 1.25rem;
+		margin-top: 0.5rem;
+	}
+
+	.facts {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem 1.25rem;
+		margin: 0.5rem 0 0;
+		padding: 0;
+		list-style: none;
+		color: var(--sl-color-gray-3);
+		font-size: var(--sl-text-sm);
+	}
+
+	.facts li {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		margin: 0;
+	}
+
+	.facts li::before {
+		content: '';
+		width: 0.45rem;
+		height: 0.45rem;
+		border-radius: 50%;
+		background: var(--sl-color-accent);
+	}
+
+	@media (min-width: 60rem) {
+		.hero {
+			grid-template-columns: 1fr 1.1fr;
+			gap: 3.5rem;
+			padding-block: 4rem 5rem;
+		}
+	}
+</style>

@@ -1,0 +1,265 @@
+---
+// Flow control at a glance (crates/rd-flow): a frame is admitted only while the window has room,
+// the viewer acknowledges after decoding, and frames that do not fit are skipped before encoding.
+const stages = [
+	{ name: 'Capture', detail: 'ScreenCaptureKit / Desktop Duplication' },
+	{ name: 'Window', detail: 'admit, or skip before encoding', gate: true },
+	{ name: 'Encode', detail: 'hardware H.264' },
+	{ name: 'Gateway', detail: 'copies, never queues' },
+	{ name: 'Decode', detail: 'WebCodecs, then paint' },
+];
+---
+
+<figure class="flow not-content" aria-label="Flow control: capture, window, encode, gateway, decode, with acknowledgements back to the window">
+	<div class="pipeline">
+	<ol class="stages">
+		{
+			stages.map((s, i) => (
+				<li class:list={['stage', { gate: s.gate }]}>
+					<span class="step">{i + 1}</span>
+					<strong>{s.name}</strong>
+					<span class="detail">{s.detail}</span>
+					{s.gate && (
+						<span class="drops" aria-hidden="true">
+							<i />
+							<i />
+							<i />
+						</span>
+					)}
+				</li>
+			))
+		}
+	</ol>
+	<div class="loop" aria-hidden="true">
+		<span>ACK after every decoded frame</span>
+	</div>
+	</div>
+	<figcaption>
+		{'The window holds only as many frames as the link can deliver in one round trip, plus the encoding time and 40 ms of slack (2 to 16 frames). When it is full, the next captured frame is skipped '}<em>before</em>{' it is encoded, so nothing waits in a queue.'}
+	</figcaption>
+</figure>
+
+<style>
+	.flow {
+		margin: 2.5rem 0 0;
+	}
+
+	.pipeline {
+		container-type: inline-size;
+		--gap: 1.75rem;
+	}
+
+	.stages {
+		display: grid;
+		gap: 0.75rem;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.stage {
+		position: relative;
+		display: grid;
+		gap: 0.15rem;
+		margin: 0;
+		padding: 1rem 1.1rem;
+		border: 1px solid var(--rd-border);
+		border-radius: 12px;
+		background: var(--rd-surface);
+		box-shadow: var(--rd-shadow);
+	}
+
+	.stage strong {
+		color: var(--sl-color-white);
+		font-size: var(--sl-text-base);
+	}
+
+	.stage .detail {
+		color: var(--sl-color-gray-3);
+		font-size: var(--sl-text-xs);
+		line-height: 1.4;
+	}
+
+	.step {
+		display: grid;
+		place-items: center;
+		width: 1.5rem;
+		height: 1.5rem;
+		margin-bottom: 0.35rem;
+		border-radius: 50%;
+		background: var(--rd-surface-2);
+		border: 1px solid var(--rd-border);
+		color: var(--sl-color-gray-2);
+		font-size: var(--sl-text-xs);
+		font-weight: 700;
+	}
+
+	.stage.gate {
+		border-color: color-mix(in srgb, var(--sl-color-accent) 60%, var(--rd-border));
+		background:
+			linear-gradient(180deg, color-mix(in srgb, var(--sl-color-accent) 10%, transparent), transparent),
+			var(--rd-surface);
+	}
+
+	.stage.gate .step {
+		background: var(--sl-color-accent);
+		border-color: var(--sl-color-accent);
+		color: #fff;
+	}
+
+	/* Skipped frames, falling out of the window. */
+	.drops {
+		display: flex;
+		gap: 0.3rem;
+		margin-top: 0.5rem;
+	}
+
+	.drops i {
+		width: 0.9rem;
+		height: 0.65rem;
+		border-radius: 3px;
+		border: 1px dashed var(--sl-color-gray-4);
+		animation: fall 3s ease-in infinite;
+	}
+
+	.drops i:nth-child(2) {
+		animation-delay: 1s;
+	}
+
+	.drops i:nth-child(3) {
+		animation-delay: 2s;
+	}
+
+	@keyframes fall {
+		0%,
+		60% {
+			translate: 0 0;
+			opacity: 1;
+		}
+		100% {
+			translate: 0 0.8rem;
+			opacity: 0;
+		}
+	}
+
+	.loop {
+		margin-top: 0.75rem;
+		text-align: center;
+		color: var(--rd-ok);
+		font-size: var(--sl-text-xs);
+		font-weight: 600;
+	}
+
+	.loop span::before {
+		content: '↺ ';
+	}
+
+	figcaption {
+		max-width: 44rem;
+		margin: 1.5rem auto 0;
+		color: var(--sl-color-gray-3);
+		font-size: var(--sl-text-sm);
+		text-align: center;
+	}
+
+	figcaption em {
+		color: var(--sl-color-white);
+		font-style: normal;
+		font-weight: 600;
+	}
+
+	@container (min-width: 40rem) {
+		.stages,
+		.loop {
+			--gap: 1.2rem;
+		}
+
+		.stage {
+			padding: 0.85rem 0.8rem;
+		}
+
+		.stages {
+			grid-template-columns: repeat(5, 1fr);
+			gap: var(--gap);
+		}
+
+		/* Arrows between the stages. */
+		.stage:not(:last-child)::after {
+			content: '';
+			position: absolute;
+			top: 50%;
+			right: calc(var(--gap) * -0.83);
+			width: calc(var(--gap) * 0.66);
+			height: 2px;
+			background: var(--sl-color-gray-4);
+			mask: linear-gradient(#000 0 0);
+		}
+
+		.stage:not(:last-child)::before {
+			content: '';
+			position: absolute;
+			top: calc(50% - 4px);
+			right: calc(var(--gap) * -0.86);
+			border: 5px solid transparent;
+			border-left-color: var(--sl-color-gray-4);
+			border-right-width: 0;
+		}
+
+		/* The way back: from Decode (column 5) to Window (column 2). */
+		.loop span::before {
+			content: none;
+		}
+
+		.loop {
+			position: relative;
+			height: 2.6rem;
+			margin-top: 0;
+			margin-left: calc((100% - 4 * var(--gap)) / 5 * 1.5 + var(--gap));
+			margin-right: calc((100% - 4 * var(--gap)) / 5 * 0.5);
+			border: 2px dashed color-mix(in srgb, var(--rd-ok) 70%, transparent);
+			border-top: 0;
+			border-radius: 0 0 14px 14px;
+		}
+
+		.loop::before {
+			content: '';
+			position: absolute;
+			left: -7px;
+			top: -6px;
+			border: 6px solid transparent;
+			border-bottom-color: var(--rd-ok);
+			border-top-width: 0;
+		}
+
+		.loop span {
+			position: absolute;
+			left: 50%;
+			bottom: -0.75rem;
+			translate: -50% 0;
+			padding: 0.1rem 0.7rem;
+			border-radius: 999px;
+			background: var(--sl-color-bg);
+			color: var(--rd-ok);
+			font-size: var(--sl-text-xs);
+			font-weight: 600;
+			white-space: nowrap;
+		}
+	}
+
+	@container (min-width: 56rem) {
+		.stages,
+		.loop {
+			--gap: 1.75rem;
+		}
+
+		.stage {
+			padding: 1rem 1.1rem;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.drops i {
+			animation: none;
+		}
+	}
+</style>

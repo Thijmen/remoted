@@ -36,3 +36,14 @@ every push to `main` that touches the gateway, protocol, flow control or viewer.
 
 Details: [clients/desktop/README.md](clients/desktop/README.md#releasing),
 [docs/updates.md](docs/updates.md).
+
+## Documentation site
+
+`site/` (Astro Starlight, `bun run dev` / `bun run build` there) is published to GitHub Pages by
+`.github/workflows/pages.yml`. Most of its guides are the Markdown files in `docs/`,
+`clients/desktop/README.md` and `viewer/README.md`, synced at build time
+(`site/integrations/pages.mjs`): keep editing those files, and use relative links between them
+as before. A new file under `docs/` is published once it is added to `pages.mjs`; add it to the
+sidebar in `site/astro.config.mjs` too, so readers can find it. The hand-written pages (home,
+Introduction, Quick start, How it works, Using rd, Development) are in `site/src/content/docs/`;
+update them when a change makes them wrong. Details: [site/README.md](site/README.md).

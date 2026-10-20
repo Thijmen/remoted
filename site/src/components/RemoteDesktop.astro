@@ -1,0 +1,426 @@
+---
+// Hero illustration: a remote Mac desktop in a browser tab, with the viewer's session menu on
+// top (the same layout and icons as viewer/src/ui). Decorative only.
+import RdIcon from './RdIcon.astro';
+---
+
+<div class="visual" aria-hidden="true">
+	<div class="browser">
+		<div class="bar">
+			<span class="lights"><i></i><i></i><i></i></span>
+			<span class="url"><RdIcon name="lock" size="0.9em" /> rd.example.com/m/mbp</span>
+		</div>
+		<div class="screen">
+			<div class="menubar">
+				<span class="apple"></span><b></b><b></b><b></b><b class="right"></b><b></b>
+			</div>
+
+			<div class="win editor">
+				<div class="tb"><i></i><i></i><i></i></div>
+				<div class="lines">
+					<p><span class="k" style="width:18%"></span><span style="width:38%"></span></p>
+					<p class="in"><span class="s" style="width:30%"></span><span style="width:22%"></span></p>
+					<p class="in"><span class="k" style="width:12%"></span><span class="f" style="width:34%"></span></p>
+					<p class="in2"><span style="width:44%"></span></p>
+					<p class="in2"><span class="s" style="width:26%"></span><span style="width:18%"></span></p>
+					<p class="in"><span class="k" style="width:14%"></span></p>
+					<p><span style="width:8%"></span></p>
+					<p><span class="k" style="width:22%"></span><span class="f" style="width:30%"></span></p>
+					<p class="in"><span style="width:40%"></span></p>
+				</div>
+			</div>
+
+			<div class="win term">
+				<div class="tb"><i></i><i></i><i></i></div>
+				<div class="lines">
+					<p><span class="ok" style="width:12%"></span><span style="width:52%"></span></p>
+					<p><span class="dim" style="width:70%"></span></p>
+					<p><span class="dim" style="width:58%"></span></p>
+					<p><span class="ok" style="width:12%"></span><span class="caret"></span></p>
+				</div>
+			</div>
+
+			<div class="dock"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+
+			<div class="session-menu">
+				<span class="name"><span class="live"></span>MacBook Pro</span>
+				<span class="sep"></span>
+				<RdIcon name="fullscreen" />
+				<RdIcon name="pointer" />
+				<RdIcon name="stats" class="on" />
+				<RdIcon name="settings" />
+				<span class="sep"></span>
+				<span class="disconnect"><RdIcon name="power" />Disconnect</span>
+			</div>
+
+			<svg class="cursor" viewBox="0 0 24 24"><path d="M5 3l14 7-6 2-3 6z"></path></svg>
+		</div>
+	</div>
+	<div class="chip"><span class="live"></span>60 fps · H.264 · one WebSocket</div>
+</div>
+
+<style>
+	.visual {
+		position: relative;
+		width: 100%;
+		max-width: 38rem;
+		margin-inline: auto;
+		perspective: 1600px;
+	}
+
+	.browser {
+		border-radius: 14px;
+		background: var(--rd-surface);
+		border: 1px solid var(--rd-border);
+		box-shadow:
+			var(--rd-shadow),
+			0 40px 90px -30px rgb(37 99 235 / 35%);
+		overflow: hidden;
+		transform: rotateY(-7deg) rotateX(3deg);
+		transform-origin: 60% 50%;
+	}
+
+	.bar {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.55rem 0.75rem;
+		border-bottom: 1px solid var(--rd-border);
+		background: var(--rd-surface-2);
+	}
+
+	.lights {
+		display: flex;
+		gap: 0.35rem;
+	}
+
+	.lights i {
+		width: 0.62rem;
+		height: 0.62rem;
+		border-radius: 50%;
+		background: #ff5f57;
+	}
+
+	.lights i:nth-child(2) {
+		background: #febc2e;
+	}
+
+	.lights i:nth-child(3) {
+		background: #28c840;
+	}
+
+	.url {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.35rem;
+		max-width: 60%;
+		margin-inline: auto;
+		padding: 0.2rem 0.75rem;
+		border-radius: 999px;
+		background: var(--sl-color-black);
+		border: 1px solid var(--rd-border);
+		color: var(--sl-color-gray-3);
+		font-size: 0.72rem;
+		font-family: var(--__sl-font-mono);
+		white-space: nowrap;
+	}
+
+	.screen {
+		position: relative;
+		aspect-ratio: 16 / 10;
+		container-type: inline-size;
+		overflow: hidden;
+		background:
+			radial-gradient(110% 90% at 0% 0%, #4d7cff 0%, transparent 55%),
+			radial-gradient(90% 80% at 100% 15%, #a54dff 0%, transparent 55%),
+			radial-gradient(110% 80% at 60% 110%, #10b8a0 0%, transparent 60%),
+			#1b2152;
+	}
+
+	.menubar {
+		position: absolute;
+		inset: 0 0 auto;
+		height: 3.6cqw;
+		display: flex;
+		align-items: center;
+		gap: 1.6cqw;
+		padding-inline: 2cqw;
+		background: rgb(10 14 30 / 35%);
+		backdrop-filter: blur(6px);
+	}
+
+	.menubar .apple {
+		width: 1.6cqw;
+		height: 1.6cqw;
+		border-radius: 50%;
+		background: rgb(255 255 255 / 85%);
+	}
+
+	.menubar b {
+		width: 5cqw;
+		height: 0.9cqw;
+		border-radius: 1cqw;
+		background: rgb(255 255 255 / 55%);
+	}
+
+	.menubar b.right {
+		margin-left: auto;
+		width: 3cqw;
+	}
+
+	.win {
+		position: absolute;
+		border-radius: 1.6cqw;
+		background: rgb(17 20 28 / 92%);
+		border: 1px solid rgb(255 255 255 / 10%);
+		box-shadow: 0 2cqw 5cqw rgb(0 0 0 / 45%);
+		overflow: hidden;
+	}
+
+	.win .tb {
+		display: flex;
+		gap: 0.7cqw;
+		padding: 1.2cqw 1.4cqw;
+		background: rgb(255 255 255 / 4%);
+	}
+
+	.win .tb i {
+		width: 1.1cqw;
+		height: 1.1cqw;
+		border-radius: 50%;
+		background: rgb(255 255 255 / 22%);
+	}
+
+	.win .lines {
+		display: grid;
+		gap: 1.25cqw;
+		padding: 1.6cqw 2cqw 2.2cqw;
+	}
+
+	.win p {
+		display: flex;
+		gap: 1cqw;
+		margin: 0;
+		height: 1cqw;
+	}
+
+	.win p.in {
+		padding-left: 3cqw;
+	}
+
+	.win p.in2 {
+		padding-left: 6cqw;
+	}
+
+	.win p span {
+		display: block;
+		height: 100%;
+		border-radius: 1cqw;
+		background: rgb(232 234 240 / 30%);
+	}
+
+	.win .k {
+		background: #c792ea !important;
+		opacity: 0.85;
+	}
+
+	.win .s {
+		background: #c3e88d !important;
+		opacity: 0.8;
+	}
+
+	.win .f {
+		background: #82aaff !important;
+		opacity: 0.85;
+	}
+
+	.win .ok {
+		background: #3fcf8e !important;
+	}
+
+	.win .dim {
+		background: rgb(232 234 240 / 18%) !important;
+	}
+
+	.editor {
+		left: 7%;
+		top: 14%;
+		width: 52%;
+	}
+
+	.term {
+		right: 7%;
+		bottom: 17%;
+		width: 42%;
+		background: rgb(8 10 15 / 94%);
+	}
+
+	.caret {
+		width: 1.1cqw;
+		background: #e8eaf0 !important;
+		animation: blink 1.1s steps(1) infinite;
+	}
+
+	.dock {
+		position: absolute;
+		left: 50%;
+		bottom: 2.4cqw;
+		translate: -50% 0;
+		display: flex;
+		gap: 1.1cqw;
+		padding: 1cqw 1.4cqw;
+		border-radius: 2.4cqw;
+		background: rgb(255 255 255 / 16%);
+		border: 1px solid rgb(255 255 255 / 18%);
+		backdrop-filter: blur(8px);
+	}
+
+	.dock i {
+		width: 4.4cqw;
+		height: 4.4cqw;
+		border-radius: 1.1cqw;
+		background: linear-gradient(135deg, #5b8cff, #2747b8);
+	}
+
+	.dock i:nth-child(2) {
+		background: linear-gradient(135deg, #3fcf8e, #128a5c);
+	}
+
+	.dock i:nth-child(3) {
+		background: linear-gradient(135deg, #f0b544, #c47a12);
+	}
+
+	.dock i:nth-child(4) {
+		background: linear-gradient(135deg, #f2645f, #b12a3f);
+	}
+
+	.dock i:nth-child(5) {
+		background: linear-gradient(135deg, #b794ff, #6a3fd1);
+	}
+
+	.dock i:nth-child(6) {
+		background: linear-gradient(135deg, #e8eaf0, #8f98a8);
+	}
+
+	/* The viewer's session menu (the ▾ tab at the top of a session). */
+	.session-menu {
+		position: absolute;
+		top: 5.5cqw;
+		left: 50%;
+		translate: -50% 0;
+		display: flex;
+		align-items: center;
+		gap: 1.6cqw;
+		padding: 1.1cqw 1.8cqw;
+		border-radius: 2.4cqw;
+		background: rgb(16 19 26 / 90%);
+		border: 1px solid rgb(255 255 255 / 10%);
+		box-shadow: 0 2cqw 5cqw rgb(0 0 0 / 45%);
+		color: #c3c8d3;
+		font-size: 2.1cqw;
+		font-weight: 600;
+		white-space: nowrap;
+		backdrop-filter: blur(10px);
+	}
+
+	.session-menu :global(svg) {
+		width: 2.6cqw;
+		height: 2.6cqw;
+	}
+
+	.session-menu :global(svg.on) {
+		color: #8fb0ff;
+	}
+
+	.session-menu .name {
+		display: flex;
+		align-items: center;
+		gap: 1cqw;
+		color: #ffffff;
+	}
+
+	.session-menu .sep {
+		width: 1px;
+		height: 3cqw;
+		background: rgb(255 255 255 / 14%);
+	}
+
+	.session-menu .disconnect {
+		display: flex;
+		align-items: center;
+		gap: 0.7cqw;
+		color: #ff7a74;
+	}
+
+	.live {
+		width: 0.55em;
+		height: 0.55em;
+		border-radius: 50%;
+		background: var(--rd-ok);
+		box-shadow: 0 0 0 0.25em rgb(63 207 142 / 22%);
+	}
+
+	.cursor {
+		position: absolute;
+		left: 46%;
+		top: 46%;
+		width: 3.4cqw;
+		fill: #ffffff;
+		stroke: #10131a;
+		stroke-width: 1.4;
+		filter: drop-shadow(0 0.4cqw 0.6cqw rgb(0 0 0 / 40%));
+		animation: drift 9s ease-in-out infinite;
+	}
+
+	.chip {
+		position: absolute;
+		left: -0.5rem;
+		bottom: -1.1rem;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.45rem 0.85rem;
+		border-radius: 999px;
+		background: var(--rd-surface);
+		border: 1px solid var(--rd-border);
+		box-shadow: var(--rd-shadow);
+		color: var(--sl-color-gray-2);
+		font-family: var(--__sl-font-mono);
+		font-size: 0.75rem;
+		white-space: nowrap;
+	}
+
+	@keyframes blink {
+		50% {
+			opacity: 0;
+		}
+	}
+
+	@keyframes drift {
+		0%,
+		100% {
+			translate: 0 0;
+		}
+		30% {
+			translate: 9cqw -6cqw;
+		}
+		60% {
+			translate: 16cqw 12cqw;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.caret,
+		.cursor {
+			animation: none;
+		}
+	}
+
+	@media (max-width: 50rem) {
+		.browser {
+			transform: none;
+		}
+	}
+</style>

@@ -1,0 +1,191 @@
+---
+title: Remote desktop in a browser tab
+description: rd is a low-latency remote desktop that runs in a plain browser tab, over one WebSocket on port 443. No client to install, no inbound ports at home.
+template: splash
+editUrl: false
+lastUpdated: false
+hero:
+  title: Your desktop, <em>in a browser&nbsp;tab</em>.
+  tagline: rd is a low-latency remote desktop for networks that only allow HTTPS. The screen, the keyboard and the mouse travel over one secure WebSocket on port 443, and the machine you reach dials out, so nothing listens at home.
+  actions:
+    - text: Get started
+      link: /introduction/
+      icon: right-arrow
+    - text: Try it locally
+      link: /quick-start/
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/Thijmen/remoted
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, TabItem, Tabs } from '@astrojs/starlight/components';
+import LinkCard from '../../components/LinkCard.astro';
+import Architecture from '../../components/Architecture.astro';
+import Feature from '../../components/Feature.astro';
+import FeatureGrid from '../../components/FeatureGrid.astro';
+import FlowLoop from '../../components/FlowLoop.astro';
+import Screenshot from '../../components/Screenshot.astro';
+import addDevice from '../../assets/screenshots/add-device.webp';
+import connect from '../../assets/screenshots/connect.webp';
+import portal from '../../assets/screenshots/portal.webp';
+import session from '../../assets/screenshots/session.webp';
+import settings from '../../assets/screenshots/settings.webp';
+
+## Made for networks that only speak HTTPS
+
+A locked-down work laptop may block VNC, RDP, SSH and anything else that isn't a web browser on
+port 80 or 443. rd works within those limits: both ends connect _out_ to a small gateway, and the
+traffic looks like any other web app.
+
+<Architecture />
+
+## Current, not queued
+
+Most streaming tools fill a buffer when the network slows down, and the picture falls further and
+further behind. rd works the other way around: the viewer acknowledges every frame, and when the
+link can't keep up the agent skips frames before encoding and lowers the bitrate. You may see
+fewer frames for a moment, but what you see is current.
+
+<FlowLoop />
+
+## Everything for daily use
+
+<FeatureGrid>
+	<Feature icon="browser" title="Runs in a browser tab">
+		Any modern browser with WebCodecs. Nothing to install on the computer you sit at.
+	</Feature>
+	<Feature icon="outbound" title="Outbound only">
+		The agent dials out to the gateway, so no ports are open on your home router.
+	</Feature>
+	<Feature icon="bolt" title="Low latency">
+		Hardware H.264 at up to 60 or 120 fps, with a bitrate controller tuned in a network
+		simulator.
+	</Feature>
+	<Feature icon="lock" title="Hands off the lock screen">
+		While the host is locked, the agent drops all input, so nothing is ever typed into a
+		password field by accident.
+	</Feature>
+	<Feature icon="keyboard" title="A keyboard that works">
+		Physical key codes, Caps Lock sync and automatic Windows ⇄ Mac modifier mapping (Ctrl ⇄
+		Cmd).
+	</Feature>
+	<Feature icon="command" title="System shortcuts, with rd Desktop">
+		The desktop app also captures Alt+Tab, Cmd+Tab and the Windows key, which a browser tab
+		normally never receives.
+	</Feature>
+	<Feature icon="displays" title="Multiple displays">
+		Switch between the host's screens. Pointer lock, and scaling that keeps the aspect ratio.
+	</Feature>
+	<Feature icon="user" title="Single sign-on">
+		Authentik in front of the portal, an email allowlist, and a separate token for every
+		device.
+	</Feature>
+	<Feature icon="plus" title="Add device in the portal">
+		The portal shows a setup code, once, to paste into the agent's setup. No restart.
+	</Feature>
+	<Feature icon="signal" title="Network probe">
+		A built-in test checks whether a network can carry a session before you rely on it.
+	</Feature>
+	<Feature icon="refresh" title="Updates itself">
+		Signed updates for rd Desktop and the agents. An agent rolls back if the new version
+		doesn't come back.
+	</Feature>
+	<Feature icon="lifebuoy" title="Recovery path">
+		Mac locked, logged out or rebooted? With a little setup at home, Apple Screen Sharing over
+		Guacamole gets you back in.
+	</Feature>
+</FeatureGrid>
+
+## See it
+
+The portal lists your machines; a click connects. These are the real pages, served by a dev
+gateway with a test-pattern agent.
+
+<Tabs>
+	<TabItem label="Portal">
+		<Screenshot
+			src={portal}
+			alt="The rd portal with two machines: a MacBook Pro that is online and a Mac Studio that is offline with a Screen Sharing recovery link"
+		/>
+	</TabItem>
+	<TabItem label="Connect">
+		<Screenshot
+			src={connect}
+			bare
+			width="30rem"
+			alt="A machine's page: Connect button and the stream settings: resolution, frame rate, bitrate, audio, render mode, modifier keys"
+		/>
+	</TabItem>
+	<TabItem label="Session">
+		<Screenshot
+			src={session}
+			url="rd.example.com/m/mbp"
+			alt="A session showing the agent's test pattern, the session menu at the top and the stats overlay at the top left"
+			caption="A session with the stats overlay (Ctrl+Alt+Shift+H) and the session menu open."
+		/>
+	</TabItem>
+	<TabItem label="Settings">
+		<Screenshot
+			src={settings}
+			url="rd.example.com/m/mbp"
+			alt="The settings panel inside a session"
+		/>
+	</TabItem>
+	<TabItem label="Add device">
+		<Screenshot
+			src={addDevice}
+			bare
+			width="40rem"
+			alt="The Add device dialog showing a one-time setup code for a new Windows PC"
+			caption="Add device shows a setup code once. It holds the gateway's address and the device's token."
+		/>
+	</TabItem>
+</Tabs>
+
+## Runs where you work
+
+<CardGrid>
+	<Card title="Mac agent" icon="apple">
+		macOS 15 or later, Apple silicon or Intel. Screen Recording and Accessibility are approved
+		once, at the Mac.
+	</Card>
+	<Card title="Windows agent" icon="seti:windows">
+		Windows 10 (1703+) and 11. Per-user installer, no admin rights. Encodes on NVIDIA, Intel
+		or AMD GPUs.
+	</Card>
+	<Card title="Browser" icon="laptop">
+		Any browser with WebCodecs, over HTTPS. Chrome and Edge can also lock the keyboard in
+		fullscreen.
+	</Card>
+	<Card title="rd Desktop" icon="window">
+		Windows 10/11 and macOS 12+. The viewer in its own window, sending Alt+Tab, Cmd+Tab and
+		the Windows key to the remote machine.
+	</Card>
+</CardGrid>
+
+## Get going
+
+<CardGrid>
+	<LinkCard
+		title="Introduction"
+		description="What rd is made of and what you need to run it."
+		href="/introduction/"
+	/>
+	<LinkCard
+		title="Quick start"
+		description="Gateway and a test-pattern agent on your own computer, in five minutes."
+		href="/quick-start/"
+	/>
+	<LinkCard
+		title="Run the gateway"
+		description="Configuration, sign-in, devices, the container image."
+		href="/guides/gateway/"
+	/>
+	<LinkCard
+		title="Install an agent"
+		description="On the Mac or the Windows PC you want to reach."
+		href="/guides/mac-agent/"
+	/>
+</CardGrid>
