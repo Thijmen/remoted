@@ -1,0 +1,14 @@
+---
+// Starlight's <LinkCard>, with the site's base path added to root-relative links
+// (the Markdown link plugin cannot reach component attributes).
+import { LinkCard } from '@astrojs/starlight/components';
+import type { ComponentProps } from 'astro/types';
+
+type Props = ComponentProps<typeof LinkCard>;
+
+const { href, ...props } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const link = String(href);
+---
+
+<LinkCard {...props} href={link.startsWith('/') && !link.startsWith('//') ? `${base}${link}` : link} />

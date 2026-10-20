@@ -1,0 +1,180 @@
+---
+title: Quick start
+description: Run a gateway and a test-pattern agent on your own computer, and connect to it from your browser.
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import LinkCard from '../../components/LinkCard.astro';
+import Screenshot from '../../components/Screenshot.astro';
+import session from '../../assets/screenshots/session.webp';
+
+This runs the whole chain on one computer, with no sign-in, no server and no permissions to
+grant: the gateway in development mode, and an agent that streams a moving test pattern through
+the real hardware encoder. It takes a few minutes, most of them compiling.
+
+## Before you start
+
+- [Git](https://git-scm.com/), [Rust](https://rustup.rs/) (rustup installs the toolchain the
+  repository pins in `rust-toolchain.toml` by itself), [Bun](https://bun.sh/) and
+  [CMake](https://cmake.org/) (the agent's Opus library is built with it).
+- On a **Mac**: a current Xcode, with the macOS 26 SDK that the agent's ScreenCaptureKit bridge
+  needs.
+- On **Windows**: Media Foundation, which is part of Windows except on the N editions (install
+  the _Media Feature Pack_) and Windows Server (the _Server Media Foundation_ feature).
+
+The gateway also runs on Linux; the agent needs a Mac or a Windows PC.
+
+## Run it
+
+<Steps>
+
+1. Get the code:
+
+   ```sh
+   git clone https://github.com/Thijmen/remoted.git
+   cd remoted
+   ```
+
+2. Build the viewer. The gateway serves it from `viewer/dist`.
+
+   ```sh
+   cd viewer
+   bun install
+   bun run build
+   cd ..
+   ```
+
+3. Start the gateway in development mode:
+
+   ```sh
+   cargo run -p rd-gateway -- --dev --assets-dir viewer/dist
+   ```
+
+   `--dev` turns off all authentication and listens on localhost only. The portal is now at
+   `http://127.0.0.1:8080`, and agents connect to `ws://127.0.0.1:8081`.
+
+4. In a second terminal, start an agent with the test pattern:
+
+   <Tabs syncKey="os">
+   <TabItem label="macOS" icon="apple">
+
+   ```sh
+   mkdir -p /tmp/rd-dev
+   printf 'gateway_url = "ws://127.0.0.1:8081"\nmachine = "mbp"\n' > /tmp/rd-dev/config.toml
+   RD_AGENT_TOKEN=rd1.mbp.dev RD_AGENT_LOG_DIR=/tmp/rd-dev/logs \
+     cargo run --release -p rd-agent -- run --config /tmp/rd-dev/config.toml --source synthetic
+   ```
+
+   A config file and log folder of its own keep this test agent away from the files of an agent
+   that may already be installed on the Mac.
+
+   </TabItem>
+   <TabItem label="Windows" icon="seti:windows">
+
+   ```powershell
+   $env:RD_AGENT_TOKEN = "rd1.pc.dev"
+   cargo run --release -p rd-agent -- run --gateway ws://127.0.0.1:8081 --machine pc --source synthetic
+   ```
+
+   Windows runs one agent per session: on a PC where the rd agent is installed and running, this
+   one refuses to start.
+
+   </TabItem>
+   </Tabs>
+
+   In development mode the gateway accepts any token. `--source synthetic` needs no Screen
+   Recording permission.
+
+5. Open [http://127.0.0.1:8080](http://127.0.0.1:8080/), click **Connect** on the machine's
+   card, then **Connect** again.
+
+</Steps>
+
+You should see the test pattern, moving at 60 frames per second. Press
+<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> for the stats overlay, or click the
+small tab at the top of the picture for the session menu.
+
+<Screenshot
+	src={session}
+	url="127.0.0.1:8080/m/mbp"
+	alt="The viewer showing the agent's test pattern, with the stats overlay and the session menu"
+	caption="The test pattern with the stats overlay. <a href='../using-rd/#the-stats-overlay'>What the numbers mean</a>."
+/>
+
+<Aside type="caution" title="Hands off the picture">
+	With the viewer and the agent on the same computer, don't click or type into the picture: the
+	agent injects your input into the very desktop you are watching. (On a Mac it usually can't:
+	the viewer then says that the Accessibility permission is not granted on the host. That is
+	expected here.)
+</Aside>
+
+## Try a bad network
+
+The gateway can play a slow link between the agent and the viewer (development mode only). Stop
+it and start it again with a bottleneck narrower than the stream, plus 50 ms of extra delay:
+
+<Tabs syncKey="os">
+<TabItem label="macOS" icon="apple">
+
+```sh
+RD_CHAOS=bw_kbps=1500,delay_ms=50 \
+  cargo run -p rd-gateway -- --dev --assets-dir viewer/dist
+```
+
+</TabItem>
+<TabItem label="Windows" icon="seti:windows">
+
+```powershell
+$env:RD_CHAOS = "bw_kbps=1500,delay_ms=50"
+cargo run -p rd-gateway -- --dev --assets-dir viewer/dist
+```
+
+</TabItem>
+</Tabs>
+
+The agent and the viewer reconnect by themselves. In the stats overlay, `target` falls to what
+fits, `window` counts the frames the agent skips before encoding them, and `c→p` (capture to
+paint) stays level instead of growing: fewer frames, but current ones. [How it
+works](/how-it-works/#flow-control) explains why.
+
+## Stream the real screen
+
+- **Windows**: leave out `--source synthetic`. Windows asks for no permissions.
+- **macOS**: Screen Recording and Accessibility belong to an app, not to a binary in a terminal,
+  so build and sign `RD Agent.app` first. See
+  [Mac agent → Local development](/guides/mac-agent/#local-development-no-cluster-no-permissions).
+
+## Going to production
+
+When you want to use rd for real:
+
+1. **Run the gateway** on a server or cluster, behind a reverse proxy that terminates TLS on
+   port 443, with two host names:
+
+   | Host | Proxied to | Sign-in |
+   | --- | --- | --- |
+   | `rd.example.com` (portal and viewer) | the gateway's port 8080 | forward auth (Authentik) that sets `X-authentik-email` |
+   | `rd-agent.example.com` (agents) | the gateway's port 8081 | none: agents bring their own tokens |
+
+   Port 9090 (`/healthz`, `/metrics`) stays internal. The settings you need at least:
+
+   ```sh
+   RD_PUBLIC_ORIGIN=https://rd.example.com         # the portal
+   RD_ALLOWED_EMAILS=you@example.com               # who may sign in
+   RD_STATE_DIR=/var/lib/rd                        # persistent, for Add device
+   RD_AGENT_PUBLIC_URL=wss://rd-agent.example.com  # in setup codes
+   ```
+
+   Everything else is in [Gateway](/guides/gateway/).
+
+2. **Add each machine** in the portal (**Add device**), and run the agent's setup at the
+   machine with the setup code: [Mac agent](/guides/mac-agent/),
+   [Windows agent](/guides/windows-agent/), [Devices](/guides/devices/).
+
+3. Optionally, install [rd Desktop](/guides/desktop-app/) on the computers you connect from.
+
+<LinkCard
+	title="Gateway"
+	description="Listeners, configuration, authentication, devices, sessions, logs and the container image."
+	href="/guides/gateway/"
+/>

@@ -1,0 +1,16 @@
+---
+// A responsive grid of <Feature> items.
+---
+
+<ul class="feature-grid not-content"><slot /></ul>
+
+<style>
+	.feature-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
+		gap: 0.9rem;
+		margin: 2rem 0 0;
+		padding: 0;
+		list-style: none;
+	}
+</style>

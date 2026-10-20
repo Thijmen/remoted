@@ -1,0 +1,179 @@
+---
+title: How it works
+description: The connections between the viewer, the gateway and the agent, a session step by step, and the flow control that keeps the picture current.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import FlowLoop from '../../components/FlowLoop.astro';
+
+This page explains the moving parts at the level of "what happens when I click Connect". The
+exact message layouts are in the [wire protocol](/reference/protocol/); this is the tour.
+
+## Three kinds of connection
+
+Everything is a WebSocket over TLS, and every one of them is opened _towards_ the gateway:
+
+| Connection | Opened by | Path | Lives |
+| --- | --- | --- | --- |
+| **Control** | the agent, at start | `wss://rd-agent.example.com/ws/agent` | as long as the agent runs |
+| **Viewer** | the browser, on Connect | `wss://rd.example.com/ws/view/{machine}` | one session |
+| **Data** | the agent, when asked | `wss://rd-agent.example.com/ws/agent/session/{session}` | one session |
+
+The control socket is how the gateway knows a machine is online: the agent registers on it,
+reports its state (locked, permissions, in a session) and receives session requests. The data
+socket carries the session's media and input. The gateway joins the viewer socket to the data
+socket and copies messages between them unchanged; it only reads the JSON messages addressed to
+itself, and the first byte of binary frames, to count bytes and notice input for the idle
+timeout.
+
+Both legs are kept alive with WebSocket pings every 15 s. A leg that doesn't answer for 45 s is
+closed. If the control socket goes quiet for 30 s, the agent reconnects, with a backoff from 1 s
+up to 30 s (and quick 1 s retries for up to two minutes while the gateway itself restarts).
+
+## A session, step by step
+
+<Steps>
+
+1. **The viewer connects** to `/ws/view/mbp`. The gateway checks the sign-in (the email from the
+   proxy is on the allowlist, and the `Origin` is the portal's). If the machine is offline the
+   viewer is closed with code 4003. If another viewer holds the machine, that viewer is closed
+   with 4001 ("another viewer took over").
+
+2. **The gateway asks the agent** for a session over the control socket:
+
+   ```json
+   {"t":"session_request","session":"9f3c…","user":"you@example.com","client_ip":"203.0.113.7"}
+   ```
+
+3. **The agent dials back** on `/ws/agent/session/9f3c…` with its token, within 10 seconds (or
+   the viewer gets 4004). The gateway joins the two sockets and tells the viewer it is connected.
+
+4. **Both sides say hello.** The viewer sends its window size, pixel ratio and which decoders it
+   has; the agent answers with its displays and capabilities. They settle on the lower of their
+   protocol versions.
+
+5. **The viewer asks for a stream**:
+
+   ```json
+   {"t":"start","width":1728,"height":1118,"fps":60,"codec":"avc","start_kbps":8000,
+    "min_kbps":1000,"max_kbps":20000,"adaptive":true,"audio":true,"display":0}
+   ```
+
+   The size is a bounding box. The agent keeps the display's own aspect ratio and never scales
+   up: a 16:9 display in that box streams at 1728×972.
+
+6. **The agent streams.** It sends a `video_config` (codec string, size, decoder configuration),
+   then video frames starting with a keyframe, a `stats` message every second, and its state
+   whenever it changes.
+
+7. **The viewer acknowledges** every frame once the decoder has produced it, and sends your
+   keys, pointer and scroll as small binary messages. Both sides ping each other: the agent every
+   500 ms (its round-trip time feeds flow control), the viewer every second (to estimate the
+   clock offset, so it can show how old a frame is when it is painted).
+
+</Steps>
+
+A session ends when the viewer leaves, another viewer takes over, nobody touches the keyboard or
+mouse for an hour (`RD_SESSION_IDLE_TIMEOUT`), or the agent goes away. Closing the data socket
+makes the agent stop the pipeline and release every key and button it still holds.
+
+## Flow control
+
+The part that makes rd feel local is in `crates/rd-flow`, and it fits in two rules: **only
+encode a frame if the link can take it now**, and **learn what the link can take from the
+acknowledgements**.
+
+<FlowLoop />
+
+### The window
+
+The agent keeps a window of frames that are sent but not yet acknowledged. Its size follows the
+round-trip time and the encoder's speed:
+
+```text
+horizon  = rtt_min + encode_time + 40 ms
+W_frames = clamp(ceil(fps × horizon) + 1, 2, 16)
+W_bytes  = target_bitrate / 8 × horizon
+```
+
+When a new screen capture arrives and the window is full, by frames or by bytes, the capture is
+dropped _before_ it reaches the encoder. Encoded frames are never dropped, not by the agent and
+not by the gateway, so the decoder never sees a gap it has to recover from.
+
+<Aside title="Worked example">
+	The [stats overlay](/using-rd/#the-stats-overlay) shows the window as `fly`. On localhost with
+	`rtt_min` 0.5 ms and 7 ms of encoding at 60 fps, the horizon is 47.5 ms: `ceil(60 × 0.0475) +
+	1` = 4 frames, and at a 2.4 Mbps target about 14 KB. Add 50 ms of delay to the link and the
+	window grows to 7 frames. Both are what the overlay reports.
+</Aside>
+
+The viewer acknowledges a frame after the **decoder** has output it, not when it arrives, so a
+slow decoder fills the window just like a slow network. Acknowledgements are cumulative, so a
+lost one costs nothing.
+
+Keyframes are sent when a stream starts, when a hidden tab becomes visible again, when the
+viewer asks for one (at most every 500 ms), and after the window had to be reset. A static screen
+produces no captures, so when a keyframe is wanted the agent re-sends its last frame. If the
+oldest frame in flight goes unacknowledged for 8 s, the agent ends the session and the viewer
+reconnects.
+
+### The bitrate
+
+A delay-based controller sets the encoder's target every 250 ms. Its signal is queueing delay:
+how much longer a frame took from sending to acknowledgement than the minimum round trip,
+serialization and decoding explain.
+
+| When | The target |
+| --- | --- |
+| Queueing above 150 ms | drops to 70 % of the measured delivery rate, then holds for 2 s |
+| Queueing above 50 ms for two ticks, or frames skipped while a queue builds | drops to the lower of 85 % of itself and 95 % of the delivery rate, then holds for 2 s |
+| The first 3 seconds, no queueing | grows by 25 % per tick, to find the link quickly |
+| No queueing and no skipped frames for 2 s | grows by 6 % + 200 kbps every 500 ms, up to the maximum |
+
+It only counts frames sent after its last cut, so one burst of delay can't cut twice, and it
+doesn't raise the target while the encoder isn't using what it has (a mostly static screen). The
+thresholds were tuned against a network simulator (`crates/rd-flow/tests/sim.rs`); the
+[protocol reference](/reference/protocol/#flow-control-agent--see-cratesrd-flow) has the exact
+rules.
+
+## Video and input
+
+- **Video**: the agent captures with ScreenCaptureKit (macOS) or Desktop Duplication (Windows),
+  and encodes H.264 on the GPU: VideoToolbox on macOS, Media Foundation on Windows (NVENC, Quick
+  Sync or AMF, with Microsoft's software encoder as a fallback). The viewer decodes with
+  WebCodecs and paints each frame as soon as it is decoded, or once per display refresh if you
+  prefer.
+- **Audio** is in the protocol and the viewer (Opus, decoded with WebCodecs and played by an
+  AudioWorklet through an adaptive jitter buffer), but the agents don't capture sound yet.
+- **Keys** travel as USB HID usages, by physical position. The tables come from Chromium's key
+  code data (`tools/gen-keymap`), and the agent turns them into macOS key codes or Windows scan
+  codes. Caps Lock is synchronised rather than forwarded.
+- **The lock screen is off limits.** While the host is locked, the agent drops every input event
+  (except "release all") and tells the viewer, so nothing is ever typed into a password field
+  by accident.
+
+## Security
+
+<Aside type="note">
+	Everything below is enforced by the gateway or the agent. The proxy in front of the gateway
+	must still make sure that only signed-in people reach the portal host.
+</Aside>
+
+- **People** are identified by the proxy's single sign-on. The gateway accepts a request only if
+  `X-authentik-email` is on `RD_ALLOWED_EMAILS` (and, if set, the immutable `X-authentik-uid` on
+  `RD_ALLOWED_UIDS`). WebSocket upgrades must come from the portal's own `Origin`, and
+  state-changing requests that carry another site's `Origin` are refused. Adding, changing or
+  removing a device and starting an update take only JSON bodies, which other sites can't send
+  without a CORS preflight.
+- **Devices** each have their own token, `rd1.<machine>.<secret>` with 32 random bytes. The
+  gateway stores only its SHA-256, compares in constant time, and reads it again on every
+  connection, so rotating or removing a device needs no restart. Failed attempts are limited to
+  five per minute per IP address.
+- **Pages** are served with a strict Content Security Policy (`default-src 'self'`, no framing),
+  `Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy`, `nosniff` and `no-referrer`.
+- **Updates** for rd Desktop and the agents are signed, and the signature has to name the version
+  being installed. An agent puts the previous version back if the new one doesn't come back
+  within two minutes; on macOS it also checks that the new app is signed with the same
+  certificate. See [Updates](/guides/updates/).
+- **Audit log**: the gateway writes an audit line for every session start and end (user, IP,
+  machine, duration, bytes), every device change and every update it passes on.

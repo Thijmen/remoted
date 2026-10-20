@@ -1,0 +1,86 @@
+---
+title: Introduction
+description: What rd is, what it is made of, and what you need to run it.
+---
+
+import { Aside, CardGrid } from '@astrojs/starlight/components';
+import Architecture from '../../components/Architecture.astro';
+import LinkCard from '../../components/LinkCard.astro';
+
+rd is a remote desktop for a situation ordinary tools don't cover: you sit at a computer that can
+only browse the web, and you want to use your own Mac or Windows PC somewhere else.
+
+Many company laptops can't install remote-desktop software, and their network lets nothing
+through but HTTPS on ports 80 and 443, so VNC, RDP and SSH are blocked. rd fits in that gap. The
+picture, the keyboard and the mouse all travel over one WebSocket on port 443, the same kind of
+traffic as any web app, and the computer you sit at needs only a browser.
+
+## The parts
+
+<Architecture compact />
+
+| Part | Runs on | What it does |
+| --- | --- | --- |
+| **rd-agent** | the Mac or PC you want to reach | Captures the screen (ScreenCaptureKit on macOS, Desktop Duplication on Windows), encodes hardware H.264 (VideoToolbox; Media Foundation with NVENC, Quick Sync or AMF) and injects mouse and keyboard input. It connects _out_ to the gateway, so nothing listens at home. |
+| **rd-gateway** | a server or cluster you run | Serves the portal and the viewer, checks who you are (single sign-on plus an email allowlist, a token per device), and joins the viewer's socket to the agent's without buffering. Ships as a small distroless image. |
+| **viewer** | any browser with WebCodecs | A TypeScript web app, served by the gateway: decodes video with WebCodecs, sends your input and acknowledges every frame. |
+| **rd Desktop** | Windows 10/11, macOS 12+ (optional) | The same viewer in its own window. It also captures the shortcuts a browser never sees (Alt+Tab, Cmd+Tab, the Windows key, …) and sends them to the remote machine. |
+
+## What you need
+
+- **A gateway** that is reachable over HTTPS on port 443, under two host names: one for people
+  (the portal and the viewer, for example `rd.example.com`), behind single sign-on, and one for
+  agents (for example `rd-agent.example.com`), without it. The container image is
+  `ghcr.io/thijmen/rd-gateway` (linux/arm64). See [Gateway](/guides/gateway/).
+- **A reverse proxy that signs people in.** The gateway reads the user from the
+  `X-authentik-email` header that [Authentik](https://goauthentik.io/)'s forward auth sets, and
+  checks it against an allowlist. The tested setup is Traefik with Authentik on Kubernetes.
+- **The machine to reach**: a Mac with macOS 15 or later ([Mac agent](/guides/mac-agent/)), or a
+  PC with Windows 10 (1703 or later) or 11 ([Windows agent](/guides/windows-agent/)). Someone has
+  to be at it once, for the setup.
+- **A browser with WebCodecs** on the computer you use. WebCodecs needs a secure context, so the
+  portal must be served over HTTPS (or from `localhost`).
+
+<Aside title="Want to see it first?">
+	The [quick start](/quick-start/) runs a gateway and a test-pattern agent on your own computer
+	in a few minutes, with none of the above.
+</Aside>
+
+## What a session is like
+
+You open the portal, sign in and click **Connect** on a machine. The viewer asks the gateway for a
+session, the gateway asks the agent, and the agent opens a second connection for the session's
+media. From then on the gateway copies messages between the two sockets as they arrive. More in
+[How it works](/how-it-works/), and the viewer's controls in [Using rd](/using-rd/).
+
+- **Picture**: hardware H.264 at up to 60 or 120 fps. When the network can't keep up, the agent
+  sends fewer frames and lowers the bitrate rather than letting a queue build up.
+- **Keyboard and mouse**: keys are sent by their physical position, so the remote machine's own
+  layout applies. Ctrl and Cmd are swapped automatically between Windows and Mac. A browser tab
+  can't capture every system shortcut; [rd Desktop](/guides/desktop-app/) can.
+
+## What rd doesn't do
+
+- **Reach the lock screen, the login window or a freshly rebooted machine.** The agent runs inside
+  your logged-in session. On a Mac, the [recovery path](/guides/recovery/) (Apple Screen Sharing
+  over Guacamole) covers these. On Windows, the lock screen, UAC prompts and Ctrl+Alt+Del appear
+  on the secure desktop, which no program in your session can see or control.
+- **Several viewers at once.** A machine has one session at a time: connecting from a second place
+  takes the session over, and the first viewer is told so.
+- **Sound, clipboard sharing or file transfer.** rd streams the screen and sends your input. (The
+  protocol and the viewer can already carry Opus audio, but the agents don't capture sound yet.)
+
+## Next
+
+<CardGrid>
+	<LinkCard
+		title="Quick start"
+		description="A gateway and a test-pattern agent on your own computer."
+		href="/quick-start/"
+	/>
+	<LinkCard
+		title="How it works"
+		description="Connections, a session step by step, and the flow control that keeps it current."
+		href="/how-it-works/"
+	/>
+</CardGrid>

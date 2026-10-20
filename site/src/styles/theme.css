@@ -1,0 +1,242 @@
+/* rd docs theme: the viewer's palette (viewer/src/ui/style.css) on Starlight's variables. */
+
+:root {
+	--sl-color-accent-low: #16224d;
+	--sl-color-accent: #5b8cff;
+	--sl-color-accent-high: #c5d5ff;
+
+	--sl-color-white: #ffffff;
+	--sl-color-gray-1: #e8eaf0;
+	--sl-color-gray-2: #c3c8d3;
+	--sl-color-gray-3: #8f98a8;
+	--sl-color-gray-4: #5a6273;
+	--sl-color-gray-5: #2b313d;
+	--sl-color-gray-6: #161a22;
+	--sl-color-black: #0d1016;
+
+	--sl-color-bg-nav: var(--sl-color-black);
+	--sl-color-hairline: #1f2430;
+
+	--rd-ok: #3fcf8e;
+	--rd-warn: #f0b544;
+	--rd-bad: #f2645f;
+	--rd-surface: #14171e;
+	--rd-surface-2: #1b1f28;
+	--rd-border: #272c38;
+	--rd-glow: rgb(91 140 255 / 14%);
+	--rd-shadow: 0 1px 0 rgb(255 255 255 / 4%) inset, 0 20px 50px -12px rgb(0 0 0 / 60%);
+	--rd-radius: 14px;
+
+	--sl-line-height-headings: 1.15;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: #dfe8ff;
+	--sl-color-accent: #2f63e8;
+	--sl-color-accent-high: #183a96;
+
+	--sl-color-white: #10131a;
+	--sl-color-gray-1: #1d222d;
+	--sl-color-gray-2: #353c4a;
+	--sl-color-gray-3: #596173;
+	--sl-color-gray-4: #8a92a3;
+	--sl-color-gray-5: #cdd2dc;
+	--sl-color-gray-6: #eceef3;
+	--sl-color-gray-7: #f6f7fa;
+	--sl-color-black: #ffffff;
+
+	--sl-color-bg-nav: var(--sl-color-black);
+	--sl-color-hairline: #e3e6ed;
+
+	--rd-surface: #ffffff;
+	--rd-surface-2: #f6f7fa;
+	--rd-border: #e1e4eb;
+	--rd-glow: rgb(47 99 232 / 10%);
+	--rd-shadow: 0 1px 2px rgb(16 19 26 / 6%), 0 18px 40px -16px rgb(16 19 26 / 22%);
+}
+
+/* Header: translucent, so the page's glow shows through. */
+.header {
+	background-color: color-mix(in srgb, var(--sl-color-bg) 82%, transparent);
+	backdrop-filter: saturate(160%) blur(12px);
+	-webkit-backdrop-filter: saturate(160%) blur(12px);
+	border-bottom-color: var(--sl-color-hairline);
+}
+
+.site-title {
+	gap: 0.6rem;
+	font-weight: 700;
+	letter-spacing: -0.02em;
+}
+
+.site-title img {
+	height: 1.85rem;
+	filter: drop-shadow(0 4px 12px rgb(37 99 235 / 35%));
+}
+
+/* The current page in the sidebar: a tinted row rather than a bright pill (dark mode). */
+:root:not([data-theme='light']) .sidebar-content a[aria-current='page'] {
+	background: rgb(91 140 255 / 16%);
+	color: var(--sl-color-white);
+	box-shadow: inset 2px 0 0 var(--sl-color-accent);
+}
+
+/* The glow at the top of every page, as in the portal. */
+body {
+	background:
+		radial-gradient(1100px 520px at 50% -260px, var(--rd-glow), transparent 70%) no-repeat,
+		var(--sl-color-bg);
+}
+
+h1,
+h2,
+h3,
+h4 {
+	letter-spacing: -0.02em;
+}
+
+.sl-markdown-content h2 {
+	padding-top: 0.25rem;
+}
+
+/* Tables: a framed surface instead of bare rules. */
+/* As wide as its content (up to the column), so the frame hugs it. */
+.sl-markdown-content :is(table):not(:where(.not-content *)) {
+	display: block;
+	width: max-content;
+	max-width: 100%;
+	overflow-x: auto;
+	border: 1px solid var(--rd-border);
+	border-radius: 10px;
+	border-collapse: separate;
+	border-spacing: 0;
+	font-size: var(--sl-text-sm);
+}
+
+.sl-markdown-content :is(th):not(:where(.not-content *)) {
+	background: var(--rd-surface-2);
+	color: var(--sl-color-white);
+	font-weight: 600;
+}
+
+.sl-markdown-content :is(th, td):not(:where(.not-content *)) {
+	border-bottom: 1px solid var(--rd-border);
+	padding: 0.55rem 0.85rem;
+}
+
+.sl-markdown-content :is(tr:last-child td):not(:where(.not-content *)) {
+	border-bottom: 0;
+}
+
+/* Asides: rounded, and a quieter tint than Starlight's. */
+.starlight-aside {
+	border-radius: 0 10px 10px 0;
+}
+
+:root:not([data-theme='light']) .starlight-aside--note {
+	background-color: rgb(91 140 255 / 9%);
+}
+
+:root:not([data-theme='light']) .starlight-aside--caution {
+	background-color: rgb(240 181 68 / 8%);
+}
+
+/* A bold name as a row's label stays on one line ("rd-gateway"). */
+.sl-markdown-content td:first-child > strong:only-child {
+	white-space: nowrap;
+}
+
+/* Inline code: a little quieter. */
+.sl-markdown-content :not(pre) > code {
+	border: 1px solid var(--rd-border);
+	border-radius: 6px;
+	padding: 0.1em 0.35em;
+	font-size: 0.875em;
+}
+
+/* Primary buttons: solid blue with white text, as in the portal. */
+.sl-link-button.primary {
+	background: var(--sl-color-accent);
+	border-color: var(--sl-color-accent);
+	color: #ffffff;
+	box-shadow: 0 8px 24px -8px color-mix(in srgb, var(--sl-color-accent) 70%, transparent);
+}
+
+.sl-link-button.primary:hover {
+	background: color-mix(in srgb, var(--sl-color-accent) 85%, #ffffff);
+	color: #ffffff;
+}
+
+/* Cards and link cards: the portal's rounded surfaces. */
+.card,
+.sl-link-card {
+	border-radius: var(--rd-radius) !important;
+	background: var(--rd-surface);
+	border-color: var(--rd-border) !important;
+	box-shadow: var(--rd-shadow);
+	transition:
+		border-color 0.15s ease,
+		transform 0.15s ease;
+}
+
+.sl-link-card:hover {
+	border-color: var(--sl-color-accent) !important;
+	transform: translateY(-1px);
+}
+
+.card .icon {
+	border-radius: 10px;
+}
+
+/* Screenshots and figures in content. */
+.sl-markdown-content figure.shot {
+	margin-block: 1.5rem;
+}
+
+.sl-markdown-content figure.shot img {
+	display: block;
+	width: 100%;
+	height: auto;
+	border-radius: 12px;
+	border: 1px solid var(--rd-border);
+	box-shadow: var(--rd-shadow);
+}
+
+.sl-markdown-content figure.shot figcaption {
+	margin-top: 0.6rem;
+	font-size: var(--sl-text-sm);
+	color: var(--sl-color-gray-3);
+	text-align: center;
+}
+
+kbd {
+	font-family: var(--__sl-font-mono);
+	font-size: 0.8em;
+	padding: 0.1em 0.45em;
+	border: 1px solid var(--rd-border);
+	border-bottom-width: 2px;
+	border-radius: 6px;
+	background: var(--rd-surface-2);
+	color: var(--sl-color-white);
+	white-space: nowrap;
+}
+
+/* The landing page: centred section titles, spaced out. */
+[data-has-hero] .sl-markdown-content > .level-h2 {
+	margin-top: 5rem;
+	text-align: center;
+	font-size: clamp(var(--sl-text-2xl), 1.4rem + 1.2vw, var(--sl-text-4xl));
+}
+
+[data-has-hero] .sl-markdown-content > .level-h2 h2 {
+	font-size: inherit;
+	font-weight: 700;
+}
+
+[data-has-hero] .sl-markdown-content > .level-h2 + p {
+	max-width: 46rem;
+	margin-inline: auto;
+	text-align: center;
+	color: var(--sl-color-gray-3);
+	font-size: var(--sl-text-lg);
+}

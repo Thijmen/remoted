@@ -12,6 +12,8 @@ One WebSocket. Port 443. No client to install, no inbound ports at home.
 [![Desktop](https://github.com/Thijmen/remoted/actions/workflows/desktop.yml/badge.svg)](https://github.com/Thijmen/remoted/actions/workflows/desktop.yml)
 [![Gateway image](https://github.com/Thijmen/remoted/actions/workflows/gateway-image.yml/badge.svg)](https://github.com/Thijmen/remoted/actions/workflows/gateway-image.yml)
 
+**[Documentation](https://thijmen.github.io/remoted/)**
+
 </div>
 
 ---
@@ -22,7 +24,7 @@ Some machines can't run remote-desktop software. A locked-down work laptop may b
 VNC, RDP, SSH and anything else that isn't a web browser talking HTTPS on port 80 or 443.
 
 rd works within those limits. The Mac or Windows PC you want to reach dials **out** to a small
-gateway, and you open the gateway in any modern browser. Screen, keyboard, mouse and audio all
+gateway, and you open the gateway in any modern browser. Screen, keyboard and mouse all
 travel over a single secure WebSocket, the same kind of traffic as any other web app.
 
 ## How it works
@@ -37,7 +39,7 @@ travel over a single secure WebSocket, the same kind of traffic as any other web
 
 | Component | What it does |
 |---|---|
-| **rd-agent** | Captures the screen (ScreenCaptureKit on macOS, Desktop Duplication on Windows), encodes hardware H.264 (VideoToolbox; Media Foundation with NVENC, Quick Sync or AMF), streams Opus audio and injects mouse and keyboard input. It connects *out* to the gateway, so nothing listens at home. |
+| **rd-agent** | Captures the screen (ScreenCaptureKit on macOS, Desktop Duplication on Windows), encodes hardware H.264 (VideoToolbox; Media Foundation with NVENC, Quick Sync or AMF) and injects mouse and keyboard input. It connects *out* to the gateway, so nothing listens at home. |
 | **rd-gateway** | Serves the portal and the viewer, checks who you are (Authentik + an email allowlist), and joins the viewer and agent sockets without buffering. Ships as a small distroless image. |
 | **viewer** | A TypeScript web app that decodes video with WebCodecs and acknowledges every frame. |
 | **rd Desktop** | An optional Windows/macOS app that shows the same viewer in a window and also captures the shortcuts a browser never sees (Alt+Tab, Cmd+Tab, the Windows key, …). |
@@ -54,7 +56,6 @@ You may see fewer frames for a moment, but what you see is current.
 - 🖥️ **Runs in a browser tab.** Any modern browser with WebCodecs. Nothing to install.
 - 🔒 **Outbound only.** The agent dials out, so you open no ports on your home router.
 - ⚡ **Low latency.** Hardware H.264, up to 60 or 120 fps, adaptive bitrate tuned in a network simulator.
-- 🔊 **Audio** over Opus with an adaptive jitter buffer.
 - ⌨️ **Keyboard that works.** Physical key codes, Caps Lock sync, automatic Windows ⇄ Mac modifier mapping (Ctrl ⇄ Cmd), and full shortcut capture with rd Desktop.
 - 🖱️ **Multiple displays**, pointer lock and scaling that keeps the right aspect ratio.
 - 👤 **Single sign-on** through Authentik, with an email allowlist and a separate token per agent.
@@ -97,6 +98,9 @@ agent against it.
 
 ## Documentation
 
+The guides are published, with search, at **<https://thijmen.github.io/remoted/>**
+(built from `site/` and the files below).
+
 | | |
 |---|---|
 | [docs/protocol.md](docs/protocol.md) | Wire protocol v1: the contract between all components |
@@ -127,6 +131,7 @@ tools/release              changesets helper: rd Desktop version -> Cargo.toml/C
 packaging/macos            app bundle, signing, LaunchAgent
 packaging/windows          rd-agent installer (NSIS, per user)
 deploy/Dockerfile          gateway image (linux/arm64)
+site/                      documentation site (Astro Starlight), publishes docs/ on GitHub Pages
 ```
 
 ## Development
