@@ -56,8 +56,10 @@ function sync(pkg: Package, write: boolean): string[] {
   const version = packageVersion(pkg);
   const tomlPath = join(root, pkg.cargoToml);
   const lockPath = join(root, pkg.cargoLock);
-  const toml = readFileSync(tomlPath, "utf8");
-  const lock = readFileSync(lockPath, "utf8");
+  // A Windows checkout may have CRLF line endings; the version lines below are matched with
+  // LF, and a write normalizes the file (Cargo accepts either).
+  const toml = readFileSync(tomlPath, "utf8").replace(/\r\n/g, "\n");
+  const lock = readFileSync(lockPath, "utf8").replace(/\r\n/g, "\n");
   const tomlVersion = toml.match(tomlRe)?.[1];
   const lockVersion = lock.match(lockRe(pkg.name))?.[2];
   if (tomlVersion === undefined) throw new Error(`${tomlPath}: no version line`);
