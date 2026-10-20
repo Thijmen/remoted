@@ -1,5 +1,11 @@
 # rd-desktop
 
+## 1.6.0
+
+### Minor Changes
+
+- 37dff9a: The session menu has a new Settings › Troubleshoot screen. On a Mac it shows whether rd Desktop has the Accessibility permission it needs to send Cmd+Tab and other shortcuts, and opens System Settings to switch it on. A banner points to it when shortcuts stay on your Mac because the permission is missing.
+
 ## 1.5.0
 
 ### Minor Changes
