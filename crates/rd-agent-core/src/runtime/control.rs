@@ -188,6 +188,7 @@ impl Control<'_> {
             os: self.ctx.platform.os_description(),
             gw_proto: GW_PROTO_VERSION,
             state: *state.borrow_and_update(),
+            caps: vec![],
         };
         if !self.send(&register).await {
             return self.lost();
@@ -326,6 +327,9 @@ impl Control<'_> {
                         "update requested, but this agent cannot update itself"
                     );
                 }
+            }
+            Ok(GatewayToAgent::FilesRequest { channel, .. }) => {
+                debug!(channel, "file channels are not supported yet; ignored");
             }
             Ok(GatewayToAgent::Unknown) => debug!("unknown gateway message ignored"),
             Err(e) => warn!("unparseable gateway message ignored: {e}"),

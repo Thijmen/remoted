@@ -258,6 +258,7 @@ impl FakeAgent {
             os: "macOS 26.3 (test)".into(),
             gw_proto: 1,
             state: AgentState::default(),
+            caps: vec![],
         };
         send_json(&mut self.ctl, &register).await;
     }

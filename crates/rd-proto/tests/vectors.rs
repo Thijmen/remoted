@@ -99,6 +99,16 @@ fn vectors() -> Vec<Value> {
         json!({"name":"pong","hex":hex(&pong.to_message()),"fields":{
         "type":"pong","id":9,"t_origin_us":"123456789","t_reply_us":"987654321000"}}),
     );
+    let fd = FileDataHeader {
+        flags: file_flags::END,
+        id: 9,
+        seq: 70_000,
+        offset: 6_000_000_000,
+    };
+    v.push(json!({"name":"file_data","hex":hex(&fd.to_message(&[0xde,0xad])),"fields":{
+        "type":"file_data","flags":1,"id":9,"seq":70000,"offset":"6000000000","payload_hex":"dead"}}));
+    let fa = FileAck { seq: 4_000_000_001 };
+    v.push(json!({"name":"file_ack","hex":hex(&fa.to_message()),"fields":{"type":"file_ack","seq":4000000001u32}}));
     v.push(json!({"name":"probe_up","hex":hex(&probe_up_message(&[1,2,3])),"fields":{"type":"probe_up","payload_hex":"010203"}}));
     v
 }

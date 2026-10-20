@@ -1178,8 +1178,14 @@ impl Reader {
                     let _ = input.send(ev);
                 }
             }
-            Ok(BinMsg::Video(..) | BinMsg::Audio(..) | BinMsg::ProbeUp(_) | BinMsg::Unknown(_)) => {
-            }
+            Ok(
+                BinMsg::Video(..)
+                | BinMsg::Audio(..)
+                | BinMsg::FileData(..)
+                | BinMsg::FileAck(_)
+                | BinMsg::ProbeUp(_)
+                | BinMsg::Unknown(_),
+            ) => {}
             Err(e) => debug!("malformed binary message from the viewer: {e}"),
         }
     }

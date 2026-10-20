@@ -264,6 +264,7 @@ async fn recv_register(socket: &mut WebSocket) -> Result<AgentRegistration, &'st
                         os,
                         gw_proto,
                         state,
+                        ..
                     }) => {
                         if gw_proto == 0 {
                             Err("unsupported gw_proto")
