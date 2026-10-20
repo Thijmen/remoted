@@ -1,0 +1,49 @@
+name: Dependency changesets
+
+# Adds a changeset to each Renovate pull request (tools/release/dependency-changeset.ts), so
+# dependency updates are released like any other change: rd-desktop and/or rd-agent get a patch
+# bump when the update ships in them, anything else gets an empty changeset.
+#
+# pull_request_target runs this file from main with a write token, so it must never check out or
+# run the pull request's code: the script only reads the PR through the GitHub API and commits
+# the changeset file through it.
+#
+# The commit is made with GITHUB_TOKEN, which starts no workflows, so CI does not rerun on it.
+# To have CI run on it, add a fine-grained token with "Contents: read and write" as the
+# DEPENDENCY_CHANGESET_TOKEN secret.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number"
+        required: true
+
+concurrency:
+  group: dependency-changesets-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changeset:
+    name: Add changeset
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'renovate[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # commit the changeset to the PR branch
+      pull-requests: read
+    steps:
+      # main, not the pull request.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - run: bun tools/release/dependency-changeset.ts
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          GH_TOKEN: ${{ secrets.DEPENDENCY_CHANGESET_TOKEN || github.token }}
