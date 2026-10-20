@@ -554,7 +554,8 @@ export class FilesBrowser {
     return row;
   }
 
-  private nameEditor(initial: string, commit: (name: string) => void): HTMLElement {
+  /** An inline name field. `commitUnchanged`: the initial name is a proposal (a new folder). */
+  private nameEditor(initial: string, commit: (name: string) => void, commitUnchanged = false): HTMLElement {
     const input = h('input', {
       type: 'text',
       className: 'fname-input',
@@ -566,7 +567,7 @@ export class FilesBrowser {
     const finish = (save: boolean) => {
       if (finished) return;
       finished = true;
-      if (save && input.value !== initial) commit(input.value);
+      if (save && (commitUnchanged || input.value !== initial)) commit(input.value);
       else {
         this.renaming = null;
         this.creating = false;
@@ -594,15 +595,7 @@ export class FilesBrowser {
     const names = (this.listing?.entries ?? []).map((e) => e.name.toLowerCase());
     let name = base;
     for (let n = 2; names.includes(name.toLowerCase()); n++) name = `${base} ${n}`;
-    const editor = this.nameEditor(name, (v) => void this.commitNewFolder(v));
-    // An unchanged name still creates the folder.
-    (editor as HTMLInputElement).onblur = null;
-    editor.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (editor as HTMLInputElement).value === name) void this.commitNewFolder(name);
-    });
-    editor.addEventListener('blur', () => {
-      if (this.creating) void this.commitNewFolder((editor as HTMLInputElement).value);
-    });
+    const editor = this.nameEditor(name, (v) => void this.commitNewFolder(v), true);
     return h(
       'div',
       { className: 'frow selected', role: 'row', style: 'top:0px' },
@@ -1016,14 +1009,27 @@ export class FilesBrowser {
       return;
     }
     const index = Math.max(0, this.view.indexOf(sel[0]!));
+    const paths = sel.map((e) => joinPath(listing.path, e.name, this.sep));
     try {
-      await this.files.channel.request({
-        t: 'delete',
-        paths: sel.map((e) => joinPath(listing.path, e.name, this.sep)),
-        trash,
-      });
+      await this.files.channel.request({ t: 'delete', paths, trash });
     } catch (e) {
-      await noticeDialog('Not everything was deleted', errorText(e));
+      if (trash && e instanceof FileError && e.code === 'unsupported') {
+        // A network share or removable drive: there is no Trash / Recycle Bin to move to.
+        const forGood = await confirmDialog({
+          title: `${bin === 'the Trash' ? 'No Trash' : 'No Recycle Bin'} on this drive`,
+          text: `${what} cannot be moved to ${bin} here. Delete permanently instead? This cannot be undone.`,
+          confirm: 'Delete',
+          danger: true,
+          iconName: 'trash',
+        });
+        if (forGood) {
+          await this.files.channel
+            .request({ t: 'delete', paths, trash: false })
+            .catch((err: unknown) => noticeDialog('Not everything was deleted', errorText(err)));
+        }
+      } else {
+        await noticeDialog('Not everything was deleted', errorText(e));
+      }
     }
     await this.reload();
     this.setCursor(Math.min(index, this.view.length - 1), 'select');

@@ -121,12 +121,34 @@ pub fn places() -> Vec<Place> {
     places
 }
 
-/// Moves `path` to the Recycle Bin (SHFileOperation with FOF_ALLOWUNDO). Where the drive has
-/// no Recycle Bin (network shares) or the item is too large for it, Windows deletes it for
-/// good instead, as Explorer does after asking.
+/// Only local fixed drives have a Recycle Bin. On network shares and removable drives
+/// SHFileOperation would delete for good while reporting success, so those are refused.
+fn has_recycle_bin(path: &Path) -> bool {
+    let s = path.as_os_str().to_string_lossy();
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+    let b = s.as_bytes();
+    // UNC paths (\\server\share) have no drive letter.
+    if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
+        return false;
+    }
+    let root = wide(std::ffi::OsStr::new(&format!("{}:\\", b[0] as char)));
+    // SAFETY: `root` is a NUL-terminated wide string that lives across the call.
+    unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) == DRIVE_FIXED }
+}
+
+/// Moves `path` to the Recycle Bin (SHFileOperation with FOF_ALLOWUNDO). Drives without one
+/// (network shares, removable drives) answer Unsupported, so the viewer can offer a permanent
+/// delete instead. (An item too large for the Recycle Bin is still deleted for good, as
+/// Explorer does after asking; there is no one at the remote screen to ask.)
 pub fn trash(path: &Path) -> io::Result<()> {
     if std::fs::symlink_metadata(path).is_err() {
         return Err(io::ErrorKind::NotFound.into());
+    }
+    if !has_recycle_bin(path) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this drive has no Recycle Bin",
+        ));
     }
     // pFrom is a list: each path NUL-terminated, the list ends with another NUL.
     let mut from = wide(path.as_os_str());

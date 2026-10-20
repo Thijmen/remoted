@@ -46,8 +46,10 @@ use write::{Op, Worker};
 
 pub(crate) use write::Interrupted;
 
-/// File channels at a time (the gateway allows 4 per machine too).
-pub(crate) const MAX_CHANNELS: usize = 4;
+/// File channels at a time. The gateway allows 4 per machine and frees a slot as soon as the
+/// viewer's side ends, while this side may still be closing; the margin keeps such a channel
+/// from blocking a new one. This cap only guards against a gateway that does not limit.
+pub(crate) const MAX_CHANNELS: usize = 8;
 /// Data queue between the downloads and the writer; the window already bounds it.
 const DATA_QUEUE: usize = 4;
 /// Upload bytes waiting for the worker beyond which the viewer ignores the window: the

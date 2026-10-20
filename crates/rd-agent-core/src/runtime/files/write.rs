@@ -148,6 +148,12 @@ impl Interrupted {
         }
     }
 
+    /// Another worker (an older channel whose socket has not noticed it is dead yet) has the
+    /// upload with `token` open.
+    fn open_elsewhere(&self, token: &str, owner: u64) -> bool {
+        self.active.lock().get(token).is_some_and(|&o| o != owner)
+    }
+
     /// The temporary file of an interrupted upload of `target` with `token`.
     fn take(&self, token: &str, target: &Path) -> Option<PathBuf> {
         let mut kept = self.kept.lock();
@@ -366,6 +372,19 @@ impl Worker {
             .file_name()
             .expect("a new path has a name")
             .to_string_lossy();
+        // A resume can arrive before the old channel's socket has died (the gateway notices a
+        // dead viewer within 45 s): wait for that channel to park the upload rather than start a
+        // second writer on the same temporary file.
+        let deadline = std::time::Instant::now() + RESUME_TAKEOVER_WAIT;
+        while self.interrupted.open_elsewhere(&token, self.owner) {
+            if !resume || std::time::Instant::now() > deadline {
+                return Err(Failure::new(
+                    err::BAD_REQUEST,
+                    "this upload is still open on another connection",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
         let kept = if resume {
             self.interrupted.take(&token, &target)
         } else {
@@ -373,7 +392,7 @@ impl Worker {
         };
         let part = kept
             .clone()
-            .unwrap_or_else(|| dir.join(format!(".{name}.{token}.rdpart")));
+            .unwrap_or_else(|| dir.join(part_name(&name, &token)));
         let (file, written) = match kept {
             Some(_) => {
                 let file = OpenOptions::new()
@@ -383,7 +402,7 @@ impl Worker {
                 let len = file.metadata().map_err(|e| Failure::io(&e, &part))?.len();
                 (file, len)
             }
-            None => (File::create(&part).map_err(|e| Failure::io(&e, dir))?, 0),
+            None => (create_part(&part).map_err(|e| Failure::io(&e, dir))?, 0),
         };
         if written > size {
             drop(file);
@@ -450,6 +469,45 @@ impl Worker {
     }
 }
 
+/// How long a resume waits for an older channel to let go of its upload.
+const RESUME_TAKEOVER_WAIT: Duration = Duration::from_secs(60);
+/// Uploads at least this large are synced to disk before they are moved into place.
+const SYNC_FROM_BYTES: u64 = 8 << 20;
+/// Longest file name most file systems allow (bytes, or UTF-16 units on NTFS).
+const NAME_MAX: usize = 255;
+
+/// `.{name}.{token}.rdpart`, with `name` shortened (at a character boundary) so the whole stays
+/// within NAME_MAX even for a target name that is itself near the limit.
+fn part_name(name: &str, token: &str) -> String {
+    let budget = NAME_MAX - ".".len() - ".".len() - token.len() - ".rdpart".len();
+    let mut end = name.len().min(budget);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(".{}.{token}.rdpart", &name[..end])
+}
+
+/// A new temporary file. Never one that exists: that would be another upload's. On Windows it
+/// is hidden (the leading dot means nothing to Explorer).
+fn create_part(part: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        options.attributes(FILE_ATTRIBUTE_HIDDEN);
+    }
+    match options.open(part) {
+        // Left over from an agent that stopped mid-upload with the same token: not in use.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            fs::remove_file(part)?;
+            options.open(part)
+        }
+        r => r,
+    }
+}
+
 /// The conflict policy against what is at `target` now.
 fn check_target(target: &Path, conflict: Conflict) -> Result<()> {
     let Ok(meta) = fs::symlink_metadata(target) else {
@@ -481,9 +539,13 @@ fn finish(up: Upload) -> Result<(PathBuf, u64)> {
     {
         debug!("cannot set the modification time: {e}");
     }
-    up.file
-        .sync_data()
-        .map_err(|e| Failure::io(&e, &up.target))?;
+    // Large files are flushed to disk before they take the target's place. Doing that for every
+    // small file of a folder upload would make it fsync-bound.
+    if up.size >= SYNC_FROM_BYTES {
+        up.file
+            .sync_data()
+            .map_err(|e| Failure::io(&e, &up.target))?;
+    }
     drop(up.file);
     check_target(&up.target, up.conflict)?;
     let dir = up.target.parent().expect("a new path has a parent");
@@ -534,5 +596,36 @@ fn place_new(part: &Path, target: &Path) -> io::Result<()> {
             }
             fs::rename(part, target)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn part_names_stay_within_name_max() {
+        assert_eq!(part_name("a.txt", "0123"), ".a.txt.0123.rdpart");
+        let token = "0123456789abcdef";
+        let long = "x".repeat(250);
+        assert_eq!(part_name(&long, token).len(), NAME_MAX);
+        // Multi-byte characters are never cut in half.
+        let wide = "é".repeat(200);
+        let name = part_name(&wide, token);
+        assert!(name.len() <= NAME_MAX);
+        assert!(name.ends_with(".0123456789abcdef.rdpart"));
+    }
+
+    #[test]
+    fn a_new_part_file_never_reuses_an_open_one() {
+        let dir = std::env::temp_dir().join(format!("rd-part-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let part = dir.join(".a.tok.rdpart");
+        let mut first = create_part(&part).unwrap();
+        first.write_all(b"old").unwrap();
+        // A leftover is replaced by a fresh, empty file.
+        let second = create_part(&part).unwrap();
+        assert_eq!(second.metadata().unwrap().len(), 0);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

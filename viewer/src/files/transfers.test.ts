@@ -123,7 +123,7 @@ class FakeAgent {
     const o = this.open.get(m.id);
     if (o && o.conflict !== 'dead') {
       expect(m.offset).toBe(o.bytes.length);
-      o.bytes.push(...m.payload);
+      for (const b of m.payload) o.bytes.push(b);
       this.parts.set(o.token, [...o.bytes]);
     }
     if (this.dropAfterFrames !== null && this.frames >= this.dropAfterFrames) {
@@ -333,6 +333,22 @@ describe('TransferManager uploads', () => {
     await settle(m);
     expect(m.views()[0]!.state).toBe('cancelled');
     expect(agent.files.has('/dst/c.bin')).toBe(false);
+  });
+});
+
+describe('TransferManager after many cancels', () => {
+  it('still starts new uploads', async () => {
+    const { agent, m } = setup();
+    for (let i = 0; i < 70; i++) {
+      m.upload([{ item: fileItem(`c${i}.bin`, 600_000), name: `c${i}.bin`, mode: 'new' }], '/dst');
+      const key = m.views()[m.views().length - 1]!.key;
+      await new Promise((r) => setTimeout(r, 0));
+      m.cancel(key);
+    }
+    m.upload([{ item: fileItem('after.bin', 1000, 5), name: 'after.bin', mode: 'new' }], '/dst');
+    await settle(m);
+    expect(m.views().at(-1)!.state).toBe('done');
+    expect(agent.files.get('/dst/after.bin')).toEqual(bytes(1000, 5));
   });
 });
 

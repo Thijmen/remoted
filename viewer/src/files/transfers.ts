@@ -258,6 +258,8 @@ export class TransferManager {
     const i = this.upInFlight.findIndex((c) => c.seq === seq);
     if (i < 0) return;
     for (const c of this.upInFlight.splice(0, i + 1)) {
+      // Done, failed or cancelled: its totals are settled.
+      if (c.op.answered) continue;
       c.op.acked += c.bytes;
       c.job.bytesDone += c.bytes;
       c.job.meter.add(c.job.bytesDone);
@@ -401,9 +403,9 @@ export class TransferManager {
         if (op.kind === 'file' && op.started && !op.answered && op.id !== null) {
           this.channel.sendJson({ t: 'cancel', id: op.id });
         }
+        // The agent does not answer a cancel: nothing of this job is outstanding any more.
+        op.answered = true;
       }
-      // Bytes still in flight belong to nobody now.
-      for (const c of this.upInFlight) if (c.job === job) c.bytes = 0;
     } else {
       if (job === this.activeDown) {
         if (job.id !== null) this.channel.sendJson({ t: 'cancel', id: job.id });
@@ -811,9 +813,9 @@ export class TransferManager {
       const only = j.ops.length === 1 ? j.ops[0] : undefined;
       if (only?.kind === 'file') result = only.result;
     } else if (j.zip) {
+      // Progress is in source bytes; the agent does not say how many files are done.
       bytesDone = j.progress;
       bytesTotal = j.total;
-      filesTotal = j.files;
     } else {
       bytesDone = j.sink?.size ?? (j.state === 'done' ? (j.size ?? 0) : 0);
       bytesTotal = j.size;

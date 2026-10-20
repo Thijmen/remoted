@@ -55,6 +55,8 @@ Full Disk Access in System Settings › Privacy & Security › Full Disk Access.
   the download ends.
 - A folder listing shows at most 20 000 entries.
 - What you can read, write and delete is what the user the agent runs as can.
+- On Windows, network shares and removable drives have no Recycle Bin: deleting there asks to
+  delete permanently instead.
 
 ## Protocol
 
@@ -79,7 +81,8 @@ and opening a file channel never ends a session.
    once joined; from then on messages are copied unchanged in both directions (WebSocket
    Ping/Pong per leg, as for sessions). Messages up to 8 MiB each way (a long folder listing).
 4. The channel ends when either side closes. The gateway closes it after
-   `RD_SESSION_IDLE_TIMEOUT` (default 3600 s) without any message in either direction (**4008**),
+   `RD_SESSION_IDLE_TIMEOUT` (default 3600 s) without any message in either direction, keep-alive
+PING/PONG not counted (**4008**); the viewer reconnects when it next needs the channel,
    and with 1012 when it shuts down. A file channel is not ended by its machine's control socket
    reconnecting; revoking the device ends it (4003).
 
@@ -178,7 +181,8 @@ END frame). The viewer does not wait for an answer before sending data, so many 
 stream back to back. Several uploads may be open at once and their FILE_DATA may interleave (the
 viewer pauses one and continues another); the agent keeps open uploads by `id`, and an open
 upload without data simply waits. The agent writes to a temporary file next to the target
-(`.report.pdf.<token>.rdpart`) and, after the END frame, moves it into place according to
+(`.report.pdf.<token>.rdpart`; a very long name is shortened to fit, and on Windows the file is
+hidden) and, after the END frame, moves it into place according to
 `conflict`:
 
 - `fail`: answer `exists` if the target exists (checked at the start and again at the end);
@@ -198,7 +202,9 @@ interrupted upload: the agent answers `{"t":"write","id":10,"offset":N}` with th
 temporary file it kept for that token (0 if none, also when the upload had already finished and
 only its `done` was lost: the viewer then gets `exists` and checks the target with `stat`) and the
 viewer sends FILE_DATA from `N`. The
-agent keeps the temporary file of an upload whose channel was lost for 10 minutes. A download
+agent keeps the temporary file of an upload whose channel was lost for 10 minutes. If the old
+channel's socket has not noticed yet that it is gone (that takes up to 45 s), the resume waits
+for it to let go, at most 60 s, instead of opening the same temporary file twice. A download
 resumes with `read` from the offset the viewer already has, with `expect`.
 
 ### Binary frames

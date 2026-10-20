@@ -48,8 +48,10 @@ function stagingDir(): Promise<FileSystemDirectoryHandle | null> {
 async function cleanUp(dir: FileSystemDirectoryHandle): Promise<void> {
   const cutoff = Date.now() - 3600_000;
   try {
+    // Downloads still running in other tabs hold a lock named after their file.
+    const held = new Set(((await navigator.locks?.query())?.held ?? []).map((l) => l.name));
     for await (const [name, handle] of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) {
-      if (handle.kind !== 'file') continue;
+      if (handle.kind !== 'file' || held.has(lockName(name))) continue;
       const file = await (handle as FileSystemFileHandle).getFile().catch(() => null);
       if (!file || file.lastModified < cutoff) await dir.removeEntry(name).catch(() => undefined);
     }
@@ -81,14 +83,27 @@ export async function createSink(expected: number | null): Promise<DownloadSink>
   return new MemorySink();
 }
 
+const lockName = (file: string) => `rd-download:${file}`;
+
+/** Hold a Web Lock until the returned function is called (no-op without the API). */
+function holdLock(name: string): () => void {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  void navigator.locks?.request(name, () => held).catch(() => undefined);
+  return release;
+}
+
 class OpfsSink implements DownloadSink {
   size = 0;
+  private readonly unlock: () => void;
   private constructor(
     private readonly dir: FileSystemDirectoryHandle,
     private readonly name: string,
     private readonly handle: FileSystemFileHandle,
     private writable: FileSystemWritableFileStream,
-  ) {}
+  ) {
+    this.unlock = holdLock(lockName(name));
+  }
 
   static async open(dir: FileSystemDirectoryHandle): Promise<OpfsSink> {
     const name = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -120,12 +135,17 @@ class OpfsSink implements DownloadSink {
     await this.writable.close();
     const file = await this.handle.getFile();
     saveBlob(file, name);
-    setTimeout(() => void this.dir.removeEntry(this.name).catch(() => undefined), KEEP_AFTER_SAVE_MS);
+    // The browser may still be copying it; other tabs leave it alone until this one lets go.
+    setTimeout(() => {
+      void this.dir.removeEntry(this.name).catch(() => undefined);
+      this.unlock();
+    }, KEEP_AFTER_SAVE_MS);
   }
 
   async discard(): Promise<void> {
     await this.writable.abort().catch(() => undefined);
     await this.dir.removeEntry(this.name).catch(() => undefined);
+    this.unlock();
   }
 }
 

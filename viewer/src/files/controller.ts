@@ -82,7 +82,16 @@ export class FilesController {
    */
   async upload(items: UploadItem[], dest: string, resolve: ClashResolver): Promise<number> {
     if (items.length === 0) return 0;
-    await this.channel.whenReady();
+    // Keep the channel while the user decides about clashes (the browser may be closed).
+    const release = this.channel.hold();
+    try {
+      return await this.planUpload(items, dest, resolve);
+    } finally {
+      release();
+    }
+  }
+
+  private async planUpload(items: UploadItem[], dest: string, resolve: ClashResolver): Promise<number> {
     const reply = await this.channel.request({ t: 'list', path: dest });
     if (reply.t !== 'list') throw new FileError('io', 'unexpected answer');
     const sensitive = caseSensitive(this.hello?.os ?? '');

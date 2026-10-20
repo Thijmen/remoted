@@ -6,7 +6,7 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use rd_gateway::Config;
 use rd_proto::bin::{FileAck, FileDataHeader, file_flags};
 use rd_proto::close;
@@ -217,6 +217,38 @@ async fn idle_channels_close_4008_and_any_message_counts() {
     // Then silence.
     assert_eq!(expect_close(&mut viewer).await, close::IDLE_TIMEOUT);
     assert_eq!(expect_close(&mut data).await, 1000);
+}
+
+#[tokio::test]
+async fn keep_alive_pings_alone_do_not_keep_a_channel_open() {
+    let gw = TestGateway::start(config_with(|c| {
+        c.timeouts.idle = Duration::from_millis(400);
+    }))
+    .await;
+    let mut agent = FakeAgent::connect_with_caps(&gw, "mbp", TOKEN, FILES)
+        .await
+        .unwrap();
+    let (mut viewer, mut data, _) = open_files(&gw, &mut agent, "mbp", &[]).await;
+    // The viewer pings (an open file browser), the agent answers: not activity.
+    let ping = rd_proto::bin::Ping {
+        id: 1,
+        t_origin_us: 7,
+    };
+    let started = std::time::Instant::now();
+    let closed = loop {
+        send(&mut viewer, Message::Binary(ping.to_message().into())).await;
+        match tokio::time::timeout(Duration::from_millis(150), data.next()).await {
+            Ok(Some(Ok(Message::Binary(_)))) => {
+                send(&mut data, Message::Binary(ping.pong(9).to_message().into())).await;
+            }
+            Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) => break true,
+            _ => {}
+        }
+        if started.elapsed() > Duration::from_secs(5) {
+            break false;
+        }
+    };
+    assert!(closed, "the idle timeout did not fire");
 }
 
 #[tokio::test]

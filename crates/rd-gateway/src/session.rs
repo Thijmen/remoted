@@ -170,7 +170,9 @@ impl Kind {
         }
     }
 
-    /// Screen sessions stay alive on viewer input; file channels on any message either way.
+    /// Screen sessions stay alive on viewer input; file channels on any message either way
+    /// except the viewer's keep-alive PING and its PONG (an open file browser alone is not
+    /// activity).
     fn activity(self, dir: Dir, msg: &Message) -> bool {
         match self {
             Kind::Session => {
@@ -178,7 +180,13 @@ impl Kind {
                     && matches!(msg, Message::Binary(b)
                         if b.first().is_some_and(|&ty| rd_proto::bin::ty::is_input(ty)))
             }
-            Kind::Files => matches!(msg, Message::Text(_) | Message::Binary(_)),
+            Kind::Files => match msg {
+                Message::Text(_) => true,
+                Message::Binary(b) => !b.first().is_some_and(|&ty| {
+                    ty == rd_proto::bin::ty::PING || ty == rd_proto::bin::ty::PONG
+                }),
+                _ => false,
+            },
         }
     }
 }

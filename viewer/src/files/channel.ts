@@ -73,7 +73,12 @@ interface Pending {
 export class FilesChannel {
   private ws: WebSocket | null = null;
   private phase: 'closed' | 'opening' | 'joining' | 'hello' | 'ready' = 'closed';
-  private wanted = false;
+  /** The owner wants the channel (browser open, transfers unfinished). */
+  private external = false;
+  /** Operations under way that need it (`hold`). */
+  private holds = 0;
+  /** Closed for idleness: the owner's wish alone does not reconnect, an operation does. */
+  private idleClosed = false;
   private readonly backoff = new Backoff();
   private timers: number[] = [];
   private pollAbort: AbortController | null = null;
@@ -109,32 +114,66 @@ export class FilesChannel {
     return performance.now() - this.lastRxMs;
   }
 
+  private get wanted(): boolean {
+    return (this.external && !this.idleClosed) || this.holds > 0;
+  }
+
   /** Keep the channel connected (true) or let it close once nothing needs it (false). */
   want(on: boolean): void {
-    if (on === this.wanted) return;
-    this.wanted = on;
-    if (on && this.phase === 'closed' && this.status.kind !== 'unsupported') this.connect();
-    if (!on) {
-      this.teardown(1000, 'not needed');
-      this.failPending('cancelled', 'closed');
-      this.setStatus({ kind: 'idle' });
+    if (on !== this.external) {
+      this.external = on;
+      // Opening the browser again (or a new transfer) is a new wish: reconnect after an idle close.
+      if (on) this.idleClosed = false;
     }
+    this.sync();
+  }
+
+  /** Keep the channel connected until the returned function is called (an operation under way). */
+  hold(): () => void {
+    this.holds++;
+    this.idleClosed = false;
+    this.sync();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.holds--;
+      // Let whoever continues after this operation take its own hold first.
+      queueMicrotask(() => this.sync());
+    };
+  }
+
+  /** Connect when wanted and idle; close when no longer wanted. */
+  private sync(): void {
+    if (this.wanted) {
+      if (this.status.kind === 'idle') this.connect();
+      return;
+    }
+    if (this.status.kind === 'idle') return;
+    this.teardown(1000, 'not needed');
+    this.phase = 'closed';
+    this.hello = null;
+    this.failPending('cancelled', 'closed');
+    this.rejectWaiters('cancelled', 'closed');
+    this.events.lost();
+    this.setStatus({ kind: 'idle' });
   }
 
   /** Try again after `stopped` / `unsupported`. */
   retry(): void {
     this.teardown();
     this.backoff.reset();
-    if (this.wanted) this.connect();
+    this.setStatus({ kind: 'idle' });
+    this.sync();
   }
 
-  /** Resolves once the channel is ready (connecting if needed). */
+  /** Resolves once the channel is ready (connecting if needed; holds it open meanwhile). */
   whenReady(): Promise<void> {
     if (this.ready) return Promise.resolve();
     if (this.status.kind === 'unsupported') return Promise.reject(new FileError('unsupported', 'no file transfer'));
     if (this.status.kind === 'stopped') return Promise.reject(new FileError('stopped', this.status.reason));
-    if (!this.wanted) this.want(true);
-    return new Promise((resolve, reject) => this.readyWaiters.push({ resolve, reject }));
+    const release = this.hold();
+    return new Promise<void>((resolve, reject) => this.readyWaiters.push({ resolve, reject })).finally(release);
   }
 
   /** Allocate an id for a transfer (its messages then reach `events.transfer`). */
@@ -146,15 +185,20 @@ export class FilesChannel {
 
   /** Send a request and wait for its answer (`err` rejects with a FileError). */
   async request(msg: Request): Promise<Reply> {
-    await this.whenReady();
-    const id = this.allocId();
-    return new Promise<Reply>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      if (!this.sendJson({ ...msg, id } as FilesViewerMsg)) {
-        this.pending.delete(id);
-        reject(new FileError('lost', 'not connected'));
-      }
-    });
+    const release = this.hold();
+    try {
+      await this.whenReady();
+      const id = this.allocId();
+      return await new Promise<Reply>((resolve, reject) => {
+        this.pending.set(id, { resolve, reject });
+        if (!this.sendJson({ ...msg, id } as FilesViewerMsg)) {
+          this.pending.delete(id);
+          reject(new FileError('lost', 'not connected'));
+        }
+      });
+    } finally {
+      release();
+    }
   }
 
   /** Requests still waiting for an answer. */
@@ -297,6 +341,7 @@ export class FilesChannel {
     this.failPending('lost', reason || 'connection lost');
     this.events.lost();
     if (!this.wanted) {
+      this.rejectWaiters('cancelled', 'closed');
       this.setStatus({ kind: 'idle' });
       return;
     }
@@ -318,7 +363,7 @@ export class FilesChannel {
         return;
       case CloseCode.IDLE_TIMEOUT:
         // Nothing happened for an hour: reconnect only when something is needed again.
-        this.wanted = false;
+        this.idleClosed = true;
         this.setStatus({ kind: 'idle' });
         this.rejectWaiters('lost', 'closed after a long idle time');
         return;
