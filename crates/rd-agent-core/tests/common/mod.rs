@@ -351,14 +351,25 @@ pub struct Agent {
 
 impl Agent {
     pub fn start(gateway_url: &str, platform: Arc<FakePlatform>, timings: Timings) -> Agent {
+        Agent::start_with(gateway_url, platform, timings, |runtime| runtime)
+    }
+
+    /// Like [`Agent::start`], with `configure` applied to the runtime (e.g. an update hookup).
+    pub fn start_with(
+        gateway_url: &str,
+        platform: Arc<FakePlatform>,
+        timings: Timings,
+        configure: impl FnOnce(Runtime) -> Runtime,
+    ) -> Agent {
         let cfg = AgentConfig {
             gateway_url: gateway_url.into(),
             machine: "mbp".into(),
             token: Some(TOKEN.into()),
             defaults: Default::default(),
+            update: Default::default(),
         };
         let (tx, rx) = oneshot::channel();
-        let runtime = Runtime::new(cfg, platform).timings(timings);
+        let runtime = configure(Runtime::new(cfg, platform).timings(timings));
         let task = tokio::spawn(runtime.run_until(async {
             let _ = rx.await;
         }));

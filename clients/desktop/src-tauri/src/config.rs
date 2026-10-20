@@ -2,7 +2,8 @@
 //!
 //! The gateway comes from `--url <URL>` / `RD_URL` (not saved; local testing), else from the
 //! settings file the setup page writes (`settings.json` in the app config directory). Without
-//! either, or with `--setup`, the window opens the bundled setup page instead.
+//! either, or with `--setup`, the window opens the bundled setup page instead. The same file
+//! holds `"update_check": false` when automatic update checks are off (tray menu).
 
 use std::path::Path;
 
@@ -108,7 +109,7 @@ pub fn validate(gateway_url: &str, sign_in_domain: Option<&str>) -> Result<Setti
     })
 }
 
-fn is_loopback(host: &str) -> bool {
+pub fn is_loopback(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "[::1]")
 }
 
@@ -135,8 +136,16 @@ pub fn load(path: &Path) -> Option<Settings> {
             return None;
         }
     };
-    let parsed: Settings = match serde_json::from_str(&text) {
-        Ok(s) => s,
+    let parsed: Settings = match serde_json::from_str::<serde_json::Value>(&text) {
+        // Only the update setting so far (changed before a gateway was saved): no gateway.
+        Ok(file) if file.get("gateway_url").is_none() && file.is_object() => return None,
+        Ok(file) => match serde_json::from_value(file) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("ignoring {}: {e}", path.display());
+                return None;
+            }
+        },
         Err(e) => {
             log::warn!("ignoring {}: {e}", path.display());
             return None;
@@ -151,12 +160,61 @@ pub fn load(path: &Path) -> Option<Settings> {
     .ok()
 }
 
+/// Writes the gateway to the settings file. Other keys (`update_check`) are kept.
 pub fn save(path: &Path, settings: &Settings) -> Result<(), String> {
+    let serde_json::Value::Object(gateway) =
+        serde_json::to_value(settings).map_err(|e| e.to_string())?
+    else {
+        return Err("settings are not a JSON object".into());
+    };
+    edit(path, |file| {
+        // Absent fields (no sign-in domain) are not serialized: drop their old values.
+        file.remove("sign_in_domain");
+        file.extend(gateway);
+    })
+}
+
+/// Automatic update checks: on unless the settings file says `"update_check": false`.
+pub fn load_update_check(path: &Path) -> bool {
+    read_object(path)
+        .and_then(|file| file.get("update_check").and_then(|v| v.as_bool()))
+        .unwrap_or(true)
+}
+
+/// Saves the tray menu's "Check for updates automatically". Other keys (the gateway) are kept;
+/// on is the default and is not written.
+pub fn save_update_check(path: &Path, on: bool) -> Result<(), String> {
+    edit(path, |file| {
+        if on {
+            file.remove("update_check");
+        } else {
+            file.insert("update_check".into(), false.into());
+        }
+    })
+}
+
+/// The settings file as a JSON object; `None` when it does not exist or is not one.
+fn read_object(path: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    match serde_json::from_str(&text) {
+        Ok(serde_json::Value::Object(file)) => Some(file),
+        _ => None,
+    }
+}
+
+/// Changes some keys of the settings file and keeps the others, so the setup page and the tray
+/// menu each write only their own. A file that is not a JSON object is replaced.
+fn edit(
+    path: &Path,
+    change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) -> Result<(), String> {
+    let mut file = read_object(path).unwrap_or_default();
+    change(&mut file);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
-    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
     std::fs::write(path, json + "\n").map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
@@ -206,6 +264,13 @@ fn is_under(host: &str, domain: &str) -> bool {
         || host
             .strip_suffix(domain)
             .is_some_and(|sub| sub.ends_with('.') && sub.len() > 1)
+}
+
+/// Is `url` a session page of the gateway (`/m/<machine>`)? The update window does not open
+/// over one: it waits until the page is left.
+pub fn is_session_page(settings: Option<&Settings>, url: &Url) -> bool {
+    settings.is_some_and(|s| url.origin() == s.gateway_url.origin())
+        && url.path().starts_with("/m/")
 }
 
 /// May a URL that is not allowed in the window be handed to the system browser?
@@ -285,6 +350,66 @@ mod tests {
         std::fs::write(&path, "not json").unwrap();
         assert_eq!(load(&path), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_check_setting_round_trip() {
+        let dir = std::env::temp_dir().join(format!("rd-desktop-test-upd-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        // No file, or no key: on.
+        assert!(load_update_check(&path));
+        // Turned off before any gateway is saved (the tray works on the setup page too).
+        save_update_check(&path, false).unwrap();
+        assert!(!load_update_check(&path));
+        assert_eq!(load(&path), None);
+        // The setup page saves the gateway: the setting stays.
+        let s = validate("rd.example.com", Some("example.com")).unwrap();
+        save(&path, &s).unwrap();
+        assert!(!load_update_check(&path));
+        assert_eq!(load(&path), Some(s));
+        // A later save without the sign-in domain removes it, and still keeps the setting.
+        let s = validate("rd2.example.com", None).unwrap();
+        save(&path, &s).unwrap();
+        assert_eq!(load(&path), Some(s.clone()));
+        assert!(!load_update_check(&path));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""update_check": false"#), "{text}");
+        assert!(!text.contains("sign_in_domain"), "{text}");
+        // Back on: the key goes away (on is the default), the gateway stays.
+        save_update_check(&path, true).unwrap();
+        assert!(load_update_check(&path));
+        assert_eq!(load(&path), Some(s));
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("update_check")
+        );
+        // Only a literal false turns checks off.
+        std::fs::write(&path, r#"{"update_check":"false"}"#).unwrap();
+        assert!(load_update_check(&path));
+        std::fs::write(&path, "not json").unwrap();
+        assert!(load_update_check(&path));
+        save_update_check(&path, false).unwrap();
+        assert!(!load_update_check(&path));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn session_pages() {
+        let gw = validate("https://rd.example.com", Some("example.com")).unwrap();
+        let gw = Some(&gw);
+        assert!(is_session_page(gw, &u("https://rd.example.com/m/mbp")));
+        assert!(is_session_page(
+            gw,
+            &u("https://rd.example.com/m/my%20pc?x=1")
+        ));
+        assert!(!is_session_page(gw, &u("https://rd.example.com/")));
+        assert!(!is_session_page(gw, &u("https://rd.example.com/portal")));
+        assert!(!is_session_page(gw, &u("https://rd.example.com/mbp")));
+        assert!(!is_session_page(gw, &u("https://auth.example.com/m/mbp")));
+        assert!(!is_session_page(gw, &u("http://rd.example.com/m/mbp")));
+        assert!(!is_session_page(None, &u("https://rd.example.com/m/mbp")));
+        assert!(!is_session_page(gw, &u("tauri://localhost/index.html")));
     }
 
     #[test]

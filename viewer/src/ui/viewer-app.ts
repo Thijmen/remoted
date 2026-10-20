@@ -385,12 +385,19 @@ export class ViewerApp {
     const name = this.info?.name ?? this.machine;
     const reconnectNow: BannerAction = { label: 'Reconnect now', run: () => this.session.start() };
     const leave: BannerAction = { label: 'Disconnect', run: () => this.disconnect() };
+    // The agent closed the session to install an update (4010): no error, it comes back by itself.
+    const updating: Banner = {
+      level: 'info',
+      text: `Updating ${name}… Reconnecting when it is back.`,
+      actions: [reconnectNow, leave],
+    };
     let banner: Banner | null = null;
     switch (s.kind) {
       case 'connecting':
-        banner = s.attempt
-          ? { level: 'info', text: `Reconnecting to ${name}…`, actions: [reconnectNow, leave] }
-          : { level: 'info', text: `Connecting to ${name}…` };
+        if (this.session.updating) banner = updating;
+        else if (s.attempt)
+          banner = { level: 'info', text: `Reconnecting to ${name}…`, actions: [reconnectNow, leave] };
+        else banner = { level: 'info', text: `Connecting to ${name}…` };
         break;
       case 'joining':
         banner = { level: 'info', text: `Waiting for ${name} to join…` };
@@ -408,6 +415,9 @@ export class ViewerApp {
           text: `Connection lost (${describeClose(s.code, s.reason)}). Reconnecting in ${(s.delayMs / 1000).toFixed(1)} s…`,
           actions: [reconnectNow, leave],
         };
+        break;
+      case 'updating':
+        banner = updating;
         break;
       case 'offline':
         banner = {
@@ -821,6 +831,7 @@ function describeClose(code: number, reason: string): string {
     [CloseCode.AGENT_TIMEOUT]: 'agent did not answer',
     [CloseCode.SESSION_ENDED]: 'session ended by the agent',
     [CloseCode.REPLACED]: 'agent reconnected',
+    [CloseCode.AGENT_UPDATING]: 'agent updating',
     1006: 'network',
   };
   return [known[code] ?? `code ${code}`, reason].filter(Boolean).join(': ');

@@ -199,4 +199,55 @@ describe('Session reconnects', () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(last()).toMatchObject({ kind: 'stopped', code: CloseCode.FORBIDDEN });
   });
+
+  /** `/api/machines` with one entry for mbp. */
+  const listing = (m: object) =>
+    ({ ok: true, status: 200, json: () => Promise.resolve([{ machine: 'mbp', ...m }]) }) as unknown as Response;
+
+  it('waits for an updating agent, through its restart, and reconnects once it is back', async () => {
+    let mbp: object = { online: true, update: { phase: 'downloading' } };
+    fetchMock.mockImplementation(() => Promise.resolve(listing(mbp)));
+    session.start();
+    socket(0).open();
+    socket(0).drop(CloseCode.AGENT_UPDATING);
+    expect(last()).toEqual({ kind: 'updating' });
+    expect(session.updating).toBe(true);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/machines', expect.anything());
+    mbp = { online: false, update: { phase: 'installing' } };
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(FakeSocket.all).toHaveLength(1);
+    // Registered again; it has not reported its update status yet.
+    mbp = { online: true, update: null };
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(FakeSocket.all).toHaveLength(2);
+    // Answers that belong to the restart are not errors either.
+    socket(1).open();
+    socket(1).drop(CloseCode.AGENT_TIMEOUT);
+    expect(last()).toEqual({ kind: 'updating' });
+    await vi.advanceTimersByTimeAsync(2000);
+    socket(2).open();
+    socket(2).drop(CloseCode.AGENT_OFFLINE);
+    expect(last()).toEqual({ kind: 'updating' });
+    // A take-over still stops.
+    await vi.advanceTimersByTimeAsync(2000);
+    socket(3).open();
+    socket(3).drop(CloseCode.KICKED);
+    expect(last()).toMatchObject({ kind: 'stopped', code: CloseCode.KICKED });
+    expect(session.updating).toBe(false);
+  });
+
+  it('falls back to the usual handling when the agent does not come back in 3 minutes', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(listing({ online: false })));
+    session.start();
+    socket(0).open();
+    socket(0).drop(CloseCode.AGENT_UPDATING);
+    await vi.advanceTimersByTimeAsync(179_000);
+    expect(FakeSocket.all).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeSocket.all).toHaveLength(2);
+    socket(1).open();
+    socket(1).drop(CloseCode.AGENT_OFFLINE);
+    expect(last()).toEqual({ kind: 'offline' });
+  });
 });

@@ -5,6 +5,7 @@
 //! rd-agent setup      interactive, in person: config.toml (with the token, readable only by you), permissions, login service
 //! rd-agent install | uninstall     login service management (macOS: LaunchAgent; Windows: autostart + rd-agentw.exe)
 //! rd-agent status     config, token, permissions, login service state, gateway reachability
+//! rd-agent update     [--check] install the newest version now (docs/updates.md)
 //! rd-agent selftest   --size 1728x1118 --fps 60 --seconds 10 [--bitrate-kbps 8000] [--record out.rdv] [--synthetic]
 //! ```
 
@@ -13,16 +14,27 @@ mod host;
 mod logging;
 mod setup;
 mod status;
+mod update;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use rd_agent_core::runtime::Runtime;
+use rd_agent_core::runtime::{Runtime, update_link};
+use rd_proto::control::UpdateStatus;
 use tracing::{error, info};
 
+/// This build's version: reported to the gateway and viewers, and what updates compare
+/// against. Debug builds can be given another at build time (`RD_AGENT_TEST_VERSION=X.Y.Z
+/// cargo build`), to test updates between two builds of the same source.
+pub const VERSION: &str = match option_env!("RD_AGENT_TEST_VERSION") {
+    Some(v) if cfg!(debug_assertions) => v,
+    _ => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser)]
-#[command(name = "rd-agent", version, about = "rd remote desktop host agent")]
+#[command(name = "rd-agent", version = VERSION, about = "rd remote desktop host agent")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -41,6 +53,9 @@ enum Command {
     Uninstall,
     /// Show configuration, token, permissions, login service and gateway status.
     Status(ConfigArg),
+    /// Install the newest version now, as the portal's Update button does (only for agents
+    /// installed with the installer / as RD Agent.app with its LaunchAgent).
+    Update(UpdateArgs),
     /// Capture/encode benchmark with SPS/VUI assertions.
     Selftest(SelftestArgs),
     /// Internal: report (and with --request, ask for) this app's permissions. `setup` and
@@ -48,6 +63,26 @@ enum Command {
     /// than to the terminal.
     #[command(hide = true)]
     Permissions(PermissionsArgs),
+    /// Internal: installs an update and rolls it back if the new version does not come back.
+    /// The agent starts it from a copy of itself.
+    #[command(hide = true)]
+    UpdateHelper(UpdateHelperArgs),
+}
+
+#[derive(Args)]
+struct UpdateArgs {
+    #[command(flatten)]
+    config: ConfigArg,
+    /// Only show what is available (and the last update's outcome).
+    #[arg(long)]
+    check: bool,
+}
+
+#[derive(Args)]
+struct UpdateHelperArgs {
+    /// The plan the agent wrote.
+    #[arg(long, value_name = "PATH")]
+    plan: PathBuf,
 }
 
 #[derive(Args)]
@@ -181,6 +216,12 @@ fn main() -> ExitCode {
             logging::init_cli();
             status::run(args.config.as_deref())
         }
+        Command::Update(args) => {
+            logging::init_cli();
+            config::path(args.config.config.as_deref())
+                .and_then(|path| update::cli(&path, args.check))
+        }
+        Command::UpdateHelper(args) => update::helper::main(&args.plan),
         Command::Permissions(args) => {
             logging::init_cli();
             host::report_permissions(args.request, args.screen_only, &args.report)
@@ -210,6 +251,7 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
     // One agent per session; `install` / `uninstall` stop it through the guard's event.
     #[cfg(windows)]
     let guard = host::RunGuard::acquire()?;
+    let config_path = config::path(args.config.config.as_deref())?;
     let mut cfg = config::load_for_run(args.config.config.as_deref(), args.gateway, args.machine)?;
     let (token, token_source) = config::resolve_token(args.token_env.as_deref(), &cfg)?;
     cfg.token = Some(token);
@@ -217,9 +259,12 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
     info!(
         source = ?args.source,
         token_from = %token_source,
-        version = env!("CARGO_PKG_VERSION"),
+        version = VERSION,
         "rd-agent run"
     );
+    let updater = Arc::new(update::updater(&config_path)?);
+    let check = cfg.update.check;
+    let (link, updates) = update_link(UpdateStatus::default());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_name("rd-agent")
@@ -229,7 +274,14 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
     let stopped = guard.stopped();
     #[cfg(not(windows))]
     let stopped = std::future::pending::<()>();
-    runtime.block_on(Runtime::new(cfg, platform).run_until(shutdown_signal(stopped)))
+    runtime.block_on(async move {
+        tokio::spawn(update::service::run(updates, updater, check));
+        Runtime::new(cfg, platform)
+            .version(VERSION)
+            .updates(link)
+            .run_until(shutdown_signal(stopped))
+            .await
+    })
 }
 
 /// SIGTERM (launchd stopping us), SIGINT / Ctrl-C, or `stopped` (Windows: the stop event of

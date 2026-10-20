@@ -33,8 +33,11 @@ pub fn config_path() -> anyhow::Result<PathBuf> {
         .join("config.toml"))
 }
 
-/// `%LOCALAPPDATA%\rd-agent\logs`
+/// `%LOCALAPPDATA%\rd-agent\logs`, or `RD_AGENT_LOG_DIR`.
 pub fn log_dir() -> anyhow::Result<PathBuf> {
+    if let Some(dir) = super::log_dir_override() {
+        return Ok(dir);
+    }
     names::log_dir().context("LOCALAPPDATA is not set")
 }
 

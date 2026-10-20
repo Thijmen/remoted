@@ -37,5 +37,17 @@
       "minimumSystemVersion": "12.0",
       "signingIdentity": "-"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU1MjVGQUFEMUNFNEE1QUQKUldTdHBlUWNyZm9sNVZsYWNCOGpsQkVlYTloM0VHSng2U0JscjNOM1F1MHRGZG5JZW9rRTRCVnkK",
+      "endpoints": [
+        "https://github.com/Thijmen/remoted/releases/download/updates/desktop.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

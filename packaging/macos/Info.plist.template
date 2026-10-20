@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Rendered by build-app.sh: @VERSION@ = workspace version, @BUILD@ = build number. -->
+<!-- Rendered by build-app.sh: @VERSION@ = the rd-agent version (crates/rd-agent/Cargo.toml; the
+     updater checks it), @BUILD@ = build number. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>

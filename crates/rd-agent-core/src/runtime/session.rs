@@ -37,7 +37,7 @@ use super::input::{InputThread, OnLockedDrop};
 use super::net::WsStream;
 use super::task::TaskGuard;
 use super::video::{self, EncodeWindow};
-use super::{AGENT_VERSION, ActiveSession, Ctx};
+use super::{ActiveSession, Ctx};
 use crate::clock::now_us;
 use crate::platform::{FrameGate, Guard, InputEvent, Platform, VideoPipeline};
 
@@ -103,6 +103,8 @@ enum End {
     Replaced,
     Gateway,
     Shutdown,
+    /// An update is about to restart the agent (or is installing).
+    Updating,
 }
 
 impl End {
@@ -118,6 +120,7 @@ impl End {
             End::Replaced => "replaced",
             End::Gateway => "gateway",
             End::Shutdown => "agent_shutdown",
+            End::Updating => "agent_update",
         }
     }
 
@@ -126,6 +129,7 @@ impl End {
             End::ProtoMismatch => close::PROTOCOL,
             End::Stall | End::HelloTimeout | End::Idle | End::SocketError => close::SESSION_ENDED,
             End::Shutdown => 1001,
+            End::Updating => close::AGENT_UPDATING,
             End::DialFailed | End::ViewerClosed | End::Replaced | End::Gateway => 1000,
         }
     }
@@ -359,6 +363,8 @@ impl Session {
     async fn run(mut self, stop: &mut oneshot::Receiver<StopReason>) -> End {
         let mut state = self.ctx.state.subscribe();
         state.mark_unchanged();
+        // Also ends a session that connects while an update holds sessions.
+        let mut held = self.ctx.gate.held();
         let hello_deadline = tokio::time::sleep(self.ctx.timings.hello_timeout);
         tokio::pin!(hello_deadline);
         let end = loop {
@@ -367,6 +373,10 @@ impl Session {
             let step = tokio::select! {
                 biased;
                 r = &mut *stop => Err(End::from_stop(r)),
+                () = update_hold(&mut held) => {
+                    info!("ending the session for an update");
+                    Err(End::Updating)
+                }
                 r = &mut self.reader => Err(End::from_read(r)),
                 _ = &mut self.writer => Err(End::SocketError),
                 msg = self.viewer.recv() => match msg {
@@ -465,7 +475,7 @@ impl Session {
             proto: version,
             agent: AgentInfo {
                 os: platform.os().into(),
-                version: AGENT_VERSION.into(),
+                version: self.ctx.version.clone(),
                 displays: platform.displays(),
             },
             caps: Vec::new(),
@@ -793,6 +803,13 @@ impl Session {
             let _ = timeout(CLOSE_GRACE, &mut reader).await;
         }
         reader.stop().await;
+    }
+}
+
+/// Resolves while an update holds sessions ([`super::SessionControl::hold`]).
+async fn update_hold(held: &mut tokio::sync::watch::Receiver<usize>) {
+    if held.wait_for(|holds| *holds > 0).await.is_err() {
+        std::future::pending::<()>().await;
     }
 }
 
@@ -1290,6 +1307,9 @@ mod tests {
     fn end_codes() {
         assert_eq!(End::ProtoMismatch.close_code(), 4005);
         assert_eq!(End::Stall.close_code(), 4006);
+        assert_eq!(End::Updating.close_code(), 4010);
+        assert_eq!(End::Updating.reason(), "agent_update");
+        assert!(End::Updating.notify_gateway());
         assert!(!End::Replaced.notify_gateway());
         assert!(!End::Gateway.notify_gateway());
         assert!(End::ViewerClosed.notify_gateway());

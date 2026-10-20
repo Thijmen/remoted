@@ -18,12 +18,15 @@ use crate::assets::{self, Caching};
 use crate::auth::{ViewerIdentity, viewer_auth};
 use crate::devices::{Device, DeviceError};
 use crate::probe;
+use crate::registry::UpdateRefusal;
 use crate::session::{ws_agent_session, ws_view};
 use crate::state::AppState;
 
 const REPORT_MAX_BYTES: usize = 1 << 20;
 /// Device requests are a machine id and a name.
 const DEVICE_MAX_BYTES: usize = 4 << 10;
+/// An update request is a version number.
+const UPDATE_MAX_BYTES: usize = 1 << 10;
 
 /// `connect-src` also allows the Tauri v2 IPC endpoints (`ipc:` on macOS/Linux, `http://ipc.localhost` on
 /// Windows) so the page can call the desktop app (docs/desktop-client.md); browsers have no such endpoints.
@@ -51,6 +54,10 @@ pub fn viewer_router(st: Arc<AppState>) -> Router {
             post(api_replace_token).layer(DefaultBodyLimit::max(DEVICE_MAX_BYTES)),
         )
         .route("/api/devices/{machine}", delete(api_remove_device))
+        .route(
+            "/api/machines/{machine}/update",
+            post(api_update_agent).layer(DefaultBodyLimit::max(UPDATE_MAX_BYTES)),
+        )
         .route(
             "/api/probe/report",
             post(probe::http_report).layer(DefaultBodyLimit::max(REPORT_MAX_BYTES)),
@@ -235,6 +242,45 @@ async fn api_remove_device(
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => device_error(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateAgent {
+    version: String,
+}
+
+/// `POST /api/machines/{machine}/update` `{"version":"1.6.0"}`: tell the agent to install the
+/// update it reported. 202 once the request is queued; the agent reports progress with
+/// `update_status`, which the portal reads from `/api/machines`.
+async fn api_update_agent(
+    State(st): State<Arc<AppState>>,
+    Extension(viewer): Extension<ViewerIdentity>,
+    Path(machine): Path<String>,
+    Json(req): Json<UpdateAgent>,
+) -> Response {
+    let version = req.version.trim();
+    match st
+        .registry
+        .request_update(&machine, version, &st.devices.list())
+    {
+        Ok(from) => {
+            st.metrics.agent_updates_requested.inc();
+            info!(target: "audit", event = "agent_update", user = viewer.user, ip = %viewer.ip, machine, from, to = version, "agent_update");
+            (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({ "ok": true })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let status = match e {
+                UpdateRefusal::Unknown => StatusCode::NOT_FOUND,
+                _ => StatusCode::CONFLICT,
+            };
+            info!(user = viewer.user, machine, to = version, reason = %e, "agent update refused");
+            (status, Json(serde_json::json!({ "error": e.to_string() }))).into_response()
+        }
     }
 }
 

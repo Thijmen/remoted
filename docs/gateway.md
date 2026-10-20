@@ -102,6 +102,7 @@ Every response on the viewer port carries the CSP, COOP (`same-origin`), COEP
 | `GET /api/me` | `{"email":"…","uid":"…","dev":false,"devices":true}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`; `devices`: whether *Add device* is on) |
 | `GET /api/machines` | see below |
 | `POST /api/devices`, `POST /api/devices/{machine}/token`, `DELETE /api/devices/{machine}` | add a device, replace its token, remove it; see [Devices](#devices) |
+| `POST /api/machines/{machine}/update` | tell the agent to install its update; see [Agent updates](#agent-updates) |
 | `GET /ws/view/{machine}` | viewer session |
 | `GET /ws/probe`, `GET /api/probe/down`, `POST /api/probe/up`, `POST /api/probe/report` | network probe (`protocol.md`); the report is logged as one `probe_report {…}` line (≤ 1 MiB, else 413) |
 
@@ -111,6 +112,9 @@ that has registered since start, sorted by id. Fields that are not known yet are
 registration, kept while offline), and `state` (last reported `AgentState`). `viewer` is
 `{"user","since_ms"}` while a session is pending or active, else `null`. `recovery` comes from
 the machines file (`[]` otherwise). `name` falls back to the device's name, then the machine id.
+`update` is the agent's last `update_status` (fields in [protocol.md](protocol.md#updates-rd-agent-150-and-later),
+empty ones left out), kept while offline and dropped when the agent registers again until it
+reports anew; `null` for agents that never send one (before 1.5.0).
 Devices added in the portal follow the machines file, in the order they were added, and have
 `"managed": true`.
 
@@ -144,6 +148,31 @@ closed with **4002** (`token replaced` / `device removed`), and a running sessio
 4003 for the viewer. Every change is an audit line (`target: audit`): `device_add`,
 `device_token` or `device_remove`, with `user`, `ip` and `machine`.
 
+## Agent updates
+
+Agents 1.5.0 and later check for updates themselves and report what they found with
+`update_status` ([updates.md](updates.md), [protocol.md](protocol.md#updates-rd-agent-150-and-later)).
+The portal shows it from `/api/machines`; its **Update** button calls:
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /api/machines/{machine}/update` | `{"version":"1.6.0"}` | **202** `{"ok":true}`: `{"t":"update","version":"1.6.0"}` was queued to the agent's control socket |
+
+The body must be JSON (≤ 1 KiB), like the device routes, and the same `Origin` check applies.
+The gateway checks the agent's last `update_status` first and answers `{"error":"…"}` with
+**404** for an unknown machine, or **409** when the agent is offline, never reported an update
+status (older agent), reports `can_install: false` (the error is its `cannot_install` text), has
+no update available or another version than the one asked for, or is already `downloading` or
+`installing`. The agent reports progress and the outcome with `update_status`; the 202 only means
+the request was passed on.
+
+Every request that is passed on is an audit line (`target: audit`): `agent_update` with `user`,
+`ip`, `machine`, `from` (the agent's version) and `to`, and counts in
+`rd_agent_updates_requested_total`. Refused requests log `agent update refused` with the reason.
+From the agent's reports, the gateway logs `agent update phase` (info) when the phase changes and
+`agent update outcome` (info, with `from`, `to`, `result`, `error`) once per new outcome; every
+report is logged at debug as `agent update status`.
+
 ## Sessions
 
 1. The viewer opens `/ws/view/{machine}`. If no agent control socket is registered for that
@@ -166,6 +195,7 @@ How a session ends:
 | viewer closes / its socket fails | – | 1000 | `viewer_closed` |
 | viewer stops answering pings (45 s) | 1001 | 1000 | `viewer_unresponsive` |
 | agent closes its data socket | **4006**, or the agent's own 4000–4999 code (e.g. 4005) | – | `agent_closed` |
+| agent ends the session for an update (data socket closed with 4010, `session_end` reason `agent_update` on control) | **4010**, whichever arrives first | – or 1000 | `agent_update`, or not sent |
 | agent data socket stops answering pings | **4006** | 1001 | `agent_unresponsive` |
 | agent sends `session_end` on control | **4006** | 1000 | not sent (the agent already knows) |
 | another viewer takes over | **4001** | 1000 | `taken_over` (sent by the take-over) |
@@ -211,11 +241,13 @@ messages are never dropped or reordered. Viewer→agent traffic is not affected.
 Without `--dev`, logs are JSON lines on stdout, with fields flattened. Useful messages:
 `rd-gateway listening`, `agent registered`, `agent control disconnected`, `session_start`,
 `session_end`, `viewer forbidden`, `agent auth failed`, `device_add`, `device_token`,
-`device_remove`, `device store not saved`, `probe run`, `probe_report {…}`.
+`device_remove`, `device store not saved`, `agent_update`, `agent update refused`,
+`agent update phase`, `agent update outcome`, `probe run`, `probe_report {…}`.
 
 `/metrics` exposes `rd_agents_online`, `rd_sessions_active`, `rd_sessions_started_total`,
 `rd_relay_bytes_{down,up}_total`, `rd_agent_auth_failures_total`,
-`rd_viewer_auth_failures_total`, `rd_agent_registrations_total` and `rd_probe_runs_total`.
+`rd_viewer_auth_failures_total`, `rd_agent_registrations_total`,
+`rd_agent_updates_requested_total` and `rd_probe_runs_total`.
 
 ## Shutdown
 
@@ -239,7 +271,7 @@ filesystem read-only. Mount provisioned token hashes, if any, at `/etc/rd/agents
 ## Tests
 
 ```sh
-cargo test -p rd-gateway      # unit tests + tests/{auth,session,probe,http,devices,backpressure}.rs
+cargo test -p rd-gateway      # unit tests + tests/{auth,session,probe,http,devices,updates,backpressure}.rs
 ```
 
 The integration tests start the gateway in-process on ephemeral loopback ports with short

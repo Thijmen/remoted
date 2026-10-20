@@ -5,16 +5,18 @@ import {
   CloseCode,
   type GwErrorMsg,
   MIN_PROTO_VERSION,
+  type MachineInfo,
   PROTO_VERSION,
   type SessionMsg,
   type StreamParams,
   type ViewerInfo,
   type ViewerMsg,
   parseViewerIncoming,
+  updateInProgress,
 } from '../proto/control';
 import { nowUs } from '../util/stats';
 import { type Access, fetchMachine, probeAccess, wsUrl } from './api';
-import { Backoff, OFFLINE_POLL_MS, closeAction } from './backoff';
+import { Backoff, OFFLINE_POLL_MS, UPDATE_POLL_MS, UPDATE_WAIT_MS, closeAction } from './backoff';
 import { ClockEstimator } from './clock';
 
 const PING_INTERVAL_MS = 1000;
@@ -42,6 +44,8 @@ export type SessionStatus =
   | { kind: 'retrying'; code: number; reason: string; delayMs: number }
   /** Agent offline (4003): polling /api/machines. */
   | { kind: 'offline' }
+  /** Agent installing an update (4010, and what follows while it restarts): polling /api/machines. */
+  | { kind: 'updating' }
   /** Closed and not reconnecting automatically (e.g. taken over). */
   | { kind: 'stopped'; code: number; reason: string }
   /** Closed by the user. */
@@ -86,6 +90,8 @@ export class Session {
   private pollAbort: AbortController | null = null;
   /** Consecutive sockets that closed before opening. */
   private unopened = 0;
+  /** Until when (`Date.now()`) closes are part of an agent update (after a 4010), not failures. */
+  private updatingUntil = 0;
   /** Binary frames that failed to parse (for the HUD). */
   malformed = 0;
 
@@ -114,10 +120,16 @@ export class Session {
   /** User-initiated disconnect; no reconnect. */
   stop(): void {
     this.userClosed = true;
+    this.updatingUntil = 0;
     const hadSocket = this.ws !== null;
     this.teardown(1000, 'viewer disconnect');
     if (hadSocket) this.on.disconnected();
     this.on.status({ kind: 'closed' });
+  }
+
+  /** Reconnecting after the agent closed the session to install an update. */
+  get updating(): boolean {
+    return Date.now() < this.updatingUntil;
   }
 
   get streaming(): boolean {
@@ -215,6 +227,7 @@ export class Session {
         }
         this.phase = 'streaming';
         this.backoff.reset();
+        this.updatingUntil = 0;
         this.on.agentHello(m);
         this.sendJson({ t: 'start', ...this.opts.startParams(m) });
         this.on.status({ kind: 'streaming' });
@@ -298,13 +311,23 @@ export class Session {
   }
 
   private react(code: number, reason: string): void {
-    switch (closeAction(code)) {
+    let action = closeAction(code);
+    if (action === 'update') this.updatingUntil = Date.now() + UPDATE_WAIT_MS;
+    // While the agent restarts the gateway answers 4003 (offline) or 4004 (no join): more of the same.
+    else if (action !== 'stop' && this.updating) action = 'update';
+    switch (action) {
       case 'stop':
+        this.updatingUntil = 0;
         this.on.status({ kind: 'stopped', code, reason });
         return;
       case 'poll':
         this.on.status({ kind: 'offline' });
-        this.pollUntilOnline();
+        this.pollUntil((m) => m?.online === true, OFFLINE_POLL_MS);
+        return;
+      case 'update':
+        this.on.status({ kind: 'updating' });
+        // Back and done; or out of patience, and whatever happens next is handled as usual.
+        this.pollUntil((m) => (m?.online === true && !updateInProgress(m.update)) || !this.updating, UPDATE_POLL_MS);
         return;
       case 'retry': {
         const delayMs = this.backoff.next();
@@ -331,14 +354,15 @@ export class Session {
     });
   }
 
-  private pollUntilOnline(): void {
+  /** Poll /api/machines every `intervalMs` until `ready`, then connect. */
+  private pollUntil(ready: (m: MachineInfo | null) => boolean, intervalMs: number): void {
     const poll = async () => {
       const abort = new AbortController();
       this.pollAbort = abort;
       try {
         const m = await fetchMachine(this.opts.machine, withTimeout(abort.signal));
         if (abort.signal.aborted) return;
-        if (m?.online) {
+        if (ready(m)) {
           this.connect();
           return;
         }
@@ -352,9 +376,9 @@ export class Session {
           return;
         }
       }
-      this.after(OFFLINE_POLL_MS, () => void poll());
+      this.after(intervalMs, () => void poll());
     };
-    this.after(OFFLINE_POLL_MS, () => void poll());
+    this.after(intervalMs, () => void poll());
   }
 
   /** Close the socket (if any) and cancel timers and polling. */

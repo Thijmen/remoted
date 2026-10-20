@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "update",
+  "description": "The bundled update window (dist/update.html) may read the update state, check for updates, and install the update the app downloaded and verified (or open its release page). Nothing else; its links open in the system browser.",
+  "local": true,
+  "windows": ["update"],
+  "permissions": ["allow-rd-update-state", "allow-rd-update-check", "allow-rd-update-install"]
+}

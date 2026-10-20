@@ -3,7 +3,31 @@
 How to put `RD Agent.app` on the Mac and keep it running. Do this at the Mac itself: the
 permission dialogs need a person to approve them.
 
-## 1. One-time: signing identity
+## 1. Install
+
+Download `rd-agent-<version>-macos-universal.zip` from the agent releases (`agent-v*`) on
+[GitHub Releases](https://github.com/Thijmen/remoted/releases) (macOS 15 or later, Apple silicon
+or Intel), unzip it and move **RD Agent.app** to `/Applications`. From then on it updates itself
+from the portal ([updates.md](updates.md)).
+
+The app is signed with the project's own certificate ("rd Code Signing"), not notarized by
+Apple, so macOS blocks it the first time it runs ("Apple could not verify…"): run step 3's
+`setup` command once, click **Done**, then System Settings → Privacy & Security → scroll down →
+**Open Anyway** next to rd-agent, and run `setup` again. (Or clear the download mark before the
+first run: `xattr -dr com.apple.quarantine "/Applications/RD Agent.app"`.)
+
+Every release is signed with the same certificate. macOS ties the Screen Recording and
+Accessibility permissions to it, so they survive updates. Building the agent yourself (below)
+signs it with your own certificate instead: switching between your own builds and the releases
+needs the permissions granted once more.
+
+Older agents (built here with `build-app.sh` up to 1.4.2) do not update themselves: install the
+release once as above (it replaces `/Applications/RD Agent.app`), run `setup` again (Enter keeps
+the saved configuration) and grant both permissions again.
+
+### Or build it yourself
+
+One-time, a signing identity:
 
 ```sh
 packaging/macos/make-signing-identity.sh
@@ -16,20 +40,20 @@ back to ad-hoc signing, and macOS forgets the grants after every rebuild.
 
 Keychain items do *not* survive rebuilds this way: a self-signed certificate has no Team ID,
 so macOS ties an item to the exact build and asks "allow access?" again after every rebuild.
-That is why the agent token lives in the config file (step 4), not in the Keychain.
+That is why the agent token lives in the config file (step 3), not in the Keychain.
 
-## 2. Build and install
+Then build and install:
 
 ```sh
-packaging/macos/build-app.sh     # builds and signs packaging/macos/build/RD Agent.app
+packaging/macos/build-app.sh     # builds and signs packaging/macos/build/RD Agent.app (--universal: also Intel)
 packaging/macos/install.sh       # copies it to /Applications, (re)loads the LaunchAgent
 ```
 
-The LaunchAgent (`~/Library/LaunchAgents/dev.thijmen.rd.agent.plist`) runs the agent only
-in your logged-in GUI session (`LimitLoadToSessionType=Aqua`). launchd restarts it if it
-exits.
+A self-built agent can still update itself to a release only if the release satisfies its
+designated requirement, which a different certificate does not: the portal then says to
+install by hand.
 
-## 3. Add the Mac in the portal
+## 2. Add the Mac in the portal
 
 Open your gateway's portal (for example `https://rd.example.com`), click **Add device** and give
 the Mac a name. The portal shows a **setup code** (`rds1_…`) once: copy it for the next step.
@@ -37,13 +61,13 @@ It holds the gateway URL and the Mac's token, so treat it like a password. Every
 own machine id and token; [devices.md](devices.md) explains how they work, how to rotate or
 remove them, and how to provision a token without the portal.
 
-## 4. Setup (in person)
+## 3. Setup (in person)
 
 ```sh
 "/Applications/RD Agent.app/Contents/MacOS/rd-agent" setup
 ```
 
-Setup asks for the setup code from step 3: paste it and press Enter. Without a code, press
+Setup asks for the setup code from step 2: paste it and press Enter. Without a code, press
 Enter and it asks for the gateway URL (the agent host of your gateway, e.g.
 `wss://rd-agent.example.com`), the machine id (`mbp`) and the token one by one (when the
 config file already has a token for that machine, Enter keeps it). Then it:
@@ -54,7 +78,9 @@ config file already has a token for that machine, Enter keeps it). Then it:
   **Accessibility**. Enable "RD Agent" in System Settings → Privacy & Security, then press
   Enter so setup checks again. The check runs as RD Agent.app, not as your terminal: macOS
   ties permissions to the app that is asking;
-- installs the LaunchAgent.
+- installs the LaunchAgent (`~/Library/LaunchAgents/dev.thijmen.rd.agent.plist`). It runs the
+  agent only in your logged-in GUI session (`LimitLoadToSessionType=Aqua`); launchd restarts it
+  if it exits.
 
 Restart the agent after granting permissions:
 `launchctl kickstart -k gui/$(id -u)/dev.thijmen.rd.agent`.
@@ -66,7 +92,7 @@ neither `RD_AGENT_TOKEN` nor the config file has one, but after a rebuild that r
 it moves into the config file; the Keychain item is then unused (`uninstall.sh --purge` removes
 it).
 
-## 5. Check
+## 4. Check
 
 ```sh
 "/Applications/RD Agent.app/Contents/MacOS/rd-agent" status
@@ -79,6 +105,33 @@ accepts the token. It never prints the token. The agent logs the same source at 
 (`token_from=…`). Logs:
 `~/Library/Logs/rd-agent/` (daily files), plus the unified log:
 `log stream --predicate 'subsystem == "dev.thijmen.rd.agent"'`.
+
+## Updates
+
+RD Agent.app from a release updates itself from the portal: the Mac's card shows **Update
+available: X.Y.Z**, **What's new** and **Update**. The agent downloads the new app, checks its
+signature and that it is signed with the same certificate (so Screen Recording and
+Accessibility carry over), ends an open session (the viewer reconnects by itself) and hands
+over to an update helper. The helper swaps `/Applications/RD Agent.app` (the old one waits next
+to it as `RD Agent.app.previous-X.Y.Z`), restarts the LaunchAgent and waits up to 2 minutes for
+the new version to connect with the permissions the old one had. If it does not, the helper
+puts the old app back. The card then shows what happened. Details: [updates.md](updates.md).
+
+```sh
+"/Applications/RD Agent.app/Contents/MacOS/rd-agent" update --check   # is there a newer version? also shows the last update's outcome
+"/Applications/RD Agent.app/Contents/MacOS/rd-agent" update           # install it now and wait for the outcome
+```
+
+The helper logs to `~/Library/Logs/rd-agent/update-helper.log`. The agent checks for new versions
+1 minute after it starts and then every 6 hours; `[update]` `check = false` in `config.toml`
+turns that off (the portal then offers nothing, but `rd-agent update` still works).
+
+- If an update fails with a hint about **App Management**, macOS did not let the helper replace
+  the app in `/Applications`: allow RD Agent under System Settings → Privacy & Security → App
+  Management and click **Update** again.
+- An agent you built yourself is signed with your own certificate: the portal still offers the
+  update, but the agent refuses it ("signed with a different certificate") and stays as it is.
+  Install the release by hand once (step 1) to switch.
 
 ## Local development (no cluster, no permissions)
 
@@ -101,5 +154,8 @@ permission belongs to the app.
 packaging/macos/uninstall.sh            # unload + remove the LaunchAgent and the app
 packaging/macos/uninstall.sh --purge    # also logs, the config file (with the token) and the privacy grants
 ```
+
+Without the repository: `"/Applications/RD Agent.app/Contents/MacOS/rd-agent" uninstall` stops
+the agent and removes the LaunchAgent; then move RD Agent.app to the Bin.
 
 See [recovery.md](recovery.md) for the locked-screen / reboot path.

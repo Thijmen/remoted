@@ -371,6 +371,36 @@ input.switch:checked::after {
   border-color: color-mix(in srgb, var(--ok) 40%, transparent);
 }
 
+.badge.accent {
+  color: var(--accent-hover);
+  background: rgb(91 140 255 / 10%);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.spinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -403,6 +433,12 @@ input.switch:checked::after {
   color: var(--bad);
   background: rgb(242 100 95 / 8%);
   border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+}
+
+.notice.warn {
+  color: var(--warn);
+  background: rgb(240 181 68 / 8%);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
 }
 
 table {
@@ -549,6 +585,77 @@ details.disclosure > .settings {
 .machine-card.offline .machine-avatar {
   color: var(--muted);
   background: var(--surface-2);
+}
+
+.machine-update {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.machine-update .note {
+  font-size: 12.5px;
+}
+
+.machine-update .notice.note {
+  padding: 5px 10px;
+}
+
+/* Release notes (Markdown) in the What's new dialog. */
+.release-notes {
+  max-height: min(55vh, 480px);
+  overflow: auto;
+  padding: 2px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.markdown {
+  overflow-wrap: anywhere;
+}
+
+.markdown h3,
+.markdown h4,
+.markdown h5 {
+  margin: 14px 0 6px;
+}
+
+.markdown h3 {
+  font-size: 15px;
+}
+
+.markdown h4,
+.markdown h5 {
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.markdown p {
+  margin: 6px 0;
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+.markdown li + li {
+  margin-top: 3px;
+}
+
+.markdown pre {
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-3);
+}
+
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
 }
 
 .portal-foot {

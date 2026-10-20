@@ -18,6 +18,35 @@ pub struct AgentConfig {
     /// Defaults for new sessions (the viewer's `start` overrides).
     #[serde(default)]
     pub defaults: StreamDefaults,
+    /// Self-updates (docs/updates.md). Written only when it differs from the default.
+    #[serde(default, skip_serializing_if = "UpdateSettings::is_default")]
+    pub update: UpdateSettings,
+}
+
+/// `[update]` in config.toml.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateSettings {
+    /// Look for new versions (1 minute after start, then every 6 hours) and report them to the
+    /// gateway. When off, `rd-agent update` and the portal's Update button still work: both
+    /// read the update manifest themselves first.
+    #[serde(default = "yes")]
+    pub check: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        UpdateSettings { check: true }
+    }
+}
+
+impl UpdateSettings {
+    fn is_default(&self) -> bool {
+        *self == UpdateSettings::default()
+    }
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,6 +147,7 @@ mod tests {
             machine: "mbp".into(),
             token: Some("rd1.mbp.secret".into()),
             defaults: StreamDefaults::default(),
+            update: UpdateSettings::default(),
         };
         cfg.save(&path).unwrap();
         assert_eq!(AgentConfig::load(&path).unwrap(), cfg);
@@ -148,5 +178,19 @@ mod tests {
             toml::from_str("gateway_url = \"ws://x\"\nmachine = \"m\"\n").unwrap();
         assert_eq!(cfg.token, None);
         assert!(!toml::to_string(&cfg).unwrap().contains("token"));
+    }
+
+    #[test]
+    fn update_checks_are_on_unless_turned_off() {
+        let cfg: AgentConfig =
+            toml::from_str("gateway_url = \"ws://x\"\nmachine = \"m\"\n").unwrap();
+        assert!(cfg.update.check);
+        // The default is not written out: setup leaves config files as they were.
+        assert!(!toml::to_string(&cfg).unwrap().contains("update"));
+        let cfg: AgentConfig =
+            toml::from_str("gateway_url = \"ws://x\"\nmachine = \"m\"\n[update]\ncheck = false\n")
+                .unwrap();
+        assert!(!cfg.update.check);
+        assert!(toml::to_string(&cfg).unwrap().contains("check = false"));
     }
 }

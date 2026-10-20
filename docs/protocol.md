@@ -36,7 +36,7 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
 
 ## Agent ⇄ gateway control socket (`/ws/agent`)
 
-1. Agent → `{"t":"register","machine":"mbp","agent_version":"0.1.0","os":"macOS 26.3 (25D125)","gw_proto":1,"state":{...}}`
+1. Agent → `{"t":"register","machine":"mbp","agent_version":"1.5.0","os":"macOS 26.3 (25D125)","gw_proto":1,"state":{...}}`
 2. Gateway → `{"t":"registered","gw_proto":1}`. A newer registration for the same machine replaces the old
    socket (old one closed with code 4009).
 3. Agent → `{"t":"state", ...AgentState}` whenever lock/perms/in_session change (checked every 2 s).
@@ -55,6 +55,45 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
      while the gateway pod restarts): retry every 1 s (±20 %) for up to 2 min, then exponential.
    - No answer (TCP/TLS failure, timeout): exponential.
 
+### Updates (rd-agent 1.5.0 and later)
+
+How agents update themselves is in [updates.md](updates.md). Two control messages carry it:
+
+- Agent → `{"t":"update_status","available":{"version":"1.6.0","notes":"## 1.6.0\n\n- …","url":"https://github.com/Thijmen/remoted/releases/tag/agent-v1.6.0"},"can_install":true,"phase":"idle","checked_ms":1729160000000,"last":{"from":"1.5.0","to":"1.5.1","result":"ok","at_ms":1729100000000}}`,
+  after every `registered` and whenever it changes. Empty fields are left out.
+  - `available`: a newer version from the update manifest; absent when up to date, not checked
+    yet, or checks are off. `notes`: the release notes of every version newer than the running
+    one, newest first, as Markdown (at most 16 KiB). `url`: the release page.
+  - `can_install`: the agent can install updates itself. When false, `cannot_install` says why
+    (for the portal).
+  - `phase`: `idle`, `downloading` or `installing` (the update helper took over; the agent
+    restarts shortly). `checking` is defined but not sent: the periodic checks would otherwise
+    make two reports every 6 hours.
+  - `error`: why the last check or update request failed.
+  - `checked_ms`: the last successful check, Unix ms.
+  - `last`: the last update attempt, kept until the next one: `from`, `to`, `result` (`ok`,
+    `rolled_back`: the new version did not come back and the old one was put back, `failed`:
+    nothing was installed), `error`, `at_ms`.
+- Gateway → `{"t":"update","version":"1.6.0"}`: the portal's **Update** button. The gateway sends
+  it only when the agent's last `update_status` offers exactly that version, with `can_install`
+  and no update in progress (`POST /api/machines/{machine}/update`). The agent reads the manifest
+  again: the version must still be offered, and its file signed for that version; otherwise it
+  reports an `error`. An `update` that arrives while one is in progress is ignored. The agent
+  reports `downloading` first, downloads and checks the file, and only then ends its session: it
+  closes the data socket with **4010** and sends `session_end` with reason `agent_update`
+  (viewers wait until the agent is back and no longer reports an update in progress). Sessions
+  requested while it updates are ended the same way. A `session_end` from the gateway for that
+  already-ended session is ignored.
+
+The gateway keeps the last `update_status` while the agent is offline (so the portal can show an
+install in progress) and drops it when the agent registers again; the new connection reports
+its own.
+
+Compatibility: both messages are additive and `gw_proto` stays 1. Older gateways ignore
+`update_status` (an unknown `t`). Older agents never send it, so the gateway never sends them
+`update`. Receivers ignore unknown fields; unknown `phase` and `result` values are read as
+`unknown`.
+
 ## Viewer session (`/ws/view/{machine}`)
 
 1. Viewer connects. Gateway checks auth. If the machine is unknown/offline → close **4003**.
@@ -63,7 +102,7 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
 2. Gateway sends `session_request` to the agent; waits ≤ 10 s for the data WS (else close viewer **4004**).
 3. Gateway joins the sockets and sends the viewer `{"t":"session","machine":"mbp","session":"…","agent":{AgentState}}`.
 4. Viewer → agent `{"t":"hello","proto":1,"min_proto":1,"viewer":{"ua":"…","dpr":2,"viewport":[1536,750],"decoders":{"avc":true,"hevc":false}}}`
-5. Agent → viewer `{"t":"hello","proto":1,"agent":{"os":"macos","version":"0.1.0","displays":[{"id":0,"w_pt":1728,"h_pt":1117,"scale":2.0}]},"caps":["audio","refine"]}`
+5. Agent → viewer `{"t":"hello","proto":1,"agent":{"os":"macos","version":"1.5.0","displays":[{"id":0,"w_pt":1728,"h_pt":1117,"scale":2.0}]},"caps":["audio","refine"]}`
    (`proto = min(maxes)`; if incompatible agent sends `{"t":"error","code":"proto_mismatch"}` and closes 4005.)
 6. Viewer → `{"t":"start","width":1728,"height":1118,"fps":60,"codec":"avc","start_kbps":8000,"min_kbps":1000,"max_kbps":20000,"adaptive":true,"audio":false,"display":0}`
    `width`×`height` is a bounding box: the agent always streams the display's own aspect ratio,
@@ -83,7 +122,9 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
    (clock offset). Every PING must be answered immediately with a PONG
    (`t_origin_us` echoed, `t_reply_us` = responder clock).
 10. Close codes: 4001 kicked (don't auto-reconnect), 4003 offline, 4004 agent timeout, 4005 protocol,
-    4006 session ended by agent, 4008 idle (no input for `RD_SESSION_IDLE_TIMEOUT`, default 3600 s), 4009 replaced.
+    4006 session ended by agent, 4008 idle (no input for `RD_SESSION_IDLE_TIMEOUT`, default 3600 s), 4009 replaced,
+    4010 agent updating (it comes back by itself, usually within a minute: keep reconnecting, and treat the 4003
+    and 4004 that follow while it restarts as part of the update).
 
 Agent side: the session socket is the only one carrying media. When it closes the agent stops the
 pipeline, releases all keys/buttons and drops the keep-awake guard.
@@ -167,7 +208,8 @@ pipeline, releases all keys/buttons and drops the keep-awake guard.
 | `GET /keytest` | key test page (`keytest.html`), opened ON the host |
 | `GET /assets/*` | hashed Vite assets (`Cache-Control: public, max-age=31536000, immutable`) |
 | `GET /api/me` | `{"email":"…","uid":"…","dev":false,"devices":true}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`; `devices` = *Add device* available) |
-| `GET /api/machines` | `[{"machine":"mbp","name":"MacBook Pro","managed":false,"online":true,"since_ms":1729160000000,"os":"macOS 26.3","agent_version":"0.1.0","state":{AgentState},"viewer":null\|{"user":"…","since_ms":…},"recovery":[{"label":"Screen Sharing (VNC)","url":"https://…"}]}]` |
+| `GET /api/machines` | `[{"machine":"mbp","name":"MacBook Pro","managed":false,"online":true,"since_ms":1729160000000,"os":"macOS 26.3","agent_version":"1.5.0","state":{AgentState},"viewer":null\|{"user":"…","since_ms":…},"recovery":[{"label":"Screen Sharing (VNC)","url":"https://…"}],"update":null\|{UpdateStatus}}]` (`update`: the agent's last `update_status`, null when it never sent one) |
+| `POST /api/machines/{machine}/update` | JSON `{"version":"1.6.0"}` → 202 `{"ok":true}` once `update` is queued to the agent; 404 unknown machine; 409 `{"error":"…"}` when the agent is offline, does not report updates, cannot install them, has no or another update available, or is already updating |
 | `POST /api/devices` | JSON `{"machine":"studio","name":"Mac Studio"}` → 201 `{"machine","name","gateway","token","setup_code"}` (no-store) |
 | `POST /api/devices/{machine}/token` | JSON `{}` → 200, same fields; the agent's control socket is closed with 4002 |
 | `DELETE /api/devices/{machine}` | → 204; the agent's control socket is closed with 4002 |
@@ -189,7 +231,7 @@ The viewer build (`viewer/dist`) must therefore contain: `index.html`, `viewer.h
 
 Device routes take JSON bodies only (≤ 4 KiB) and answer errors as `{"error":"…"}`: 400 invalid id/name,
 404 unknown device, 409 id exists or has a provisioned token, 503 no `RD_STATE_DIR`/`RD_AGENT_PUBLIC_URL`,
-500 store not saved. Details: `docs/gateway.md`.
+500 store not saved. The update route takes JSON only too (≤ 1 KiB). Details: `docs/gateway.md`.
 
 ### Setup code
 What *Add device* hands out and `rd-agent setup` reads (`crates/rd-proto/src/setup_code.rs`):

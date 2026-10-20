@@ -61,6 +61,7 @@ You may see fewer frames for a moment, but what you see is current.
 - ➕ **Add device** in the portal: it gives you a one-time setup code to paste into the agent's setup.
 - 📶 **Network probe.** A built-in test (`/probe`) checks whether your connection can carry a session, before you rely on it.
 - 🖥️ **Mac and Windows hosts.** Reach a Windows PC from a Mac (Cmd acts as Ctrl) or a Mac from Windows.
+- 🔄 **Updates itself.** rd Desktop and the agents find new versions, show what's new and install them when you say so; an agent update from the portal rolls back if the new version doesn't come back. See [updates](docs/updates.md).
 - 🛟 **Recovery path.** Lock screen, login window or a reboot on the Mac? Apple Screen Sharing over Guacamole takes over. See [recovery](docs/recovery.md).
 
 ## Getting started
@@ -77,6 +78,7 @@ rd has three parts to set up. Each has its own guide:
    [releases](https://github.com/Thijmen/remoted/releases).
 
 To add another device later, click **Add device** in the portal; see [docs/devices.md](docs/devices.md).
+After that, rd Desktop and the agents update themselves: [docs/updates.md](docs/updates.md).
 
 ### Try it locally
 
@@ -102,6 +104,7 @@ agent against it.
 | [docs/setup-mac.md](docs/setup-mac.md) | Installing the Mac agent, local development |
 | [docs/setup-windows.md](docs/setup-windows.md) | Installing the Windows agent, local development, limits |
 | [docs/devices.md](docs/devices.md) | Adding, rotating and removing devices (machine ids, tokens) |
+| [docs/updates.md](docs/updates.md) | How rd Desktop and the agents update, releases, signing keys |
 | [docs/recovery.md](docs/recovery.md) | Recovery path (Screen Sharing / SSH via Guacamole) |
 | [docs/desktop-client.md](docs/desktop-client.md) | rd Desktop design and the page ⇄ app bridge ([install, build](clients/desktop/README.md)) |
 

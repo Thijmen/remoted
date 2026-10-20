@@ -1,5 +1,5 @@
 //! Who is online and who is watching: per machine, the agent's control connection, its last
-//! known state, and at most one viewer session (pending or joined).
+//! known state and update status, and at most one viewer session (pending or joined).
 //!
 //! All mutation happens under one short `parking_lot` lock that is never held across an
 //! await; messages to agents go through each control socket's bounded queue with `try_send`.
@@ -8,7 +8,8 @@ use std::collections::HashMap;
 
 use axum::extract::ws::WebSocket;
 use parking_lot::Mutex;
-use rd_proto::control::{AgentState, GatewayToAgent};
+use rd_proto::close;
+use rd_proto::control::{AgentState, GatewayToAgent, UpdateOutcome, UpdatePhase, UpdateStatus};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -21,6 +22,9 @@ use crate::util::unix_ms;
 /// Capacity of each agent control socket's outgoing queue. Control messages are rare; a full
 /// queue means the socket is wedged and the message is reported as undeliverable.
 pub const CONTROL_QUEUE: usize = 32;
+
+/// `session_end` reason of an agent that ends its session to install an update.
+pub const AGENT_UPDATE_REASON: &str = "agent_update";
 
 /// Why a viewer session ended. Determines close codes, `session_end` reasons and audit lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +56,7 @@ impl EndReason {
         match self {
             EndReason::ViewerClosed => "viewer_closed",
             EndReason::ViewerUnresponsive => "viewer_unresponsive",
+            EndReason::AgentClosed(Some(close::AGENT_UPDATING)) => AGENT_UPDATE_REASON,
             EndReason::AgentClosed(_) => "agent_closed",
             EndReason::AgentUnresponsive => "agent_unresponsive",
             EndReason::AgentEnded(reason) if !reason.is_empty() => reason,
@@ -66,10 +71,18 @@ impl EndReason {
 
     /// Close code + reason sent to the viewer.
     pub fn viewer_close(&self) -> (u16, &'static str) {
-        use rd_proto::close;
         match self {
             EndReason::ViewerClosed => (1000, "closed"),
             EndReason::ViewerUnresponsive => (1001, "ping timeout"),
+            // The agent ends a session for an update on both sockets: 4010 on the data socket and
+            // `session_end` on control. Whichever the gateway sees first, the viewer gets 4010 and
+            // knows to wait for the agent to come back.
+            EndReason::AgentClosed(Some(close::AGENT_UPDATING)) => {
+                (close::AGENT_UPDATING, "agent updating")
+            }
+            EndReason::AgentEnded(reason) if reason == AGENT_UPDATE_REASON => {
+                (close::AGENT_UPDATING, "agent updating")
+            }
             // Application codes chosen by the agent (e.g. 4005 protocol) reach the viewer as is.
             EndReason::AgentClosed(Some(code @ 4000..=4999)) => (*code, "closed by agent"),
             EndReason::AgentClosed(_) | EndReason::AgentUnresponsive | EndReason::AgentEnded(_) => {
@@ -127,6 +140,37 @@ pub struct SessionHandle {
 pub enum StartError {
     #[error("agent offline")]
     Offline,
+}
+
+/// Why an update request from the portal was not passed on to the agent.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum UpdateRefusal {
+    #[error("no such machine")]
+    Unknown,
+    #[error("the agent is offline")]
+    Offline,
+    #[error("this agent does not update itself (rd-agent 1.5.0 and later do)")]
+    NotSupported,
+    #[error("an update is already in progress")]
+    InProgress,
+    #[error("{0}")]
+    CannotInstall(String),
+    #[error("no update is available")]
+    NoUpdate,
+    #[error("{requested} is not the available update ({available})")]
+    OtherVersion {
+        requested: String,
+        available: String,
+    },
+}
+
+/// What an `update_status` changed, for the log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateChange {
+    /// The previous phase, when it changed.
+    pub phase_was: Option<UpdatePhase>,
+    /// An update outcome the gateway has not logged before.
+    pub outcome: Option<UpdateOutcome>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -188,6 +232,12 @@ struct Machine {
     agent: Option<AgentConn>,
     /// Last registration (kept while offline).
     info: Option<AgentInfo>,
+    /// The agent's last `update_status`. Kept while offline, so the portal still shows an update
+    /// that is being installed; cleared by a new registration (see [`Registry::register_agent`]).
+    update: Option<UpdateStatus>,
+    /// The last update outcome logged. An agent repeats its outcome after every registration;
+    /// this keeps it to one log line.
+    outcome_logged: Option<UpdateOutcome>,
     /// Online since / offline since, Unix ms.
     since_ms: Option<u64>,
     session: Option<Session>,
@@ -227,6 +277,8 @@ pub struct MachineView {
     pub state: Option<AgentState>,
     pub viewer: Option<ViewerView>,
     pub recovery: Vec<RecoveryLink>,
+    /// The agent's last `update_status`; `None` for agents that never sent one (before 1.5.0).
+    pub update: Option<UpdateStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -261,6 +313,10 @@ impl Registry {
     /// Register a control connection; a previous one for the same machine is told to close
     /// (4009) through its `kick` channel. Returns the connection id and this connection's own
     /// `kick` receiver.
+    ///
+    /// The update status is cleared: it describes the agent that sent it, and the new connection
+    /// may be another build (the update itself, a rollback, or an older agent installed by hand
+    /// that never reports one). Agents that report send `update_status` right after `register`.
     pub fn register_agent(
         &self,
         reg: AgentRegistration,
@@ -287,6 +343,7 @@ impl Registry {
             agent_version: reg.agent_version,
             state: reg.state,
         });
+        m.update = None;
         m.since_ms = Some(unix_ms());
         (conn_id, kick_rx)
     }
@@ -336,6 +393,85 @@ impl Registry {
         {
             info.state = state;
         }
+    }
+
+    /// Store an agent's `update_status` (only from its current connection). Returns what changed,
+    /// or `None` when the connection is not the current one.
+    pub fn set_update_status(
+        &self,
+        machine: &str,
+        conn_id: u64,
+        status: UpdateStatus,
+    ) -> Option<UpdateChange> {
+        let mut inner = self.inner.lock();
+        let m = inner
+            .machines
+            .get_mut(machine)
+            .filter(|m| m.agent.as_ref().is_some_and(|a| a.conn_id == conn_id))?;
+        let was = m.update.as_ref().map_or(UpdatePhase::Idle, |u| u.phase);
+        let outcome = status
+            .last
+            .clone()
+            .filter(|last| m.outcome_logged.as_ref() != Some(last));
+        if outcome.is_some() {
+            m.outcome_logged.clone_from(&status.last);
+        }
+        let phase_was = (was != status.phase).then_some(was);
+        m.update = Some(status);
+        Some(UpdateChange { phase_was, outcome })
+    }
+
+    /// The portal's Update button: send `update {version}` to the agent if its last status says
+    /// it can install exactly that version now. Returns the version the agent runs.
+    pub fn request_update(
+        &self,
+        machine: &str,
+        version: &str,
+        devices: &[Device],
+    ) -> Result<String, UpdateRefusal> {
+        let inner = self.inner.lock();
+        let Some(m) = inner.machines.get(machine) else {
+            let listed = self.configured.iter().any(|c| c.machine == machine)
+                || devices.iter().any(|d| d.machine == machine);
+            return Err(if listed {
+                UpdateRefusal::Offline
+            } else {
+                UpdateRefusal::Unknown
+            });
+        };
+        let (Some(agent), Some(info)) = (m.agent.as_ref(), m.info.as_ref()) else {
+            return Err(UpdateRefusal::Offline);
+        };
+        let status = m.update.as_ref().ok_or(UpdateRefusal::NotSupported)?;
+        if matches!(
+            status.phase,
+            UpdatePhase::Downloading | UpdatePhase::Installing
+        ) {
+            return Err(UpdateRefusal::InProgress);
+        }
+        if !status.can_install {
+            return Err(UpdateRefusal::CannotInstall(
+                if status.cannot_install.is_empty() {
+                    "this agent cannot install updates itself".to_owned()
+                } else {
+                    status.cannot_install.clone()
+                },
+            ));
+        }
+        let available = status.available.as_ref().ok_or(UpdateRefusal::NoUpdate)?;
+        if available.version != version {
+            return Err(UpdateRefusal::OtherVersion {
+                requested: version.to_owned(),
+                available: available.version.clone(),
+            });
+        }
+        let update = GatewayToAgent::Update {
+            version: version.to_owned(),
+        };
+        if !send_control(machine, agent, update) {
+            return Err(UpdateRefusal::Offline);
+        }
+        Ok(info.agent_version.clone())
     }
 
     /// The agent ended `session` on its control socket: tell the viewer task.
@@ -509,6 +645,7 @@ impl Registry {
                     since_ms: s.since_ms,
                 }),
                 recovery: cfg.map(|c| c.recovery.clone()).unwrap_or_default(),
+                update: m.and_then(|m| m.update.clone()),
             }
         };
         let configured = |id: &str| self.configured.iter().any(|c| c.machine == id);
@@ -537,6 +674,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rd_proto::control::{AvailableUpdate, UpdateResult};
     use std::time::Duration;
 
     fn reg(machine: &str) -> AgentRegistration {
@@ -626,5 +764,168 @@ mod tests {
         assert!(r.unregister_agent("mbp", id2));
         assert_eq!(r.online_count(), 0);
         assert!(!r.machines(&[])[1].online);
+    }
+
+    fn installable(version: &str) -> UpdateStatus {
+        UpdateStatus {
+            available: Some(AvailableUpdate {
+                version: version.into(),
+                notes: "- Faster.".into(),
+                url: "https://example.test/agent-v1.6.0".into(),
+            }),
+            can_install: true,
+            ..Default::default()
+        }
+    }
+
+    fn outcome(result: UpdateResult) -> UpdateOutcome {
+        UpdateOutcome {
+            from: "1.5.0".into(),
+            to: "1.6.0".into(),
+            result,
+            error: String::new(),
+            at_ms: 7,
+        }
+    }
+
+    #[tokio::test]
+    async fn update_status_is_stored_kept_offline_and_cleared_by_registration() {
+        let r = Registry::new(vec![]);
+        let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
+        let (id1, _kick) = r.register_agent(reg("mbp"), tx);
+        assert_eq!(r.machines(&[])[0].update, None, "nothing reported yet");
+
+        let change = r
+            .set_update_status("mbp", id1, installable("1.6.0"))
+            .unwrap();
+        assert_eq!(
+            change,
+            UpdateChange {
+                phase_was: None,
+                outcome: None
+            }
+        );
+        assert_eq!(r.machines(&[])[0].update, Some(installable("1.6.0")));
+
+        let downloading = UpdateStatus {
+            phase: UpdatePhase::Downloading,
+            ..installable("1.6.0")
+        };
+        let change = r
+            .set_update_status("mbp", id1, downloading.clone())
+            .unwrap();
+        assert_eq!(change.phase_was, Some(UpdatePhase::Idle));
+        assert!(
+            r.set_update_status("mbp", id1 + 1, UpdateStatus::default())
+                .is_none()
+        );
+
+        // Offline: kept, so the portal can show the install in progress.
+        assert!(r.unregister_agent("mbp", id1));
+        assert_eq!(r.machines(&[])[0].update, Some(downloading));
+
+        // A new registration may be another build: cleared until it reports.
+        let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
+        let (id2, _kick) = r.register_agent(reg("mbp"), tx);
+        assert_eq!(r.machines(&[])[0].update, None);
+
+        // An outcome is reported after every registration but logged once.
+        let done = UpdateStatus {
+            last: Some(outcome(UpdateResult::Ok)),
+            ..Default::default()
+        };
+        let change = r.set_update_status("mbp", id2, done.clone()).unwrap();
+        assert_eq!(change.outcome, Some(outcome(UpdateResult::Ok)));
+        assert_eq!(change.phase_was, None, "an empty status counts as idle");
+        let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
+        let (id3, _kick) = r.register_agent(reg("mbp"), tx);
+        assert_eq!(r.set_update_status("mbp", id3, done).unwrap().outcome, None);
+    }
+
+    #[tokio::test]
+    async fn update_requests_go_out_only_when_the_agent_can_install_that_version() {
+        let r = Registry::new(vec![MachineConfig {
+            machine: "pc".into(),
+            name: None,
+            recovery: vec![],
+        }]);
+        assert_eq!(
+            r.request_update("nope", "1.6.0", &[]),
+            Err(UpdateRefusal::Unknown)
+        );
+        assert_eq!(
+            r.request_update("pc", "1.6.0", &[]),
+            Err(UpdateRefusal::Offline),
+            "configured but never seen"
+        );
+
+        let (tx, mut rx) = mpsc::channel(CONTROL_QUEUE);
+        let (id, _kick) = r.register_agent(reg("mbp"), tx);
+        assert_eq!(
+            r.request_update("mbp", "1.6.0", &[]),
+            Err(UpdateRefusal::NotSupported)
+        );
+        let refused = |status: UpdateStatus, version: &str| {
+            r.set_update_status("mbp", id, status);
+            r.request_update("mbp", version, &[]).unwrap_err()
+        };
+        assert_eq!(
+            refused(UpdateStatus::default(), "1.6.0"),
+            UpdateRefusal::CannotInstall("this agent cannot install updates itself".into())
+        );
+        let by_hand = UpdateStatus {
+            can_install: false,
+            cannot_install: "not installed by the installer".into(),
+            ..installable("1.6.0")
+        };
+        assert_eq!(
+            refused(by_hand, "1.6.0").to_string(),
+            "not installed by the installer"
+        );
+        let up_to_date = UpdateStatus {
+            can_install: true,
+            ..Default::default()
+        };
+        assert_eq!(refused(up_to_date, "1.6.0"), UpdateRefusal::NoUpdate);
+        assert_eq!(
+            refused(installable("1.6.1"), "1.6.0").to_string(),
+            "1.6.0 is not the available update (1.6.1)"
+        );
+        let installing = UpdateStatus {
+            phase: UpdatePhase::Installing,
+            ..installable("1.6.0")
+        };
+        assert_eq!(refused(installing, "1.6.0"), UpdateRefusal::InProgress);
+        assert!(rx.try_recv().is_err(), "nothing sent so far");
+
+        r.set_update_status("mbp", id, installable("1.6.0"));
+        assert_eq!(r.request_update("mbp", "1.6.0", &[]), Ok("0.1.0".into()));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            GatewayToAgent::Update {
+                version: "1.6.0".into()
+            }
+        );
+
+        // A queue that is gone (the agent just disconnected) is reported as offline.
+        drop(rx);
+        assert_eq!(
+            r.request_update("mbp", "1.6.0", &[]),
+            Err(UpdateRefusal::Offline)
+        );
+    }
+
+    #[test]
+    fn an_update_ends_the_session_with_4010_whichever_socket_says_so_first() {
+        let on_data = EndReason::AgentClosed(Some(close::AGENT_UPDATING));
+        let on_control = EndReason::AgentEnded(AGENT_UPDATE_REASON.into());
+        for reason in [&on_data, &on_control] {
+            assert_eq!(reason.viewer_close().0, close::AGENT_UPDATING);
+            assert_eq!(reason.as_str(), AGENT_UPDATE_REASON);
+        }
+        assert_eq!(
+            EndReason::AgentEnded("stall".into()).viewer_close().0,
+            close::SESSION_ENDED
+        );
     }
 }

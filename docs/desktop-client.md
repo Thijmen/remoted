@@ -10,7 +10,7 @@ sends them to the remote machine like any other key.
 
 Everything else — login (Authentik), the portal, video, input, settings — is the same web
 viewer, loaded from the gateway. The app has no copy of the viewer and needs no update when the
-viewer changes.
+viewer changes. It updates itself from the GitHub releases: [updates.md](updates.md).
 
 Targets: Windows 10/11 (WebView2, preinstalled; per-user, no admin rights) and macOS 12+
 (WKWebView; universal app; the grab needs the Accessibility permission).
@@ -103,6 +103,22 @@ A mouse click outside the window also ends the grab, so you can never get stuck.
   sign-in domain, for the login page); navigation elsewhere opens the system browser. The
   capability that allows `rd_set_grab` is added at runtime for the gateway origin only. The
   bundled setup page may only read and save the gateway (`capabilities/setup.json`).
+- `rd_whats_new` (no arguments) is allowed for the gateway origin (the same runtime
+  capability) and the setup page. It opens the app's own release-notes window, reading the
+  public update manifest if the app has not yet: a page can make that window appear, nothing
+  more. The app calls it from the "Updated to X.Y.Z · What's new" notice it injects after an
+  update (with `eval`, in a closed shadow root); where it is refused (a sign-in page), the
+  notice opens the release page in the browser instead.
+- The update window is a bundled page in its own window (`update`). It may only read the update
+  state, start a check, and install the update the app downloaded and verified, or open its
+  release page (`capabilities/update.json`). No page gets the updater plugin's commands; the
+  app uses the plugin from Rust only.
+- Updates are installed only if signed with the release key (`plugins.updater.pubkey`), and
+  the signature must name the version the manifest announces (`requireSignedVersion`). The
+  manifest itself is not signed: its release notes are rendered without raw HTML, images or
+  non-http(s) links, links open in the system browser, and the window's CSP allows no remote
+  content or inline script. `RD_UPDATE_URL` (another manifest) accepts https, or plain http to
+  localhost in debug builds only.
 - The hook/tap is installed only while the grab is active and the window is foreground; it
   never logs keys (only how many it forwarded).
 - The gateway CSP allows the Tauri IPC endpoints (`ipc:` and `http://ipc.localhost`) in
@@ -134,6 +150,8 @@ follow):
   only. Fake shifts (`E0 2A` / `E0 36`) are dropped too.
 - Calls are `window.rdNative && window.rdNative.key(...)` (guarded; `rdNative` exists only on
   session pages), one `eval` per event, in order.
+- Updates never interrupt a session: the update window opens only when the main window is not
+  on a `/m/…` page of the gateway, and otherwise when that page is left (the next page load).
 
 macOS:
 

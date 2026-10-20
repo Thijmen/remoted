@@ -18,21 +18,28 @@ screen and injects input for whoever is logged in.
 
 ## 1. Install
 
-Download `rd-agent-<version>-windows-x64-setup.exe` from the
+Download `rd-agent-<version>-windows-x64-setup.exe` from the agent releases (`agent-v*`; up
+to 1.4.2 the agent came with the rd Desktop releases) on
 [GitHub Releases](https://github.com/Thijmen/remoted/releases) and run it. It installs for your
 account only (no administrator rights) into `%LOCALAPPDATA%\Programs\rd-agent`, adds Start menu
 shortcuts (*rd agent setup*, *rd agent status*, *rd agent logs*) and an entry in Settings → Apps,
 and offers the setup (step 3) at the end, so add the PC in the portal (step 2) first. The installer is not signed, so SmartScreen asks once:
 *More info* → *Run anyway*.
 
-Running a newer installer updates the agent in place: it stops the running agent, replaces the
-programs and starts it again with the existing configuration. Silent installs work too:
-`setup.exe /S`, then `rd-agent.exe setup` in a terminal.
+From 1.5.0 on, an agent installed this way updates itself: the portal shows **Update to
+X.Y.Z** on the PC's card, and the agent installs the new version and puts the previous one back
+if the new one does not reconnect within two minutes ([updates.md](updates.md)). Agents up to
+1.4.2 have no updater: run the 1.5.0 installer once.
+
+Running a newer installer by hand also updates the agent in place: it stops the running agent,
+replaces the programs and starts it again with the existing configuration. Silent installs work
+too: `setup.exe /S`, then `rd-agent.exe setup` in a terminal.
 
 Without the installer: every release also has `rd-agent-<version>-windows-x64.zip` with the same
-programs (the zip from 1.1.0 on, the installer from 1.2.0 on). Unblock the zip before extracting
-it (right-click → Properties → Unblock, or `Unblock-File`), so SmartScreen does not stop the
-unsigned programs. Or build them, on any Windows machine with the Rust toolchain from
+programs (the zip from 1.1.0 on, the installer from 1.2.0 on). An agent unpacked from the zip
+does not update itself; the portal then says to update it by hand. Unblock the zip before
+extracting it (right-click → Properties → Unblock, or `Unblock-File`), so SmartScreen does not
+stop the unsigned programs. Or build them, on any Windows machine with the Rust toolchain from
 `rust-toolchain.toml`:
 
 ```powershell
@@ -95,7 +102,31 @@ refuses to start.
 
 - `rd-agent install` again restarts the agent (it stops the running one first).
 - `rd-agent uninstall` removes the autostart and stops the agent.
-- Updating: `uninstall`, replace both programs, `install`.
+- Updating by hand (the zip, or a build of your own): `uninstall`, replace both programs,
+  `install`. The installer does the same.
+
+## Updates
+
+An agent installed with the installer (in a folder with its `uninstall.exe`, started by the
+autostart) updates itself from the portal: the PC's card shows **Update available: X.Y.Z**,
+**What's new** and **Update**. The agent downloads the new installer, checks its signature, ends
+an open session (the viewer reconnects by itself) and hands over to an update helper, which runs
+the installer silently and waits up to 2 minutes for the new version to connect to the gateway.
+If it does not, the helper puts the previous `rd-agent.exe` and `rd-agentw.exe` back and starts
+them. The card then shows what happened. Details: [updates.md](updates.md).
+
+At the PC, from a terminal:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\rd-agent\rd-agent.exe" update --check   # is there a newer version? also shows the last update's outcome
+& "$env:LOCALAPPDATA\Programs\rd-agent\rd-agent.exe" update           # install it now
+```
+
+`update` returns at once (the installer has to replace `rd-agent.exe`); `update --check` shows
+the outcome a minute later. The helper logs to `%LOCALAPPDATA%\rd-agent\logs\update-helper.log`.
+The agent checks for new versions 1 minute after it starts and then every 6 hours;
+`[update]` `check = false` in `config.toml` turns that off (the portal then offers nothing, but
+`rd-agent update` still works).
 
 ## Connecting from a Mac
 

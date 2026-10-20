@@ -1,0 +1,28 @@
+:root { color-scheme: light dark; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+html, body { height: 100%; margin: 0; }
+main { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; padding: 1.1rem 1.25rem 1rem; }
+header { flex: none; }
+.about { margin: 0 0 .6rem; font-size: 1.05rem; }
+h1 { font-size: 1.2rem; margin: 0 0 .3rem; }
+.status { margin: 0; opacity: .85; }
+progress { width: 100%; margin-top: .6rem; }
+.error { color: #dc2626; margin: .5rem 0 0; overflow-wrap: anywhere; }
+.notes { flex: 1; overflow-y: auto; margin-top: .9rem; padding: .1rem .9rem .6rem; border: 1px solid #8884;
+  border-radius: 8px; overflow-wrap: anywhere; }
+.notes h2 { font-size: 1rem; margin: .8rem 0 .2rem; }
+.notes h3, .notes h4, .notes h5, .notes h6 { font-size: .95rem; margin: .6rem 0 .2rem; }
+.notes ul, .notes ol { padding-left: 1.3rem; margin: .3rem 0; }
+.notes li { margin: .2rem 0; }
+.notes p { margin: .35rem 0; }
+.notes code { font-size: .9em; padding: 0 .2em; border-radius: 3px; background: #8882; }
+.notes pre { overflow-x: auto; padding: .4rem .6rem; border-radius: 6px; background: #8882; }
+.notes pre code { padding: 0; background: none; }
+.notes table { border-collapse: collapse; }
+.notes th, .notes td { border: 1px solid #8886; padding: .15rem .4rem; }
+.notes .empty { opacity: .75; }
+footer { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1rem; }
+a { color: #2563eb; }
+@media (prefers-color-scheme: dark) { a { color: #60a5fa; } }
+button { font: inherit; padding: .5rem 1.1rem; border: 0; border-radius: 6px; background: #2563eb; color: #fff;
+  cursor: pointer; margin-left: auto; }
+button:disabled { opacity: .6; cursor: default; }

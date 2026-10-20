@@ -1,1 +1,1 @@
-{ "packages": ["clients/desktop"] }
+{ "packages": ["clients/desktop", "crates/rd-agent"] }

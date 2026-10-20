@@ -42,6 +42,7 @@ pub struct Metrics {
     pub agent_auth_failures: Counter,
     pub viewer_auth_failures: Counter,
     pub agent_registrations: Counter,
+    pub agent_updates_requested: Counter,
     pub probe_runs: Counter,
 }
 
@@ -101,6 +102,12 @@ impl Metrics {
             "counter",
             "Agent control socket registrations.",
             self.agent_registrations.get(),
+        );
+        put(
+            "rd_agent_updates_requested_total",
+            "counter",
+            "Agent updates requested from the portal (sent to the agent).",
+            self.agent_updates_requested.get(),
         );
         put(
             "rd_probe_runs_total",

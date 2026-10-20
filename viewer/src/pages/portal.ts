@@ -7,12 +7,17 @@ import {
   machineIdFrom,
   removeDevice,
   replaceDeviceToken,
+  requestAgentUpdate,
 } from '../net/api';
 import type { DeviceIssued, MachineInfo } from '../proto/control';
-import { byId, h, setChildren, timeAgo } from '../ui/dom';
+import { type PendingUpdate, advancePending, pendingUpdate, updateCardView } from '../ui/agent-update';
+import { type Child, byId, h, setChildren, timeAgo } from '../ui/dom';
 import { icon } from '../ui/icons';
+import { renderMarkdown } from '../ui/markdown';
 
 const REFRESH_MS = 5000;
+/** A refused update request is shown on its card this long. */
+const UPDATE_ERROR_MS = 60_000;
 
 const root = byId('app');
 const who = h('span', { className: 'muted' });
@@ -23,6 +28,13 @@ const status = h('div', { className: 'muted' });
 const dialog = h('dialog');
 /** The gateway can add devices. */
 let canAdd = false;
+/** The last listing, re-rendered when local state changes between refreshes. */
+let machines: MachineInfo[] = [];
+// The list is rebuilt on every refresh, so what the cards need to remember lives here, by machine.
+/** Updates asked for from this page, until the agent answers. */
+const pendingUpdates = new Map<string, PendingUpdate>();
+/** Update requests the gateway refused. */
+const updateErrors = new Map<string, { text: string; at: number }>();
 
 root.append(
   h(
@@ -99,6 +111,134 @@ function deviceActions(m: MachineInfo): HTMLElement {
   return h('div', { className: 'row' }, newToken, remove);
 }
 
+/** Ask the agent to install `version`; with a session open, only after confirming. */
+function startUpdate(m: MachineInfo, version: string): void {
+  if (m.viewer && !confirm(`Updating ends the session of ${m.viewer.user}. ${m.name} is back in about 15 s.`)) {
+    return;
+  }
+  updateErrors.delete(m.machine);
+  pendingUpdates.set(m.machine, pendingUpdate(m, version, Date.now()));
+  render();
+  requestAgentUpdate(m.machine, version).then(
+    () => void refresh(),
+    (e: unknown) => {
+      pendingUpdates.delete(m.machine);
+      updateErrors.set(m.machine, { text: `The update did not start: ${errorText(e)}`, at: Date.now() });
+      render();
+    },
+  );
+}
+
+function updateButton(m: MachineInfo, version: string, className: string, onClick?: () => void): HTMLButtonElement {
+  const b = h('button', { className, type: 'button' }, 'Update');
+  b.addEventListener('click', () => {
+    onClick?.();
+    startUpdate(m, version);
+  });
+  return b;
+}
+
+/** The release notes of every version newer than the agent's, from its update check. */
+function openNotes(m: MachineInfo): void {
+  const a = m.update?.available;
+  if (!a) return;
+  const canUpdate = m.online && m.update?.can_install === true;
+  const close = closeButton('Close');
+  setChildren(
+    dialog,
+    h(
+      'div',
+      { className: 'stack' },
+      h('h2', null, `rd agent ${a.version}`),
+      h('p', { className: 'muted', style: 'margin:0' }, `${m.name} runs ${m.agent_version || 'an older version'}.`),
+      a.notes.trim()
+        ? h('div', { className: 'release-notes' }, renderMarkdown(a.notes))
+        : h('p', { className: 'muted' }, 'No release notes.'),
+      h(
+        'div',
+        { className: 'row spread' },
+        a.url ? h('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer' }, 'Release page') : h('span'),
+        h(
+          'div',
+          { className: 'row' },
+          close,
+          canUpdate ? updateButton(m, a.version, 'primary', () => dialog.close()) : null,
+        ),
+      ),
+    ),
+  );
+  dialog.showModal();
+  // Not the first link in the notes.
+  close.focus();
+}
+
+/** Agent updates on a card: available, in progress, the last outcome. Nothing for older agents. */
+function updateSection(m: MachineInfo): HTMLElement | null {
+  const now = Date.now();
+  const refused = updateErrors.get(m.machine);
+  if (refused && now - refused.at > UPDATE_ERROR_MS) updateErrors.delete(m.machine);
+  const view = updateCardView(m, pendingUpdates.get(m.machine) ?? null, now);
+  if (!view) return null;
+  const rows: Child[] = [];
+  if (view.updating !== null) {
+    rows.push(
+      h(
+        'div',
+        { className: 'row' },
+        h(
+          'span',
+          { className: 'badge accent' },
+          h('span', { className: 'spinner' }),
+          view.updating ? `Updating to ${view.updating}…` : 'Updating…',
+        ),
+      ),
+    );
+  } else if (view.available) {
+    const a = view.available;
+    const checked = m.update?.checked_ms;
+    const notes = h('button', { className: 'small', type: 'button' }, "What's new");
+    notes.addEventListener('click', () => openNotes(m));
+    rows.push(
+      h(
+        'div',
+        { className: 'row' },
+        h(
+          'span',
+          { className: 'badge accent', title: checked ? `Checked ${timeAgo(checked)}` : '' },
+          `Update available: ${a.version}`,
+        ),
+        // The buttons wrap together on a narrow card.
+        h(
+          'div',
+          { className: 'row' },
+          notes,
+          view.canInstall && m.online ? updateButton(m, a.version, 'small primary') : null,
+        ),
+      ),
+    );
+    if (!view.canInstall) {
+      rows.push(
+        h(
+          'div',
+          { className: 'muted note' },
+          `Update by hand: ${view.cannotInstall || 'this agent cannot update itself.'}`,
+        ),
+      );
+    }
+  }
+  const o = view.outcome;
+  if (o) {
+    rows.push(
+      o.level === 'muted'
+        ? h('div', { className: 'muted note' }, o.at ? `${o.text} ${timeAgo(o.at)}` : o.text)
+        : h('div', { className: `notice ${o.level} note` }, o.text),
+    );
+  }
+  if (view.error) rows.push(h('div', { className: 'muted note' }, view.error));
+  if (refused) rows.push(h('div', { className: 'error note' }, refused.text));
+  return rows.length ? h('div', { className: 'machine-update' }, ...rows) : null;
+}
+
 function osLabel(os: string): string {
   return ({ macos: 'macOS', windows: 'Windows' } as Record<string, string>)[os] ?? os;
 }
@@ -138,6 +278,7 @@ function machineCard(m: MachineInfo): HTMLElement {
       seen ? h('span', { className: 'muted' }, seen) : null,
     ),
     badges.length ? h('div', { className: 'row' }, ...badges) : null,
+    updateSection(m),
     m.recovery.length
       ? h(
           'div',
@@ -284,14 +425,23 @@ function showIssued(d: DeviceIssued, replaced: boolean): void {
   void refresh();
 }
 
+/** Rebuild the list from the last listing and this page's own state. */
+function render(): void {
+  const now = Date.now();
+  for (const m of machines) {
+    const p = pendingUpdates.get(m.machine);
+    const next = p && advancePending(p, m, now);
+    if (next) pendingUpdates.set(m.machine, next);
+    else pendingUpdates.delete(m.machine);
+  }
+  const empty = canAdd ? 'No machines yet: add one with Add device.' : 'No machines registered.';
+  setChildren(list, ...(machines.length ? machines.map(machineCard) : [h('div', { className: 'card muted' }, empty)]));
+}
+
 async function refresh(): Promise<void> {
   try {
-    const machines = await fetchMachines();
-    const empty = canAdd ? 'No machines yet: add one with Add device.' : 'No machines registered.';
-    setChildren(
-      list,
-      ...(machines.length ? machines.map(machineCard) : [h('div', { className: 'card muted' }, empty)]),
-    );
+    machines = await fetchMachines();
+    render();
     status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     status.textContent =

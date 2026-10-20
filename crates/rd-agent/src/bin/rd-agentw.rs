@@ -82,6 +82,7 @@ mod launcher {
             let started = Instant::now();
             let status = Command::new(&agent)
                 .args(&args)
+                .env(names::LAUNCHER_ENV, names::LAUNCHER_EXE)
                 .creation_flags(CREATE_NO_WINDOW)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())

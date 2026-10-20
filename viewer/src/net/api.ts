@@ -35,10 +35,10 @@ export async function fetchMe(signal?: AbortSignal): Promise<Me | null> {
 }
 
 /**
- * A JSON request to the devices API. Errors carry the gateway's own message (`{"error": "…"}`)
- * when it sent one.
+ * A state-changing JSON request (devices, agent updates). Errors carry the gateway's own message
+ * (`{"error": "…"}`) when it sent one.
  */
-async function deviceRequest(method: 'POST' | 'DELETE', path: string, body?: unknown): Promise<unknown> {
+async function apiRequest(method: 'POST' | 'DELETE', path: string, body?: unknown): Promise<unknown> {
   const res = await fetch(path, {
     method,
     cache: 'no-store',
@@ -69,15 +69,20 @@ function issued(v: unknown): DeviceIssued {
 }
 
 export async function addDevice(machine: string, name: string): Promise<DeviceIssued> {
-  return issued(await deviceRequest('POST', '/api/devices', { machine, name }));
+  return issued(await apiRequest('POST', '/api/devices', { machine, name }));
 }
 
 export async function replaceDeviceToken(machine: string): Promise<DeviceIssued> {
-  return issued(await deviceRequest('POST', `/api/devices/${encodeURIComponent(machine)}/token`, {}));
+  return issued(await apiRequest('POST', `/api/devices/${encodeURIComponent(machine)}/token`, {}));
 }
 
 export async function removeDevice(machine: string): Promise<void> {
-  await deviceRequest('DELETE', `/api/devices/${encodeURIComponent(machine)}`);
+  await apiRequest('DELETE', `/api/devices/${encodeURIComponent(machine)}`);
+}
+
+/** Ask `machine`'s agent to install `version` (the update it reported). Resolves once the gateway queued it. */
+export async function requestAgentUpdate(machine: string, version: string): Promise<void> {
+  await apiRequest('POST', `/api/machines/${encodeURIComponent(machine)}/update`, { version });
 }
 
 /** A machine id suggestion from a display name: lower case, `[a-z0-9_-]`, at most 64. */

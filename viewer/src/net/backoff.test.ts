@@ -26,6 +26,9 @@ describe('closeAction', () => {
   it('polls when the agent is offline', () => {
     expect(closeAction(4003)).toBe('poll');
   });
+  it('waits for an agent that installs an update', () => {
+    expect(closeAction(4010)).toBe('update');
+  });
   it('stops when retrying cannot help', () => {
     expect(closeAction(4002)).toBe('stop');
     expect(closeAction(4005)).toBe('stop');

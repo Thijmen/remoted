@@ -1,13 +1,14 @@
 name: Release
 
-# Changesets (https://github.com/changesets/changesets) for rd Desktop.
+# Changesets (https://github.com/changesets/changesets) for rd Desktop (rd-desktop) and the rd
+# agent (rd-agent), which are versioned and released separately (docs/updates.md).
 #
 # - A push to main with pending .changeset/*.md files opens or updates the "Version packages"
-#   PR: it bumps clients/desktop/package.json, writes clients/desktop/CHANGELOG.md and copies
-#   the version into the Tauri crate (tools/release/sync-desktop-version.ts).
-# - A push to main without pending changesets (the merged version PR) tags desktop-vX.Y.Z if
-#   that tag does not exist yet and starts the Desktop workflow on it, which builds the app and
-#   publishes the GitHub Release.
+#   PR: it bumps the packages' package.json, writes their CHANGELOG.md and copies the versions
+#   into the Rust crates (tools/release/sync-versions.ts).
+# - A push to main without pending changesets (the merged version PR) tags desktop-vX.Y.Z and
+#   agent-vX.Y.Z when those tags do not exist yet, and starts the Desktop / Agent workflow on
+#   each new tag. They build, publish the GitHub Release and update the update manifest.
 #
 # Needs "Allow GitHub Actions to create and approve pull requests" (Settings -> Actions ->
 # General). The version PR is pushed with GITHUB_TOKEN, so CI does not run on it by itself.
@@ -28,9 +29,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # version PR branch, desktop-v* tag
+      contents: write # version PR branch, desktop-v* / agent-v* tags
       pull-requests: write # version PR
-      actions: write # gh workflow run desktop.yml
+      actions: write # gh workflow run desktop.yml / agent.yml
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,26 +45,32 @@ jobs:
           version-script: bun run version
           commit-message: "Version packages"
           pr-title: "Version packages"
-          # Tagging and the GitHub Release are done below and by desktop.yml.
+          # Tagging and the GitHub Releases are done below and by desktop.yml / agent.yml.
           create-github-releases: false
           push-git-tags: false
 
-      - name: Tag rd Desktop and start its release build
+      - name: Tag new versions and start their release builds
         if: steps.changesets.outputs.has-changesets == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           bun run version:check
-          v="$(jq -r .version clients/desktop/package.json)"
-          tag="desktop-v$v"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            echo "$tag already exists, nothing to release"
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "rd Desktop $v"
-          git push origin "$tag"
-          # A tag pushed with GITHUB_TOKEN starts no workflows; a workflow_dispatch does.
-          gh workflow run desktop.yml --ref "$tag"
-          echo "Tagged $tag; the Desktop workflow builds and publishes it." >> "$GITHUB_STEP_SUMMARY"
+          # package, tag prefix, the workflow that builds and publishes it, title
+          while read -r pkg prefix workflow title; do
+            v="$(bun tools/release/sync-versions.ts --print "$pkg")"
+            tag="$prefix$v"
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              echo "$tag already exists, nothing to release for $pkg"
+              continue
+            fi
+            git tag -a "$tag" -m "$title $v"
+            git push origin "$tag"
+            # A tag pushed with GITHUB_TOKEN starts no workflows; a workflow_dispatch does.
+            gh workflow run "$workflow" --ref "$tag"
+            echo "Tagged $tag; $workflow builds and publishes it." >> "$GITHUB_STEP_SUMMARY"
+          done <<'PACKAGES'
+          rd-desktop desktop-v desktop.yml rd Desktop
+          rd-agent agent-v agent.yml rd agent
+          PACKAGES

@@ -8,6 +8,7 @@ use common::*;
 use futures_util::{SinkExt, StreamExt};
 use rd_gateway::{Config, MachineConfig, RecoveryLink};
 use rd_proto::bin::{InputEvent, VideoAck, VideoHeader};
+use rd_proto::close;
 use rd_proto::control::{AgentToGateway, GatewayToAgent};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
@@ -64,7 +65,7 @@ async fn registration_replacement_4009_and_portal_listing() {
         serde_json::json!([{
             "machine": "pc", "name": "Office PC", "managed": false, "online": false, "since_ms": null,
             "os": null, "agent_version": null, "state": null, "viewer": null,
-            "recovery": [{"label": "RDP", "url": "https://guac.example/pc"}]
+            "recovery": [{"label": "RDP", "url": "https://guac.example/pc"}], "update": null
         }])
     );
 
@@ -342,6 +343,38 @@ async fn agent_closing_data_socket_4006() {
     .unwrap();
     assert_eq!(expect_close(&mut viewer).await, 4005);
     assert_eq!(agent.expect_session_end(&session).await, "agent_closed");
+    drop(agent);
+    gw.shutdown().await;
+}
+
+#[tokio::test]
+async fn agent_update_ends_session_4010() {
+    let gw = TestGateway::start(dev_config()).await;
+    let mut agent = FakeAgent::connect(&gw, "mbp", TOKEN).await.unwrap();
+
+    // The agent closes its data socket with 4010: passed through, and not an error.
+    let (mut viewer, mut data, session) = open_session(&gw, &mut agent, "mbp", &[]).await;
+    data.close(Some(CloseFrame {
+        code: close::AGENT_UPDATING.into(),
+        reason: "updating".into(),
+    }))
+    .await
+    .unwrap();
+    assert_eq!(expect_close(&mut viewer).await, close::AGENT_UPDATING);
+    assert_eq!(agent.expect_session_end(&session).await, "agent_update");
+
+    // Its `session_end` on control may arrive first: the viewer still gets 4010.
+    let (mut viewer, mut data, session) = open_session(&gw, &mut agent, "mbp", &[]).await;
+    send_json(
+        &mut agent.ctl,
+        &AgentToGateway::SessionEnd {
+            session,
+            reason: "agent_update".into(),
+        },
+    )
+    .await;
+    assert_eq!(expect_close(&mut viewer).await, close::AGENT_UPDATING);
+    assert_eq!(expect_close(&mut data).await, 1000);
     drop(agent);
     gw.shutdown().await;
 }

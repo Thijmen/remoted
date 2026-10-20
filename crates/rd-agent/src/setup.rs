@@ -70,11 +70,13 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         None => ask_connection(args, existing.as_ref())?,
     };
 
+    let (defaults, update) = existing.map(|c| (c.defaults, c.update)).unwrap_or_default();
     let cfg = AgentConfig {
         gateway_url,
         machine,
         token: Some(token),
-        defaults: existing.map(|c| c.defaults).unwrap_or_default(),
+        defaults,
+        update,
     };
     cfg.save(&path)
         .with_context(|| format!("writing {}", path.display()))?;
