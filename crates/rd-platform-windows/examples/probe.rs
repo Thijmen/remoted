@@ -34,6 +34,15 @@ fn main() -> anyhow::Result<()> {
         for e in mf::h264_encoders(Some(desc.AdapterLuid))? {
             println!("    encoder {} (hardware {})", e.name, e.hardware);
         }
+        // What the capture pipeline can do with this adapter: Desktop Duplication needs a
+        // device with video support at feature level 10 or higher.
+        match d3d::create_device(Some(&adapter)) {
+            Ok(gpu) => println!(
+                "    device {} (software {}, video support yes)",
+                gpu.name, gpu.software
+            ),
+            Err(e) => println!("    device unavailable: {e:#}"),
+        }
     }
     Ok(())
 }

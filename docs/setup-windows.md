@@ -10,6 +10,12 @@ screen and injects input for whoever is logged in.
 - A GPU with a hardware H.264 encoder is strongly recommended: NVIDIA (NVENC), Intel (Quick
   Sync) or AMD (AMF), through their Media Foundation encoders. Without one the agent uses
   Microsoft's software encoder, which is fine up to about 1080p on a fast CPU.
+- A graphics driver for the display is recommended. With one the agent uses Desktop
+  Duplication (the fastest capture path). Without one — the *Microsoft Basic Display Adapter*
+  after a fresh install, a virtual machine's display adapter, a USB/dock display — the agent
+  falls back to GDI capture and software encoding: it works, but at most 30 frames per second
+  and with more CPU load. Update the display adapter's driver in Device Manager for the fast
+  path.
 - Media Foundation. It is part of Windows, except on the **N editions** (install the *Media
   Feature Pack* under Settings → Apps → Optional features) and on **Windows Server** (install
   the *Server Media Foundation* feature). Without it `rd-agent.exe` does not start
@@ -156,6 +162,9 @@ which also captures the shortcuts a browser never sees.
   terminal if you need to control such windows (it still cannot reach the secure desktop).
 - **Rotated (portrait) displays** are captured in their landscape scan-out orientation.
 - **HDR desktops** are converted to SDR by Windows.
+- **Without a graphics driver** (see [Requirements](#requirements)) the agent captures with
+  GDI and encodes in software: at most 30 frames per second, and more CPU load. Updating the
+  display adapter's driver brings Desktop Duplication back.
 - During a session the agent keeps the display and the PC awake, and wakes a dark display when
   a viewer connects: Desktop Duplication only delivers frames from a lit display.
 - **File transfer** ([files.md](files.md)) runs as your user, unelevated: it reaches what you
@@ -179,14 +188,17 @@ picture: the input loops back into the desktop you are watching.
 
 Useful while working on `crates/rd-platform-windows`:
 
-- `cargo run -p rd-platform-windows --example probe` lists monitors, GPUs, their outputs and the
-  H.264 encoders Media Foundation offers for each.
+- `cargo run -p rd-platform-windows --example probe` lists monitors, GPUs, their outputs,
+  whether a D3D11 device can be created on each (Desktop Duplication's fast path) and the
+  H.264 encoders Media Foundation offers for it.
 - `cargo run --release -p rd-platform-windows --example animate` animates a window and the
   pointer on the primary display for a few seconds; run it next to `rd-agent selftest` for
   capture measurements on an otherwise static desktop.
 - `cargo test -p rd-platform-windows -- --ignored` also runs the tests that touch the real
   desktop: a screen capture of the primary display and pointer moves (the pointer is put back).
 - `RD_MF_ENCODER=hardware|software` forces the encoder choice for `run`.
+- `RD_CAPTURE=gdi` skips Desktop Duplication (the fallback the agent takes by itself on a PC
+  without a graphics driver), to try the GDI capture path on a PC that has one.
 
 ## Uninstall
 

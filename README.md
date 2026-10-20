@@ -39,7 +39,7 @@ travel over a single secure WebSocket, the same kind of traffic as any other web
 
 | Component | What it does |
 |---|---|
-| **rd-agent** | Captures the screen (ScreenCaptureKit on macOS, Desktop Duplication on Windows), encodes hardware H.264 (VideoToolbox; Media Foundation with NVENC, Quick Sync or AMF) and injects mouse and keyboard input. It connects *out* to the gateway, so nothing listens at home. |
+| **rd-agent** | Captures the screen (ScreenCaptureKit on macOS, Desktop Duplication on Windows, and GDI where Windows has no display driver for either), encodes hardware H.264 (VideoToolbox; Media Foundation with NVENC, Quick Sync or AMF) and injects mouse and keyboard input. It connects *out* to the gateway, so nothing listens at home. |
 | **rd-gateway** | Serves the portal and the viewer, checks who you are (Authentik + an email allowlist), and joins the viewer and agent sockets without buffering. Ships as a small distroless image. |
 | **viewer** | A TypeScript web app that decodes video with WebCodecs and acknowledges every frame. |
 | **rd Desktop** | An optional Windows/macOS app that shows the same viewer in a window and also captures the shortcuts a browser never sees (Alt+Tab, Cmd+Tab, the Windows key, …). |
@@ -121,7 +121,8 @@ crates/rd-proto            wire protocol (shared by agent and gateway), HID keym
 crates/rd-flow             flow control: in-flight window + delay-based bitrate controller
 crates/rd-agent-core       agent runtime, selftest harness, test pattern (platform independent)
 crates/rd-platform-macos   ScreenCaptureKit, VideoToolbox, CGEvent, IOKit, Keychain
-crates/rd-platform-windows Desktop Duplication, D3D11 video processor, Media Foundation, SendInput
+crates/rd-platform-windows Desktop Duplication (GDI when there is no display driver), D3D11 video
+                           processor, Media Foundation, SendInput
 crates/rd-agent            the agent binary (run | setup | install | uninstall | status | selftest);
                            rd-agentw: the Windows background launcher
 crates/rd-gateway          relay, portal, network probe; embeds viewer/dist

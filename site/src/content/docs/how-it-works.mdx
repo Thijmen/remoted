@@ -140,7 +140,8 @@ rules.
 
 - **Video**: the agent captures with ScreenCaptureKit (macOS) or Desktop Duplication (Windows),
   and encodes H.264 on the GPU: VideoToolbox on macOS, Media Foundation on Windows (NVENC, Quick
-  Sync or AMF, with Microsoft's software encoder as a fallback). The viewer decodes with
+  Sync or AMF, with Microsoft's software encoder as a fallback). A Windows display without a
+  graphics driver is captured with GDI and encoded in software. The viewer decodes with
   WebCodecs and paints each frame as soon as it is decoded, or once per display refresh if you
   prefer.
 - **Audio** is in the protocol and the viewer (Opus, decoded with WebCodecs and played by an

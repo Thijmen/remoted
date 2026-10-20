@@ -4,6 +4,7 @@
 //! - `capture`     — the screen pipeline (Desktop Duplication -> pointer -> scaler -> encoder)
 //!   and a synthetic test-pattern pipeline
 //! - `duplication` — DXGI Desktop Duplication of one output (desktop image, pointer)
+//! - `gdi`         — GDI screen capture, for displays without a usable D3D11 device
 //! - `cursor`      — drawing the pointer into the captured image
 //! - `convert`     — D3D11 video processor: BGRA desktop -> letterboxed BT.709 NV12 frame
 //! - `encoder`     — Media Foundation H.264 (hardware MFT from textures, software fallback)
@@ -25,6 +26,7 @@ pub mod display;
 pub mod duplication;
 pub mod encoder;
 pub mod files;
+pub mod gdi;
 pub mod geometry;
 pub mod input;
 pub mod mf;

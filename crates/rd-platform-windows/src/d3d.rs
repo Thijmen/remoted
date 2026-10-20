@@ -95,7 +95,8 @@ pub fn find_output(device: &str) -> anyhow::Result<(IDXGIAdapter1, IDXGIOutput, 
 pub fn create_device(adapter: Option<&IDXGIAdapter1>) -> anyhow::Result<Gpu> {
     let flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
     let result = match adapter {
-        Some(a) => create(Some(a), D3D_DRIVER_TYPE_UNKNOWN, flags),
+        Some(a) => create(Some(a), D3D_DRIVER_TYPE_UNKNOWN, flags)
+            .with_context(|| format!("creating a D3D11 device on {}", describe(a))),
         None => create(None, D3D_DRIVER_TYPE_HARDWARE, flags).or_else(|e| {
             debug!("no hardware D3D11 device ({e:#}); trying WARP");
             create(None, D3D_DRIVER_TYPE_WARP, flags)
@@ -158,6 +159,15 @@ fn create(
         device.context("D3D11CreateDevice returned no device")?,
         context.context("D3D11CreateDevice returned no context")?,
     ))
+}
+
+/// `'Microsoft Basic Display Adapter'`, for an error message.
+fn describe(adapter: &IDXGIAdapter1) -> String {
+    // SAFETY: valid adapter.
+    match unsafe { adapter.GetDesc1() } {
+        Ok(desc) => format!("{:?}", wide(&desc.Description)),
+        Err(_) => "an unnamed adapter".into(),
+    }
 }
 
 #[cfg(test)]
