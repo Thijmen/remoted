@@ -1,5 +1,11 @@
 # rd-desktop
 
+## 1.6.1
+
+### Patch Changes
+
+- e809652: Update JS dependencies (non-major)
+
 ## 1.6.0
 
 ### Minor Changes
