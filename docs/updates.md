@@ -208,6 +208,23 @@ version, `RD_AGENT_UPDATE_PUBKEY` replaces the built-in key, `RD_AGENT_UPDATE_UR
 (any build) moves the logs; `--config` moves the update folder with the config file. So a test
 install in a temporary folder, with its own LaunchAgent label, never touches the real one.
 
+## Beta builds
+
+For testing a pull request on a real machine, a maintainer comments `/beta` on it. The Beta
+workflow (`.github/workflows/beta.yml`) builds the Windows agent from that PR's head and
+publishes it as a prerelease, `agent-vX.Y.Z-beta.<run>`:
+
+- maintainers only (`OWNER`, `MEMBER` or `COLLABORATOR`), and pull requests from this
+  repository (not forks);
+- Windows x64 only, unsigned: the build has no signing secret, so the PR's code cannot take
+  it, and SmartScreen asks once;
+- the stable `agent.json` manifest is not updated, so installed agents never offer a beta.
+  Download `rd-agent-<version>-windows-x64-setup.exe` from the prerelease and run it by hand;
+  run the previous installer to go back.
+
+Beta builds have no `CHANGELOG.md` section: the release notes name the pull request and
+commit.
+
 ## Existing installs
 
 - rd Desktop 1.4.x and earlier have no updater: install 1.5.0 by hand once.

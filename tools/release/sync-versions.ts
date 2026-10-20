@@ -81,6 +81,23 @@ if (import.meta.main) {
     console.log(packageVersion(pkg));
     process.exit(0);
   }
+  // A beta build (`.github/workflows/beta.yml`) stamps its own version into a checkout without
+  // touching the committed one: set package.json, then copy it into Cargo.toml and Cargo.lock.
+  if (args[0] === "--set") {
+    const pkg = PACKAGES.find((p) => p.name === args[1]);
+    if (!pkg) throw new Error(`unknown package ${args[1]}; one of ${PACKAGES.map((p) => p.name).join(", ")}`);
+    const version = args[2];
+    if (!version || !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
+      throw new Error(`not a semver version: ${version ?? ""}`);
+    }
+    const path = join(root, pkg.packageJson);
+    const json = JSON.parse(readFileSync(path, "utf8"));
+    json.version = version;
+    writeFileSync(path, JSON.stringify(json, null, 2) + "\n");
+    sync(pkg, true);
+    console.log(`${pkg.name} ${version}: wrote ${pkg.packageJson}, ${pkg.cargoToml} and ${pkg.cargoLock}`);
+    process.exit(0);
+  }
   const check = args.includes("--check");
   let failed = false;
   for (const pkg of PACKAGES) {
