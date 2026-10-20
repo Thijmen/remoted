@@ -1,5 +1,11 @@
 # rd-desktop
 
+## 1.7.0
+
+### Minor Changes
+
+- ec33946: File transfer works in the app: drop files onto the window to upload them, and downloads are saved to your Downloads folder.
+
 ## 1.6.1
 
 ### Patch Changes
