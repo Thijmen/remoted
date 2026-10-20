@@ -9,6 +9,7 @@
 //! - `input`    — CGEvent injection (mouse abs/rel/buttons/click-state, wheel, keys via HID->kVK)
 //! - `power`    — IOPM assertions (keep display awake, declare user activity)
 //! - `session`  — lock state, permission preflight, OS description, displays
+//! - `files`    — file browser places, Move to Trash
 //! - `keychain` — agent token storage
 //! - `selftest` — capture+encode benchmark, SPS/VUI assertions, optional `.rdv` recording
 
@@ -17,6 +18,7 @@
 pub mod capture;
 mod cf;
 pub mod encoder;
+pub mod files;
 pub mod geometry;
 pub mod input;
 pub mod keychain;
@@ -27,7 +29,9 @@ pub mod session;
 
 use std::sync::Arc;
 
-use rd_agent_core::{DisplayDesc, Guard, InputInjector, LockState, Perms, Platform, VideoPipeline};
+use rd_agent_core::{
+    DisplayDesc, Guard, InputInjector, LockState, Perms, Place, Platform, VideoPipeline,
+};
 
 pub use encoder::RateControl;
 use geometry::CaptureGeometry;
@@ -116,5 +120,14 @@ impl Platform for MacPlatform {
         Ok(Box::new(
             input::CgInjector::new()?.with_capture_geometry(self.geometry.clone()),
         ))
+    }
+    fn file_places(&self) -> Vec<Place> {
+        files::places()
+    }
+    fn can_trash(&self) -> bool {
+        true
+    }
+    fn trash(&self, path: &std::path::Path) -> std::io::Result<()> {
+        files::trash(path)
     }
 }

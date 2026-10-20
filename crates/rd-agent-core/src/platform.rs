@@ -1,12 +1,14 @@
 //! Traits implemented by platform crates. The runtime owns one [`Platform`] and creates a
 //! [`VideoPipeline`] / [`InputInjector`] (/ [`AudioSource`]) per session.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::Bytes;
 pub use rd_flow::Admitted;
 pub use rd_proto::bin::InputEvent;
 pub use rd_proto::control::{AgentState, DisplayDesc, Perms};
+pub use rd_proto::files::{Place, PlaceKind};
 
 /// Requested video output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,4 +151,63 @@ pub trait Platform: Send + Sync + 'static {
     fn audio_source(&self) -> Option<Box<dyn AudioSource>> {
         None
     }
+    /// Starting points of the file browser (docs/files.md): home, Desktop, Documents,
+    /// Downloads, drives and volumes. The default is [`default_places`].
+    fn file_places(&self) -> Vec<Place> {
+        default_places()
+    }
+    /// `trash` works here.
+    fn can_trash(&self) -> bool {
+        false
+    }
+    /// Moves `path` to the Trash / Recycle Bin.
+    fn trash(&self, path: &Path) -> std::io::Result<()> {
+        let _ = path;
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+/// The user's home folder: `HOME`, or `USERPROFILE` on Windows.
+pub fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// A place for `path` if it is a folder.
+pub fn place(kind: PlaceKind, name: impl Into<String>, path: &Path) -> Option<Place> {
+    path.is_dir().then(|| Place {
+        kind,
+        name: name.into(),
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+
+/// Home and its Desktop, Documents and Downloads folders (those that exist).
+pub fn home_places() -> Vec<Place> {
+    let Some(home) = home_dir() else {
+        return Vec::new();
+    };
+    let name = home
+        .file_name()
+        .map_or("Home".to_owned(), |n| n.to_string_lossy().into_owned());
+    [
+        place(PlaceKind::Home, name, &home),
+        place(PlaceKind::Desktop, "Desktop", &home.join("Desktop")),
+        place(PlaceKind::Documents, "Documents", &home.join("Documents")),
+        place(PlaceKind::Downloads, "Downloads", &home.join("Downloads")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// [`home_places`] and, on Unix, the root folder.
+pub fn default_places() -> Vec<Place> {
+    let mut places = home_places();
+    if cfg!(unix) {
+        places.extend(place(PlaceKind::Drive, "/", Path::new("/")));
+    }
+    places
 }
