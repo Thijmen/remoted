@@ -1,4 +1,6 @@
 import { AudioPlayer } from '../audio/player';
+import { FilesController } from '../files/controller';
+import { dragHasFiles, itemsFromDrop } from '../files/sources';
 import type { ChordAction } from '../input/chords';
 import { InputController, type InputOptions } from '../input/controller';
 import { isMacViewer, isWindowsViewer, resolveMapping } from '../input/modifiers';
@@ -22,6 +24,8 @@ import { LatencyTest } from '../video/latency-test';
 import { VideoPipeline, probeDecoders } from '../video/pipeline';
 import { type Banner, type BannerAction, Banners } from './banner';
 import { type Child, downloadJson, h, setChildren, timeAgo } from './dom';
+import { FilesBrowser, type FilesLayout } from './files-browser';
+import { TransferIndicator } from './files-transfers';
 import { Hud, type HudSnapshot } from './hud';
 import { type IconName, icon } from './icons';
 import {
@@ -53,6 +57,8 @@ const keyboardLock = (): KeyboardLock | undefined => (navigator as Navigator & {
 
 const STATS_LOG_MAX = 7200;
 const FIT_RESIZE_DEBOUNCE_MS = 400;
+const FILES_WIDTH_KEY = 'rd.files.width';
+const FILES_MIN_WIDTH = 360;
 
 const AGENT_ERRORS: Readonly<Record<string, string>> = {
   tcc_screen:
@@ -115,6 +121,15 @@ export class ViewerApp {
   private paused = false;
   private hudTimer = 0;
   private resizeTimer = 0;
+  /** File transfer (docs/files.md): the channel and transfers, the browser, the indicator. */
+  private readonly files: FilesController;
+  private readonly browser: FilesBrowser;
+  private readonly indicator: TransferIndicator;
+  private readonly filesPage = h('div', { className: 'files-page-wrap', hidden: true });
+  private readonly filesResizer = h('div', { className: 'files-resizer', hidden: true });
+  private readonly stageDrop = h('div', { className: 'stage-drop', hidden: true });
+  private filesLayout: FilesLayout | null = null;
+  private stageDragDepth = 0;
   private readonly statsLog: Array<HudSnapshot & { agent: AgentStats | null }> = [];
 
   constructor(
@@ -197,10 +212,22 @@ export class ViewerApp {
         this.toggleToolbar(false);
       }
     });
-    this.stage.append(handle, this.toolbar, this.hud.el);
-    root.append(this.connectView, this.stage, this.banners.el);
+    this.files = new FilesController(machine);
+    this.browser = new FilesBrowser(this.files, {
+      machineName: () => this.info?.name ?? this.machine,
+      layout: 'drawer',
+      close: () => this.closeFiles(),
+    });
+    this.indicator = new TransferIndicator(this.files.transfers, () => this.openFiles(this.active ? 'drawer' : 'page'));
+    this.files.subscribe(() => this.indicator.render(!this.browser.isOpen));
+    // The transfer indicator's numbers (speed, percent) move without events.
+    window.setInterval(() => this.indicator.render(!this.browser.isOpen), 1000);
+    this.stage.append(handle, this.toolbar, this.hud.el, this.stageDrop);
+    root.append(this.connectView, this.stage, this.filesPage, this.filesResizer, this.indicator.el, this.banners.el);
+    this.wireStageDrop();
+    this.wireFilesResizer();
     window.addEventListener('beforeunload', (e) => {
-      if (this.live) e.preventDefault();
+      if (this.live || this.files.transfers.working) e.preventDefault();
     });
     document.addEventListener('visibilitychange', () => this.onVisibility());
     document.addEventListener('fullscreenchange', () => {
@@ -215,6 +242,7 @@ export class ViewerApp {
     this.decoderCaps = caps;
     this.info = info;
     this.renderConnect();
+    if (location.hash === '#files' && info?.files) this.openFiles('page');
   }
 
   // -------------------------------------------------------------------------
@@ -266,6 +294,20 @@ export class ViewerApp {
         info?.viewer ? h('div', { className: 'muted' }, 'Connecting takes over the existing session.') : null,
         ...problems.map((p) => h('div', { className: 'notice bad' }, p)),
         connect,
+        info?.files
+          ? h(
+              'button',
+              {
+                type: 'button',
+                className: 'block',
+                disabled: !info.online,
+                title: 'Browse, download and upload files without taking over the screen',
+                onclick: () => this.openFiles('page'),
+              },
+              icon('folder', 16),
+              'Browse files',
+            )
+          : null,
         recovery.length
           ? h(
               'div',
@@ -347,6 +389,7 @@ export class ViewerApp {
   }
 
   private showConnectScreen(): void {
+    if (this.filesLayout === 'drawer') this.closeFiles();
     this.active = false;
     this.goIdle();
     this.stopLatencyTest();
@@ -654,7 +697,143 @@ export class ViewerApp {
         return;
       case 'next-display':
         this.nextDisplay();
+        return;
+      case 'files':
+        if (this.browser.isOpen) this.closeFiles();
+        else if (this.info?.files) this.openFiles('drawer');
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // files
+
+  /** Show the file browser next to the remote screen (`drawer`) or instead of the connect screen (`page`). */
+  private openFiles(layout: FilesLayout): void {
+    if (this.browser.isOpen && this.filesLayout === layout) {
+      this.browser.focus();
+      return;
+    }
+    if (this.browser.isOpen) this.closeFiles(false);
+    this.filesLayout = layout;
+    this.browser.setLayout(layout);
+    this.toggleToolbar(false);
+    if (layout === 'drawer') {
+      this.applyFilesWidth(this.filesWidth());
+      document.body.append(this.browser.el);
+      this.stage.classList.add('with-files');
+      this.filesResizer.hidden = false;
+    } else {
+      setChildren(this.filesPage, this.browser.el);
+      this.filesPage.hidden = false;
+      this.connectView.hidden = true;
+      if (location.hash !== '#files') history.replaceState(null, '', '#files');
+    }
+    this.browser.open();
+    this.indicator.render(false);
+    this.refreshToolbar();
+  }
+
+  private closeFiles(focusStage = true): void {
+    const layout = this.filesLayout;
+    this.browser.close();
+    this.browser.el.remove();
+    this.filesLayout = null;
+    this.stage.classList.remove('with-files');
+    this.filesResizer.hidden = true;
+    if (layout === 'page') {
+      this.filesPage.hidden = true;
+      if (!this.active) this.connectView.hidden = false;
+      if (location.hash === '#files') history.replaceState(null, '', location.pathname + location.search);
+    }
+    this.indicator.render(true);
+    this.refreshToolbar();
+    if (focusStage && this.active) this.canvas.focus();
+  }
+
+  private filesWidth(): number {
+    const saved = Number(localStorage.getItem(FILES_WIDTH_KEY));
+    return Number.isFinite(saved) && saved > 0 ? saved : 540;
+  }
+
+  private applyFilesWidth(w: number): number {
+    const max = Math.max(FILES_MIN_WIDTH, Math.round(window.innerWidth * 0.75));
+    const width = Math.round(Math.min(max, Math.max(FILES_MIN_WIDTH, w)));
+    document.documentElement.style.setProperty('--files-w', `${width}px`);
+    this.filesResizer.style.left = `${window.innerWidth - width}px`;
+    return width;
+  }
+
+  /** Drag the drawer's left edge to resize it. */
+  private wireFilesResizer(): void {
+    const r = this.filesResizer;
+    r.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      r.setPointerCapture(e.pointerId);
+      r.classList.add('active');
+    });
+    r.addEventListener('pointermove', (e) => {
+      if (!r.hasPointerCapture(e.pointerId)) return;
+      this.applyFilesWidth(window.innerWidth - e.clientX);
+    });
+    const end = (e: PointerEvent) => {
+      if (!r.hasPointerCapture(e.pointerId)) return;
+      r.releasePointerCapture(e.pointerId);
+      r.classList.remove('active');
+      localStorage.setItem(FILES_WIDTH_KEY, String(this.applyFilesWidth(window.innerWidth - e.clientX)));
+    };
+    r.addEventListener('pointerup', end);
+    r.addEventListener('pointercancel', end);
+    window.addEventListener('resize', () => {
+      if (this.filesLayout === 'drawer') this.applyFilesWidth(this.filesWidth());
+    });
+  }
+
+  /** Files dropped onto the remote screen go to the folder the browser shows (else the remote Desktop). */
+  private wireStageDrop(): void {
+    const accepts = (e: DragEvent) => this.active && this.info?.files === true && dragHasFiles(e.dataTransfer);
+    const show = () => {
+      const where = this.browser.currentDir ? this.browser.folderName(this.browser.currentDir) : 'the Desktop';
+      setChildren(
+        this.stageDrop,
+        h(
+          'div',
+          { className: 'files-drop-card' },
+          icon('upload', 28),
+          h('div', null, 'Drop to upload to ', h('b', null, where), ` on ${this.info?.name ?? this.machine}`),
+        ),
+      );
+      this.stageDrop.hidden = false;
+    };
+    this.stage.addEventListener('dragenter', (e) => {
+      if (!accepts(e)) return;
+      e.preventDefault();
+      if (this.stageDragDepth++ === 0) show();
+    });
+    this.stage.addEventListener('dragover', (e) => {
+      if (!accepts(e)) return;
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = 'copy';
+    });
+    this.stage.addEventListener('dragleave', () => {
+      this.stageDragDepth = Math.max(0, this.stageDragDepth - 1);
+      if (this.stageDragDepth === 0) this.stageDrop.hidden = true;
+    });
+    this.stage.addEventListener('drop', (e) => {
+      this.stageDragDepth = 0;
+      this.stageDrop.hidden = true;
+      if (!accepts(e)) return;
+      e.preventDefault();
+      const items = itemsFromDrop(e.dataTransfer!);
+      const dest = this.browser.currentDir;
+      void items.then((list) => this.browser.uploadInto(list, dest));
+    });
+    // A file dropped anywhere else must not make the browser open it (and leave the session).
+    window.addEventListener('dragover', (e) => {
+      if (dragHasFiles(e.dataTransfer)) e.preventDefault();
+    });
+    window.addEventListener('drop', (e) => {
+      if (dragHasFiles(e.dataTransfer)) e.preventDefault();
+    });
   }
 
   private stopLatencyTest(): void {
@@ -743,6 +922,9 @@ export class ViewerApp {
         void this.input.togglePointerLock();
       }),
       tool('stats', 'Stats', () => this.onChord('hud'), this.hud.visible),
+      this.info?.files
+        ? tool('folder', 'Files (Ctrl+Alt+Shift+E)', () => this.onChord('files'), this.browser.isOpen)
+        : null,
       tool(
         'settings',
         'Settings',

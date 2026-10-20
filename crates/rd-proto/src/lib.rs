@@ -10,6 +10,7 @@
 
 pub mod bin;
 pub mod control;
+pub mod files;
 pub mod keymap;
 pub mod setup_code;
 
@@ -41,6 +42,11 @@ pub mod close {
     /// The agent is installing an update (docs/updates.md). It comes back by itself, usually
     /// within a minute: viewers should keep reconnecting meanwhile.
     pub const AGENT_UPDATING: u16 = 4010;
+    /// The agent does not support what the viewer asked for (a file channel to an agent
+    /// without the `files` capability).
+    pub const UNSUPPORTED: u16 = 4011;
+    /// Standard close code 1013 (try again later): too many file channels to this machine.
+    pub const TRY_AGAIN_LATER: u16 = 1013;
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

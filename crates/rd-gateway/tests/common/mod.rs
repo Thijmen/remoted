@@ -231,8 +231,18 @@ impl FakeAgent {
         machine: &str,
         token: &str,
     ) -> Result<FakeAgent, tungstenite::Error> {
+        Self::connect_with_caps(gw, machine, token, &[]).await
+    }
+
+    /// Registers with `register.caps` (e.g. `["files"]`).
+    pub async fn connect_with_caps(
+        gw: &TestGateway,
+        machine: &str,
+        token: &str,
+        caps: &[&str],
+    ) -> Result<FakeAgent, tungstenite::Error> {
         let mut agent = Self::connect_unregistered(gw, token).await?;
-        agent.register(machine).await;
+        agent.register_with_caps(machine, caps).await;
         let registered: GatewayToAgent = recv_json(&mut agent.ctl).await;
         assert_eq!(registered, GatewayToAgent::Registered { gw_proto: 1 });
         Ok(agent)
@@ -252,12 +262,17 @@ impl FakeAgent {
     }
 
     pub async fn register(&mut self, machine: &str) {
+        self.register_with_caps(machine, &[]).await;
+    }
+
+    pub async fn register_with_caps(&mut self, machine: &str, caps: &[&str]) {
         let register = AgentToGateway::Register {
             machine: machine.into(),
             agent_version: "0.1.0".into(),
             os: "macOS 26.3 (test)".into(),
             gw_proto: 1,
             state: AgentState::default(),
+            caps: caps.iter().map(|c| (*c).to_owned()).collect(),
         };
         send_json(&mut self.ctl, &register).await;
     }
@@ -279,6 +294,20 @@ impl FakeAgent {
             GatewayToAgent::SessionEnd { session: s, reason } if s == session => reason,
             other => panic!("expected session_end for {session}, got {other:?}"),
         }
+    }
+
+    /// Wait for a `files_request` and return its channel id.
+    pub async fn expect_files_request(&mut self) -> String {
+        match self.next_ctl().await {
+            GatewayToAgent::FilesRequest { channel, .. } => channel,
+            other => panic!("expected files_request, got {other:?}"),
+        }
+    }
+
+    pub async fn dial_files(&self, channel: &str) -> Result<Ws, tungstenite::Error> {
+        let auth = format!("Bearer {}", self.token);
+        let url = format!("ws://{}/ws/agent/files/{channel}", self.agent_addr);
+        connect_with(&url, &[("authorization", &auth)], None).await
     }
 
     pub async fn dial(&self, session: &str) -> Result<Ws, tungstenite::Error> {
@@ -323,6 +352,35 @@ pub async fn open_session(
         other => panic!("expected session, got {other:?}"),
     }
     (viewer, data, session)
+}
+
+/// Open a file channel and complete the join; returns (viewer, agent file socket, channel id).
+pub async fn open_files(
+    gw: &TestGateway,
+    agent: &mut FakeAgent,
+    machine: &str,
+    viewer_headers: &[(&str, &str)],
+) -> (Ws, Ws, String) {
+    let mut viewer = connect(
+        &gw.viewer_url(&format!("/ws/files/{machine}")),
+        viewer_headers,
+    )
+    .await
+    .expect("viewer connects");
+    let channel = agent.expect_files_request().await;
+    let data = agent.dial_files(&channel).await.expect("agent dials files");
+    match recv_json::<GatewayToViewer>(&mut viewer).await {
+        GatewayToViewer::Session {
+            machine: m,
+            session: s,
+            ..
+        } => {
+            assert_eq!(m, machine);
+            assert_eq!(s, channel);
+        }
+        other => panic!("expected session, got {other:?}"),
+    }
+    (viewer, data, channel)
 }
 
 // ---------------------------------------------------------------------------

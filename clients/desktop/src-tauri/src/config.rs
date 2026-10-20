@@ -258,6 +258,20 @@ pub fn allowed_in_window(settings: Option<&Settings>, url: &Url) -> bool {
             .is_some_and(|(domain, host)| is_under(host, domain))
 }
 
+/// A download the window may save (to the Downloads folder): the viewer's file transfers hand
+/// the browser a `blob:` URL of the gateway page; plain links on the gateway work too. Anything
+/// else (a sign-in page, another site) is refused.
+pub fn download_allowed(settings: Option<&Settings>, url: &Url) -> bool {
+    let Some(settings) = settings else {
+        return false;
+    };
+    match url.scheme() {
+        // `blob:https://rd.example.com/<uuid>`: the origin is the page that made it.
+        "blob" | "https" | "http" => url.origin() == settings.gateway_url.origin(),
+        _ => false,
+    }
+}
+
 /// `host` is `domain` or a subdomain of it.
 fn is_under(host: &str, domain: &str) -> bool {
     host == domain
@@ -455,6 +469,19 @@ mod tests {
         }
         assert!(!allowed_in_window(None, &u("http://tauri.localhost:8080/")));
         assert!(!allowed_in_window(None, &u("https://rd.example.com/")));
+
+        assert!(download_allowed(
+            gw,
+            &u("blob:https://rd.example.com/2f1c-4d")
+        ));
+        assert!(download_allowed(gw, &u("https://rd.example.com/x.zip")));
+        assert!(!download_allowed(gw, &u("blob:https://evil.example/2f1c")));
+        assert!(!download_allowed(gw, &u("https://auth.example.com/x")));
+        assert!(!download_allowed(gw, &u("data:text/plain,hi")));
+        assert!(!download_allowed(
+            None,
+            &u("blob:https://rd.example.com/2f1c")
+        ));
 
         assert!(openable_externally(&u("https://github.com/")));
         assert!(!openable_externally(&u("file:///C:/Windows")));

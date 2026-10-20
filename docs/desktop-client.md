@@ -119,6 +119,17 @@ app calls it with `eval` on the webview, which works whatever the page's CSP is.
 
 A mouse click outside the window also ends the grab, so you can never get stuck.
 
+### Files: drops and downloads
+
+The viewer's [file transfer](files.md) needs two things from the window, both plain web
+behaviour in a browser:
+
+- **Dropping files** onto the window reaches the page as HTML drag and drop (the app turns off
+  Tauri's own drop handler, which would swallow them).
+- **Downloads** the page hands over (a finished transfer is a `blob:` URL of the gateway page)
+  are saved to the Downloads folder under a free name. Downloads from any other origin are
+  refused. macOS has no download window: the viewer's transfer list says when a file was saved.
+
 ## Security notes
 
 - The app only loads the configured gateway origin (plus, if set, hosts under the configured

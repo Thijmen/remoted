@@ -14,6 +14,8 @@ rd-agent (Mac/Win) --WSS--> Traefik --> rd-gateway :8081  (per-agent bearer toke
 
 - Agents dial OUT. One long-lived **control** WS per agent: `GET {gateway_url}/ws/agent`.
 - Per viewer session the agent dials a NEW **data** WS: `GET {gateway_url}/ws/agent/session/{session}`.
+- File channels (browse and transfer files, [files.md](files.md)) are joined the same way:
+  viewer `GET /ws/files/{machine}`, agent `GET /ws/agent/files/{channel}`.
 - Viewer connects `GET /ws/view/{machine}` on the viewer origin. The gateway joins viewer WS ⇄ agent
   data WS and copies messages unchanged in both directions (it only parses JSON it owns and peeks the
   first byte of binary frames for input-idle tracking / byte counters).
@@ -36,7 +38,9 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
 
 ## Agent ⇄ gateway control socket (`/ws/agent`)
 
-1. Agent → `{"t":"register","machine":"mbp","agent_version":"1.5.0","os":"macOS 26.3 (25D125)","gw_proto":1,"state":{...}}`
+1. Agent → `{"t":"register","machine":"mbp","agent_version":"1.5.0","os":"macOS 26.3 (25D125)","gw_proto":1,"state":{...},"caps":["files"]}`
+   `caps` (optional, added after gw_proto 1 shipped; older gateways ignore it): what the agent
+   supports beyond screen sessions. `files`: file channels.
 2. Gateway → `{"t":"registered","gw_proto":1}`. A newer registration for the same machine replaces the old
    socket (old one closed with code 4009).
 3. Agent → `{"t":"state", ...AgentState}` whenever lock/perms/in_session change (checked every 2 s).
@@ -44,6 +48,10 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
    Agent must dial `/ws/agent/session/<session>` (same bearer token) within **10 s**. One session per
    machine: a new request implicitly ends the previous one.
 5. Either side → `{"t":"session_end","session":"…","reason":"…"}`.
+   Gateway → `{"t":"files_request","channel":"<32 hex>","user":"<email>","client_ip":"<ip>"}`
+   (only to agents with the `files` cap): dial `/ws/agent/files/<channel>` within **10 s**. A
+   machine has up to 4 file channels next to its session; they are independent of it (no
+   `session_end`, the channel ends when its sockets close). See [files.md](files.md).
 6. Keepalive: the gateway sends WebSocket Ping frames every 15 s on every leg and closes a leg after
    45 s without Pong. The agent reconnects its control socket if it receives nothing for 30 s.
    Agent reconnect backoff: 1 s → 30 s exponential with ±20 % jitter, reset after a registration.
@@ -124,7 +132,8 @@ Compatibility: both messages are additive and `gw_proto` stays 1. Older gateways
 10. Close codes: 4001 kicked (don't auto-reconnect), 4003 offline, 4004 agent timeout, 4005 protocol,
     4006 session ended by agent, 4008 idle (no input for `RD_SESSION_IDLE_TIMEOUT`, default 3600 s), 4009 replaced,
     4010 agent updating (it comes back by itself, usually within a minute: keep reconnecting, and treat the 4003
-    and 4004 that follow while it restarts as part of the update).
+    and 4004 that follow while it restarts as part of the update), 4011 not supported by the agent (a file
+    channel to an agent without the `files` cap), 1013 try again later (a fifth file channel).
 
 Agent side: the session socket is the only one carrying media. When it closes the agent stops the
 pipeline, releases all keys/buttons and drops the keep-awake guard.
@@ -208,12 +217,13 @@ pipeline, releases all keys/buttons and drops the keep-awake guard.
 | `GET /keytest` | key test page (`keytest.html`), opened ON the host |
 | `GET /assets/*` | hashed Vite assets (`Cache-Control: public, max-age=31536000, immutable`) |
 | `GET /api/me` | `{"email":"…","uid":"…","dev":false,"devices":true}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`; `devices` = *Add device* available) |
-| `GET /api/machines` | `[{"machine":"mbp","name":"MacBook Pro","managed":false,"online":true,"since_ms":1729160000000,"os":"macOS 26.3","agent_version":"1.5.0","state":{AgentState},"viewer":null\|{"user":"…","since_ms":…},"recovery":[{"label":"Screen Sharing (VNC)","url":"https://…"}],"update":null\|{UpdateStatus}}]` (`update`: the agent's last `update_status`, null when it never sent one) |
+| `GET /api/machines` | `[{"machine":"mbp","name":"MacBook Pro","managed":false,"online":true,"since_ms":1729160000000,"os":"macOS 26.3","agent_version":"1.5.0","state":{AgentState},"viewer":null\|{"user":"…","since_ms":…},"recovery":[{"label":"Screen Sharing (VNC)","url":"https://…"}],"update":null\|{UpdateStatus},"files":true}]` (`update`: the agent's last `update_status`, null when it never sent one; `files`: the agent supports file channels) |
 | `POST /api/machines/{machine}/update` | JSON `{"version":"1.6.0"}` → 202 `{"ok":true}` once `update` is queued to the agent; 404 unknown machine; 409 `{"error":"…"}` when the agent is offline, does not report updates, cannot install them, has no or another update available, or is already updating |
 | `POST /api/devices` | JSON `{"machine":"studio","name":"Mac Studio"}` → 201 `{"machine","name","gateway","token","setup_code"}` (no-store) |
 | `POST /api/devices/{machine}/token` | JSON `{}` → 200, same fields; the agent's control socket is closed with 4002 |
 | `DELETE /api/devices/{machine}` | → 204; the agent's control socket is closed with 4002 |
 | `GET /ws/view/{machine}` | viewer session WS |
+| `GET /ws/files/{machine}` | file channel WS ([files.md](files.md)) |
 | `GET /ws/probe` | probe WS (below) |
 | `POST /api/probe/report` | JSON body (≤ 1 MiB) logged as one line `probe_report {...}`; → 204 |
 | `GET /api/probe/down?kbps=10000&seconds=10&chunk_ms=20` | streamed HTTP body; each chunk: `[u64 LE server_us][u32 LE seq][filler]` sized `kbps·chunk_ms/8` bytes |
@@ -239,7 +249,8 @@ What *Add device* hands out and `rd-agent setup` reads (`crates/rd-proto/src/set
 `gateway` is `ws://` or `wss://`; the machine id is the token's. Whitespace inside the code is ignored
 (line breaks from copying). The secret of a token the gateway creates is 32 random bytes, base64url.
 
-Agent port 8081: `GET /ws/agent`, `GET /ws/agent/session/{session}` only (everything else 404).
+Agent port 8081: `GET /ws/agent`, `GET /ws/agent/session/{session}`, `GET /ws/agent/files/{channel}`
+only (everything else 404).
 Metrics port 9090: `GET /healthz` → `ok`, `GET /metrics` (Prometheus text, optional).
 
 ### Probe socket (`/ws/probe`)

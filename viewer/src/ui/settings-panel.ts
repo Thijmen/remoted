@@ -142,6 +142,7 @@ export function settingsPanel(initial: Settings, onChange: (s: Settings) => void
 const SHORTCUTS: ReadonlyArray<[key: string, label: string]> = [
   ['F', 'fullscreen'],
   ['M', 'next display'],
+  ['E', 'files'],
   ['L', 'pointer lock'],
   ['H', 'stats'],
   ['T', 'latency test'],

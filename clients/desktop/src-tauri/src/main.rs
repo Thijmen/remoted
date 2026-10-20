@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
 
 use tauri::ipc::CapabilityBuilder;
-use tauri::webview::{NewWindowResponse, PageLoadEvent};
+use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
@@ -296,6 +296,11 @@ fn setup(app: &mut tauri::App, args: config::Args) -> Result<(), Box<dyn std::er
             open_externally(&url);
             NewWindowResponse::Deny
         })
+        // File transfer (docs/files.md): files dropped on the window reach the page as HTML drag
+        // and drop (Tauri's own handler would swallow them), and downloads the page hands over
+        // are saved to the Downloads folder (macOS cancels downloads without a handler).
+        .disable_drag_drop_handler()
+        .on_download(on_download)
         .on_page_load(move |_window, payload| {
             // Main frame only. A new page never inherits the grab.
             if payload.event() == PageLoadEvent::Started {
@@ -336,6 +341,37 @@ fn setup(app: &mut tauri::App, args: config::Args) -> Result<(), Box<dyn std::er
         log::warn!("no title-bar menu items: {e}");
     }
     Ok(())
+}
+
+/// Saves the downloads of the gateway page (a finished file transfer) to the Downloads folder,
+/// under a free name. Paths are not logged; the URL is a `blob:` id.
+fn on_download<R: tauri::Runtime>(webview: tauri::Webview<R>, event: DownloadEvent<'_>) -> bool {
+    match event {
+        DownloadEvent::Requested { url, destination } => {
+            let settings = webview.app_handle().state::<Current>().settings();
+            if !config::download_allowed(settings.as_ref(), &url) {
+                log::warn!("blocked a download from {}", config::origin(&url));
+                return false;
+            }
+            log::info!(
+                "saving a download to {}",
+                destination
+                    .parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            );
+            true
+        }
+        DownloadEvent::Finished { success, .. } => {
+            if success {
+                log::info!("download saved");
+            } else {
+                log::warn!("download failed");
+            }
+            true
+        }
+        _ => true,
+    }
 }
 
 fn open_externally(url: &Url) {

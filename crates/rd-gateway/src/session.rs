@@ -1,8 +1,8 @@
 //! Viewer sessions: `/ws/view/{machine}` on the viewer port and the agent's per-session data
 //! socket `/ws/agent/session/{session}` on the agent port, joined by a relay.
 //!
-//! The relay is two pumps (agent→viewer, viewer→agent) running concurrently in the viewer's
-//! task. Each pump reads one message and awaits its send before reading the next, so a slow
+//! The relay ([`relay`], also used for file channels: `crate::files`) is two pumps
+//! (agent→viewer, viewer→agent) running concurrently in the viewer's task. Each pump reads one message and awaits its send before reading the next, so a slow
 //! reader on either side pushes back through TCP to the sender; nothing is queued, dropped or
 //! reordered in between. WebSocket Ping/Pong is per leg and never forwarded.
 
@@ -108,13 +108,7 @@ async fn run_viewer(st: Arc<AppState>, viewer: ViewerIdentity, machine: String, 
     } else {
         None
     };
-    let Some(SessionHandle {
-        id,
-        mut agent_socket,
-        mut end,
-        deadline,
-    }) = handle
-    else {
+    let Some(handle) = handle else {
         info!(
             user = viewer.user,
             ip, machine, "viewer rejected: agent offline"
@@ -124,8 +118,95 @@ async fn run_viewer(st: Arc<AppState>, viewer: ViewerIdentity, machine: String, 
         return;
     };
     st.metrics.sessions_started.inc();
-    info!(target: "audit", event = "session_start", user = viewer.user, ip, machine, session = id, "session_start");
+    info!(target: "audit", event = "session_start", user = viewer.user, ip, machine, session = handle.id, "session_start");
     let started = Instant::now();
+    let id = handle.id.clone();
+    let (reason, traffic) = relay(&st, Kind::Session, &machine, handle, socket).await;
+    let (up, down) = traffic.totals();
+    st.metrics.bytes_up.add(up);
+    st.metrics.bytes_down.add(down);
+    info!(
+        target: "audit",
+        event = "session_end",
+        user = viewer.user,
+        ip,
+        machine,
+        session = id,
+        duration_ms = started.elapsed().as_millis() as u64,
+        bytes_up = up,
+        bytes_down = down,
+        reason = reason.as_str(),
+        "session_end"
+    );
+}
+
+/// What a relay joins: a screen session or a file channel. They differ in their registry
+/// slot, their gauge and what counts as activity for the idle timeout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Session,
+    Files,
+}
+
+impl Kind {
+    fn activate(self, st: &AppState, machine: &str, id: &str) -> rd_proto::control::AgentState {
+        match self {
+            Kind::Session => st.registry.activate(machine, id),
+            Kind::Files => st.registry.activate_files(machine, id),
+        }
+    }
+
+    fn finish(self, st: &AppState, machine: &str, id: &str, reason: &EndReason) {
+        match self {
+            Kind::Session => st.registry.finish_session(machine, id, reason),
+            Kind::Files => st.registry.finish_files(machine, id),
+        }
+    }
+
+    fn active(self, st: &AppState) -> &crate::metrics::Gauge {
+        match self {
+            Kind::Session => &st.metrics.sessions_active,
+            Kind::Files => &st.metrics.files_active,
+        }
+    }
+
+    /// Screen sessions stay alive on viewer input; file channels on any message either way
+    /// except the viewer's keep-alive PING and its PONG (an open file browser alone is not
+    /// activity).
+    fn activity(self, dir: Dir, msg: &Message) -> bool {
+        match self {
+            Kind::Session => {
+                dir == Dir::Up
+                    && matches!(msg, Message::Binary(b)
+                        if b.first().is_some_and(|&ty| rd_proto::bin::ty::is_input(ty)))
+            }
+            Kind::Files => match msg {
+                Message::Text(_) => true,
+                Message::Binary(b) => !b.first().is_some_and(|&ty| {
+                    ty == rd_proto::bin::ty::PING || ty == rd_proto::bin::ty::PONG
+                }),
+                _ => false,
+            },
+        }
+    }
+}
+
+/// Waits for the agent's data socket of `handle`, joins it with the viewer's `socket`, relays
+/// until either side ends, frees the registry slot and closes both sockets.
+pub(crate) async fn relay(
+    st: &AppState,
+    kind: Kind,
+    machine: &str,
+    handle: SessionHandle,
+    socket: WebSocket,
+) -> (EndReason, Traffic) {
+    let t = st.cfg.timeouts;
+    let SessionHandle {
+        id,
+        mut agent_socket,
+        mut end,
+        deadline,
+    } = handle;
     let traffic = Traffic::default();
     let (mut viewer_tx, mut viewer_rx) = socket.split();
     let mut shutdown = std::pin::pin!(st.shutdown_signal());
@@ -150,16 +231,16 @@ async fn run_viewer(st: Arc<AppState>, viewer: ViewerIdentity, machine: String, 
 
     let reason = match joined {
         Err(reason) => {
-            st.registry.finish_session(&machine, &id, &reason);
+            kind.finish(st, machine, &id, &reason);
             let (code, text) = reason.viewer_close();
             close_split(viewer_tx, viewer_rx, code, text).await;
             reason
         }
         Ok(agent) => {
-            let agent_state = st.registry.activate(&machine, &id);
+            let agent_state = kind.activate(st, machine, &id);
             let (mut agent_tx, mut agent_rx) = agent.split();
             let hello = GatewayToViewer::Session {
-                machine: machine.clone(),
+                machine: machine.to_owned(),
                 session: id.clone(),
                 agent: agent_state,
             };
@@ -175,24 +256,24 @@ async fn run_viewer(st: Arc<AppState>, viewer: ViewerIdentity, machine: String, 
             } else {
                 Ok(())
             };
-            st.metrics.sessions_active.inc();
+            kind.active(st).inc();
             let reason = match setup {
                 Err(reason) => reason,
                 Ok(()) => {
                     let live = Liveness::new();
                     let mut agent_rx = ChaosStream::new(&mut agent_rx, st.cfg.chaos);
                     tokio::select! {
-                        r = pump(Dir::Down, &mut agent_rx, &mut viewer_tx, &live, &traffic, t) => r,
-                        r = pump(Dir::Up, &mut viewer_rx, &mut agent_tx, &live, &traffic, t) => r,
+                        r = pump(kind, Dir::Down, &mut agent_rx, &mut viewer_tx, &live, &traffic, t) => r,
+                        r = pump(kind, Dir::Up, &mut viewer_rx, &mut agent_tx, &live, &traffic, t) => r,
                         r = watchdog(&live, t) => r,
                         r = &mut end => r.unwrap_or(EndReason::Shutdown),
                         () = &mut shutdown => EndReason::Shutdown,
                     }
                 }
             };
-            st.metrics.sessions_active.dec();
+            kind.active(st).dec();
             // Free the slot and tell the agent first; the close handshakes may take a while.
-            st.registry.finish_session(&machine, &id, &reason);
+            kind.finish(st, machine, &id, &reason);
             let (vcode, vtext) = reason.viewer_close();
             let (acode, atext) = reason.agent_close();
             tokio::join!(
@@ -202,27 +283,11 @@ async fn run_viewer(st: Arc<AppState>, viewer: ViewerIdentity, machine: String, 
             reason
         }
     };
-
-    let (up, down) = traffic.totals();
-    st.metrics.bytes_up.add(up);
-    st.metrics.bytes_down.add(down);
-    info!(
-        target: "audit",
-        event = "session_end",
-        user = viewer.user,
-        ip,
-        machine,
-        session = id,
-        duration_ms = started.elapsed().as_millis() as u64,
-        bytes_up = up,
-        bytes_down = down,
-        reason = reason.as_str(),
-        "session_end"
-    );
+    (reason, traffic)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Dir {
+pub(crate) enum Dir {
     /// agent → viewer
     Down,
     /// viewer → agent
@@ -248,7 +313,7 @@ impl Dir {
 
 /// Payload byte counters per direction.
 #[derive(Debug, Default)]
-struct Traffic {
+pub(crate) struct Traffic {
     up: AtomicU64,
     down: AtomicU64,
 }
@@ -265,7 +330,7 @@ impl Traffic {
             Dir::Up => self.up.fetch_add(n, Ordering::Relaxed),
         };
     }
-    fn totals(&self) -> (u64, u64) {
+    pub(crate) fn totals(&self) -> (u64, u64) {
         (
             self.up.load(Ordering::Relaxed),
             self.down.load(Ordering::Relaxed),
@@ -273,7 +338,8 @@ impl Traffic {
     }
 }
 
-/// Last Pong per leg and last viewer input, in ms since the join.
+/// Last Pong per leg and last activity (viewer input; any message for file channels), in ms
+/// since the join.
 struct Liveness {
     start: Instant,
     viewer_pong_ms: AtomicU64,
@@ -310,6 +376,7 @@ impl Liveness {
 /// Forward `src` → `dst` until either side closes. Also sends the WebSocket Pings for the
 /// `dst` leg (this pump owns its sink) and records Pongs / input arriving on the `src` leg.
 async fn pump<S, K>(
+    kind: Kind,
     dir: Dir,
     src: &mut S,
     dst: &mut K,
@@ -337,10 +404,7 @@ where
                     Some(Ok(Message::Close(frame))) => return dir.src_closed(frame.map(|f| f.code)),
                     Some(Err(_)) | None => return dir.src_closed(None),
                 };
-                if dir == Dir::Up
-                    && let Message::Binary(b) = &msg
-                    && b.first().is_some_and(|&ty| rd_proto::bin::ty::is_input(ty))
-                {
+                if kind.activity(dir, &msg) {
                     live.mark(&live.input_ms);
                 }
                 traffic.count(dir, &msg);
@@ -357,7 +421,8 @@ where
     }
 }
 
-/// Ends the session when a leg stops answering Pings or the viewer stops sending input.
+/// Ends the relay when a leg stops answering Pings or there is no activity for the idle
+/// timeout.
 async fn watchdog(live: &Liveness, t: Timeouts) -> EndReason {
     let period =
         (t.pong_timeout.min(t.idle) / 10).clamp(Duration::from_millis(10), Duration::from_secs(1));

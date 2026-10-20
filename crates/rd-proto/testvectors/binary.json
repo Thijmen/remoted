@@ -115,6 +115,26 @@
   },
   {
     "fields": {
+      "flags": 1,
+      "id": 9,
+      "offset": "6000000000",
+      "payload_hex": "dead",
+      "seq": 70000,
+      "type": "file_data"
+    },
+    "hex": "40010000090000007011010000bca06501000000dead",
+    "name": "file_data"
+  },
+  {
+    "fields": {
+      "seq": 4000000001,
+      "type": "file_ack"
+    },
+    "hex": "4100000001286bee",
+    "name": "file_ack"
+  },
+  {
+    "fields": {
       "payload_hex": "010203",
       "type": "probe_up"
     },

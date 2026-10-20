@@ -11,6 +11,7 @@
 //! - `geometry`    — where the captured display sits in the video frame (capture ⇄ input)
 //! - `input`       — `SendInput` injection (absolute/relative mouse, wheel, scan-code keys)
 //! - `display`     — monitors, DPI scale, wire display ids
+//! - `files`       — file browser places (known folders, drives), Recycle Bin
 //! - `power`       — power requests (keep the display awake, declare user activity)
 //! - `session`     — lock state, OS description, permissions
 
@@ -23,6 +24,7 @@ pub mod d3d;
 pub mod display;
 pub mod duplication;
 pub mod encoder;
+pub mod files;
 pub mod geometry;
 pub mod input;
 pub mod mf;
@@ -31,7 +33,9 @@ pub mod session;
 
 use std::sync::Arc;
 
-use rd_agent_core::{DisplayDesc, Guard, InputInjector, LockState, Perms, Platform, VideoPipeline};
+use rd_agent_core::{
+    DisplayDesc, Guard, InputInjector, LockState, Perms, Place, Platform, VideoPipeline,
+};
 
 pub use encoder::EncoderPreference;
 use geometry::CaptureGeometry;
@@ -114,5 +118,14 @@ impl Platform for WinPlatform {
         Ok(Box::new(
             input::SendInputInjector::new()?.with_capture_geometry(self.geometry.clone()),
         ))
+    }
+    fn file_places(&self) -> Vec<Place> {
+        files::places()
+    }
+    fn can_trash(&self) -> bool {
+        true
+    }
+    fn trash(&self, path: &std::path::Path) -> std::io::Result<()> {
+        files::trash(path)
     }
 }

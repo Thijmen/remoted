@@ -17,6 +17,10 @@ export const CloseCode = {
   REPLACED: 4009,
   /** The agent is installing an update; it comes back by itself, usually within a minute. */
   AGENT_UPDATING: 4010,
+  /** The agent does not support it (a file channel to an agent without file transfer). */
+  UNSUPPORTED: 4011,
+  /** Standard 1013: too many file channels to this machine, try again later. */
+  TRY_AGAIN_LATER: 1013,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -267,6 +271,8 @@ export interface MachineInfo {
   recovery: RecoveryLink[];
   /** Null for agents that do not report updates (before 1.5.0), and on older gateways. */
   update: UpdateStatus | null;
+  /** The agent supports file transfer (docs/files.md); false on older agents and gateways. */
+  files: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +525,7 @@ export function parseMachines(v: unknown): MachineInfo[] {
       viewer,
       recovery: recoveryFrom(m.recovery),
       update: updateStatusFrom(m.update),
+      files: bool(m, 'files'),
     });
   }
   return out;

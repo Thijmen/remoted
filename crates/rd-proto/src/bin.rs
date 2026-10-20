@@ -14,6 +14,8 @@
 //! | 0x20 | VIDEO_ACK   | V→A | epoch u16, seq u32, decode_us u16, queue_us u16                   | 12  |
 //! | 0x30 | PING        | both| pad u16, id u32, t_origin_us u64, pad u64                         | 24  |
 //! | 0x31 | PONG        | both| pad u16, id u32, t_origin_us u64, t_reply_us u64                  | 24  |
+//! | 0x40 | FILE_DATA   | both| pad u16, id u32, seq u32, offset u64, then the bytes (files.md)   | 20+ |
+//! | 0x41 | FILE_ACK    | both| pad u16, seq u32 (cumulative)                                    | 8   |
 //! | 0x80 | PROBE_UP    | V→G | opaque payload (gateway network probe only)                      | 2+  |
 //!
 //! Mouse button bitmask (MOUSE_ABS flags): bit0 = left, bit1 = middle, bit2 = right,
@@ -37,6 +39,9 @@ pub mod ty {
     pub const VIDEO_ACK: u8 = 0x20;
     pub const PING: u8 = 0x30;
     pub const PONG: u8 = 0x31;
+    /// File channels only (docs/files.md).
+    pub const FILE_DATA: u8 = 0x40;
+    pub const FILE_ACK: u8 = 0x41;
     pub const PROBE_UP: u8 = 0x80;
 
     /// True for viewer->agent input messages (used by the gateway for idle tracking).
@@ -59,6 +64,12 @@ pub mod video_flags {
 pub mod ack_flags {
     /// Viewer discarded the frame without decoding (wrong epoch / waiting for keyframe).
     pub const DISCARDED: u8 = 0x01;
+}
+
+/// FILE_DATA flags.
+pub mod file_flags {
+    /// Last frame of its transfer.
+    pub const END: u8 = 0x01;
 }
 
 /// KEY `key_flags`.
@@ -87,6 +98,8 @@ pub const RELEASE_ALL_LEN: usize = 2;
 pub const VIDEO_ACK_LEN: usize = 12;
 pub const PING_LEN: usize = 24;
 pub const PONG_LEN: usize = 24;
+pub const FILE_DATA_HEADER_LEN: usize = 20;
+pub const FILE_ACK_LEN: usize = 8;
 
 // ---------------------------------------------------------------------------
 // little-endian helpers
@@ -538,6 +551,76 @@ impl Pong {
 }
 
 // ---------------------------------------------------------------------------
+// file channels
+
+/// Header of a FILE_DATA frame; the bytes follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileDataHeader {
+    pub flags: u8,
+    /// The transfer (the request's `id`).
+    pub id: u32,
+    /// Counts the FILE_DATA frames one side sends on a channel, from 1.
+    pub seq: u32,
+    /// Where the bytes go in the file (zip downloads: in the archive).
+    pub offset: u64,
+}
+
+impl FileDataHeader {
+    pub fn is_end(&self) -> bool {
+        self.flags & file_flags::END != 0
+    }
+
+    pub fn write(&self, out: &mut Vec<u8>) {
+        out.reserve(FILE_DATA_HEADER_LEN);
+        out.extend_from_slice(&[ty::FILE_DATA, self.flags, 0, 0]);
+        out.extend_from_slice(&self.id.to_le_bytes());
+        out.extend_from_slice(&self.seq.to_le_bytes());
+        out.extend_from_slice(&self.offset.to_le_bytes());
+    }
+
+    /// Build a complete FILE_DATA message (header + bytes).
+    pub fn to_message(&self, payload: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(FILE_DATA_HEADER_LEN + payload.len());
+        self.write(&mut v);
+        v.extend_from_slice(payload);
+        v
+    }
+
+    fn parse_body(b: &[u8]) -> Result<(Self, &[u8]), ProtoError> {
+        need(b, ty::FILE_DATA, FILE_DATA_HEADER_LEN)?;
+        Ok((
+            FileDataHeader {
+                flags: b[1],
+                id: u32_at(b, 4),
+                seq: u32_at(b, 8),
+                offset: u64_at(b, 12),
+            },
+            &b[FILE_DATA_HEADER_LEN..],
+        ))
+    }
+}
+
+/// Cumulative FILE_ACK: every FILE_DATA up to and including `seq` was handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileAck {
+    pub seq: u32,
+}
+
+impl FileAck {
+    pub fn to_message(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(FILE_ACK_LEN);
+        v.extend_from_slice(&[ty::FILE_ACK, 0, 0, 0]);
+        v.extend_from_slice(&self.seq.to_le_bytes());
+        v
+    }
+
+    fn parse_body(b: &[u8]) -> Result<Self, ProtoError> {
+        need(b, ty::FILE_ACK, FILE_ACK_LEN)?;
+        Ok(FileAck { seq: u32_at(b, 4) })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // top-level parse
 
 /// A parsed binary message. Payloads borrow from the input buffer.
@@ -549,6 +632,8 @@ pub enum BinMsg<'a> {
     VideoAck(VideoAck),
     Ping(Ping),
     Pong(Pong),
+    FileData(FileDataHeader, &'a [u8]),
+    FileAck(FileAck),
     ProbeUp(&'a [u8]),
     /// Unknown or reserved type: must be ignored by receivers (forward compatibility).
     Unknown(u8),
@@ -575,6 +660,11 @@ pub fn parse(b: &[u8]) -> Result<BinMsg<'_>, ProtoError> {
         ty::VIDEO_ACK => BinMsg::VideoAck(VideoAck::parse_body(b)?),
         ty::PING => BinMsg::Ping(Ping::parse_body(b)?),
         ty::PONG => BinMsg::Pong(Pong::parse_body(b)?),
+        ty::FILE_DATA => {
+            let (h, p) = FileDataHeader::parse_body(b)?;
+            BinMsg::FileData(h, p)
+        }
+        ty::FILE_ACK => BinMsg::FileAck(FileAck::parse_body(b)?),
         ty::PROBE_UP => BinMsg::ProbeUp(if b.len() >= 2 { &b[2..] } else { &[] }),
         other => BinMsg::Unknown(other),
     })
@@ -665,6 +755,33 @@ mod tests {
         assert_eq!(parse(&p.to_message()).unwrap(), BinMsg::Ping(p));
         let q = p.pong(88);
         assert_eq!(parse(&q.to_message()).unwrap(), BinMsg::Pong(q));
+    }
+
+    #[test]
+    fn file_frames_roundtrip() {
+        let h = FileDataHeader {
+            flags: file_flags::END,
+            id: 9,
+            seq: 70_000,
+            offset: 5 << 32,
+        };
+        let m = h.to_message(b"abc");
+        assert_eq!(m.len(), FILE_DATA_HEADER_LEN + 3);
+        match parse(&m).unwrap() {
+            BinMsg::FileData(h2, p) => {
+                assert_eq!(h2, h);
+                assert!(h2.is_end());
+                assert_eq!(p, b"abc");
+            }
+            other => panic!("{other:?}"),
+        }
+        let a = FileAck { seq: 70_000 };
+        assert_eq!(parse(&a.to_message()).unwrap(), BinMsg::FileAck(a));
+        assert!(!ty::is_input(ty::FILE_DATA));
+        assert!(matches!(
+            parse(&[ty::FILE_ACK, 0, 0]),
+            Err(ProtoError::TooShort { .. })
+        ));
     }
 
     #[test]

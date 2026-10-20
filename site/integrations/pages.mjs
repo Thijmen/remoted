@@ -41,6 +41,13 @@ export const syncedPages = [
 			'The Windows and macOS app that shows the viewer in a window and also captures Alt+Tab, Cmd+Tab and the Windows key.',
 	},
 	{
+		source: 'docs/files.md',
+		slug: 'guides/files',
+		title: 'File transfer',
+		description:
+			'Browse the remote machine, download files and folders, upload by dropping them in, and the file channel protocol.',
+	},
+	{
 		source: 'docs/updates.md',
 		slug: 'guides/updates',
 		title: 'Updates',

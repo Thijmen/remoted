@@ -24,10 +24,15 @@
 //! lifetime of a session (across epochs). Comparisons use wrapping arithmetic; 0 is skipped on
 //! wrap-around, so a seq is never 0.
 
+//!
+//! File transfers use a separate, low-priority window: [`BulkWindow`] (docs/files.md).
+
 mod bitrate;
+mod bulk;
 mod gate;
 mod rtt;
 
 pub use bitrate::{BitrateConfig, BitrateController, BitrateDecision};
+pub use bulk::{BulkConfig, BulkStats, BulkWindow, TARGET_FULL_US, TARGET_GENTLE_US};
 pub use gate::{AckSample, Admitted, FlowConfig, FlowGate, FlowStats};
 pub use rtt::RttTracker;

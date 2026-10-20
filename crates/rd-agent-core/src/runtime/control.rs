@@ -11,7 +11,7 @@ use std::time::Duration;
 use futures_util::{SinkExt as _, StreamExt as _};
 use rd_proto::GW_PROTO_VERSION;
 use rd_proto::close;
-use rd_proto::control::{AgentToGateway, GatewayToAgent, UpdateStatus};
+use rd_proto::control::{AgentToGateway, GatewayToAgent, UpdateStatus, agent_caps};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, sleep_until, timeout};
 use tokio_tungstenite::tungstenite::Message;
@@ -21,6 +21,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tracing::{debug, error, info, warn};
 
 use super::backoff::Backoff;
+use super::files::Channels as FileChannels;
 use super::net::{DialError, WsStream, valid_session_id};
 use super::session::{self, Ended, StopReason};
 use super::task::TaskGuard;
@@ -43,12 +44,13 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(600);
 /// socket.
 pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
     let mut sessions = Sessions::new(ctx.clone());
+    let mut files = FileChannels::new(ctx.clone());
     let mut backoff = Backoff::new(ctx.timings.backoff_min, ctx.timings.backoff_max);
     let mut unavailable_since: Option<Instant> = None;
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
         // `shutdown` is never polled again once it resolved: every path that sees it breaks.
-        let outcome = connect_and_serve(&ctx, &mut sessions, shutdown.as_mut()).await;
+        let outcome = connect_and_serve(&ctx, &mut sessions, &mut files, shutdown.as_mut()).await;
         if !matches!(outcome, Outcome::Unavailable) {
             unavailable_since = None;
         }
@@ -83,6 +85,7 @@ pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
         }
     }
     sessions.shutdown().await;
+    files.shutdown().await;
 }
 
 /// How a control connection attempt ended.
@@ -118,6 +121,7 @@ fn classify_http(status: StatusCode, retry_after: Option<Duration>) -> Outcome {
 async fn connect_and_serve<F: Future<Output = ()>>(
     ctx: &Arc<Ctx>,
     sessions: &mut Sessions,
+    files: &mut FileChannels,
     mut shutdown: Pin<&mut F>,
 ) -> Outcome {
     let url = ctx.gateway.control_url();
@@ -163,6 +167,7 @@ async fn connect_and_serve<F: Future<Output = ()>>(
     Control {
         ctx,
         sessions,
+        files,
         ws,
         registered: false,
     }
@@ -173,6 +178,7 @@ async fn connect_and_serve<F: Future<Output = ()>>(
 struct Control<'a> {
     ctx: &'a Arc<Ctx>,
     sessions: &'a mut Sessions,
+    files: &'a mut FileChannels,
     ws: WsStream,
     registered: bool,
 }
@@ -188,6 +194,7 @@ impl Control<'_> {
             os: self.ctx.platform.os_description(),
             gw_proto: GW_PROTO_VERSION,
             state: *state.borrow_and_update(),
+            caps: vec![agent_caps::FILES.into()],
         };
         if !self.send(&register).await {
             return self.lost();
@@ -264,6 +271,7 @@ impl Control<'_> {
     /// Ends the session, reports it and hangs up politely.
     async fn shut_down(mut self) -> Outcome {
         self.sessions.shutdown().await;
+        self.files.shutdown().await;
         while let Some(ended) = self.sessions.try_ended() {
             let msg = AgentToGateway::SessionEnd {
                 session: ended.session,
@@ -324,6 +332,21 @@ impl Control<'_> {
                     warn!(
                         version,
                         "update requested, but this agent cannot update itself"
+                    );
+                }
+            }
+            Ok(GatewayToAgent::FilesRequest {
+                channel,
+                user,
+                client_ip,
+            }) => {
+                if valid_session_id(&channel) {
+                    info!(channel, user, client_ip, "file channel requested");
+                    self.files.start(channel, user);
+                } else {
+                    warn!(
+                        channel,
+                        "ignoring a file channel request with an invalid id"
                     );
                 }
             }

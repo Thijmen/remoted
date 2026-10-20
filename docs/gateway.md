@@ -104,6 +104,7 @@ Every response on the viewer port carries the CSP, COOP (`same-origin`), COEP
 | `POST /api/devices`, `POST /api/devices/{machine}/token`, `DELETE /api/devices/{machine}` | add a device, replace its token, remove it; see [Devices](#devices) |
 | `POST /api/machines/{machine}/update` | tell the agent to install its update; see [Agent updates](#agent-updates) |
 | `GET /ws/view/{machine}` | viewer session |
+| `GET /ws/files/{machine}` | file channel; see [File channels](#file-channels) |
 | `GET /ws/probe`, `GET /api/probe/down`, `POST /api/probe/up`, `POST /api/probe/report` | network probe (`protocol.md`); the report is logged as one `probe_report {…}` line (≤ 1 MiB, else 413) |
 
 `/api/machines` lists the machines from `RD_MACHINES_FILE` in file order, then any other machine
@@ -115,6 +116,7 @@ the machines file (`[]` otherwise). `name` falls back to the device's name, then
 `update` is the agent's last `update_status` (fields in [protocol.md](protocol.md#updates-rd-agent-150-and-later),
 empty ones left out), kept while offline and dropped when the agent registers again until it
 reports anew; `null` for agents that never send one (before 1.5.0).
+`files` is true when the agent listed `files` in `register.caps` (it can open file channels).
 Devices added in the portal follow the machines file, in the order they were added, and have
 `"managed": true`.
 
@@ -215,6 +217,30 @@ The audit log (`target: audit`) has a `session_start` line (user, ip, machine, s
 request goes out. It has a `session_end` line on every outcome, with the same fields plus
 `duration_ms`, `bytes_up`, `bytes_down` and `reason`.
 
+## File channels
+
+A file channel ([files.md](files.md)) is joined like a session: the viewer opens
+`/ws/files/{machine}`, the gateway sends the agent `files_request{channel, user, client_ip}`
+and waits up to 10 s for `/ws/agent/files/{channel}`, then sends the viewer the same
+`{"t":"session",…}` message (with the channel id as `session`) and copies messages unchanged.
+The differences:
+
+- A machine can have up to 4 file channels (pending and joined) next to its one screen session.
+  Opening or ending either never ends the other. A fifth channel is closed with **1013**.
+- Only agents that listed `files` in `register.caps` get a `files_request`; for others the viewer
+  is closed with **4011**. Unknown or offline machines get **4003**, an agent that does not dial
+  in time **4004**.
+- Any message in either direction counts as activity for `RD_SESSION_IDLE_TIMEOUT` (**4008**).
+- The gateway sends the agent no `session_end`: it sees its socket close (1000; 1001 when it
+  stopped answering pings, 1012 at shutdown). Joined channels survive the control socket
+  reconnecting; removing the device or replacing its token ends them (**4003**).
+- Messages up to 8 MiB each way.
+
+The audit log has a `files_open` line (user, ip, machine, channel) when the request goes out and
+a `files_close` line with the same fields plus `duration_ms`, `bytes_up`, `bytes_down` and
+`reason` (the session reasons above). What is transferred is not visible to the gateway; the
+agent logs it.
+
 ## Relay and keepalive
 
 - Each direction is a loop that reads one message, then awaits its send to the other leg before
@@ -224,8 +250,9 @@ request goes out. It has a `session_end` line on every outcome, with the same fi
   message plus the kernel socket buffers. The backpressure test measured about 3 MiB in flight
   over loopback.
 - Message limits: 16 MiB agent→viewer, 64 KiB viewer→agent, 64 KiB on the control socket,
-  1 MiB on the probe socket.
-- The gateway sends a WebSocket Ping every 15 s on every leg: control, data, viewer and probe.
+  8 MiB both ways on file channels, 1 MiB on the probe socket.
+- The gateway sends a WebSocket Ping every 15 s on every leg: control, data, file, viewer and
+  probe.
   A leg with no Pong for 45 s is closed. Ping and pong frames are never forwarded between
   legs. A leg that stays blocked on backpressure for 45 s also counts as unresponsive.
 
@@ -240,12 +267,14 @@ messages are never dropped or reordered. Viewer→agent traffic is not affected.
 
 Without `--dev`, logs are JSON lines on stdout, with fields flattened. Useful messages:
 `rd-gateway listening`, `agent registered`, `agent control disconnected`, `session_start`,
-`session_end`, `viewer forbidden`, `agent auth failed`, `device_add`, `device_token`,
+`session_end`, `files_open`, `files_close`, `file channel refused`, `viewer forbidden`, `agent auth failed`, `device_add`, `device_token`,
 `device_remove`, `device store not saved`, `agent_update`, `agent update refused`,
 `agent update phase`, `agent update outcome`, `probe run`, `probe_report {…}`.
 
 `/metrics` exposes `rd_agents_online`, `rd_sessions_active`, `rd_sessions_started_total`,
-`rd_relay_bytes_{down,up}_total`, `rd_agent_auth_failures_total`,
+`rd_relay_bytes_{down,up}_total`, `rd_files_channels_active`,
+`rd_files_channels_started_total`, `rd_files_bytes_{down,up}_total` (file channels; not in
+the relay totals), `rd_agent_auth_failures_total`,
 `rd_viewer_auth_failures_total`, `rd_agent_registrations_total`,
 `rd_agent_updates_requested_total` and `rd_probe_runs_total`.
 

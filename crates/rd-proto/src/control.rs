@@ -332,6 +332,12 @@ pub enum GatewayToViewer {
 // ---------------------------------------------------------------------------
 // agent <-> gateway (agent control socket)
 
+/// Capabilities in `register.caps`.
+pub mod agent_caps {
+    /// File channels (`files_request`, docs/files.md).
+    pub const FILES: &str = "files";
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum AgentToGateway {
@@ -342,6 +348,10 @@ pub enum AgentToGateway {
         gw_proto: u16,
         #[serde(default)]
         state: AgentState,
+        /// What the agent supports beyond screen sessions (see [`agent_caps`]). Added after
+        /// gw_proto 1 shipped; older agents omit it, older gateways ignore it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        caps: Vec<String>,
     },
     State(AgentState),
     SessionEnd {
@@ -373,6 +383,15 @@ pub enum GatewayToAgent {
         session: String,
         #[serde(default)]
         reason: String,
+    },
+    /// A viewer opened a file channel (docs/files.md): dial `/ws/agent/files/<channel>` within
+    /// 10 s. Sent only to agents with the `files` capability.
+    FilesRequest {
+        channel: String,
+        #[serde(default)]
+        user: String,
+        #[serde(default)]
+        client_ip: String,
     },
     /// Install `version` now (the portal's Update button). The agent acts only if it is the
     /// version its own last check found; otherwise it reports an error in `update_status`.
@@ -568,9 +587,31 @@ mod tests {
             os: "macOS 26.3".into(),
             gw_proto: 1,
             state: AgentState::default(),
+            caps: vec![],
         })
         .unwrap();
         assert!(reg.starts_with(r#"{"t":"register","machine":"mbp""#));
+        assert!(!reg.contains("caps"), "{reg}");
+        let reg: AgentToGateway = serde_json::from_str(
+            r#"{"t":"register","machine":"mbp","agent_version":"1.6.0","os":"macOS","gw_proto":1,"caps":["files","x"]}"#,
+        )
+        .unwrap();
+        match reg {
+            AgentToGateway::Register { caps, .. } => {
+                assert!(caps.iter().any(|c| c == agent_caps::FILES))
+            }
+            other => panic!("{other:?}"),
+        }
+        let files = serde_json::to_string(&GatewayToAgent::FilesRequest {
+            channel: "c1".into(),
+            user: "me@x".into(),
+            client_ip: "1.2.3.4".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            files,
+            r#"{"t":"files_request","channel":"c1","user":"me@x","client_ip":"1.2.3.4"}"#
+        );
     }
 
     #[test]

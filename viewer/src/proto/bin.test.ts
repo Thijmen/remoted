@@ -72,6 +72,17 @@ function expected(f: Record<string, unknown>): EncodableMsg {
       return { type: 'ping', id: n('id'), tOriginUs: big('t_origin_us') };
     case 'pong':
       return { type: 'pong', id: n('id'), tOriginUs: big('t_origin_us'), tReplyUs: big('t_reply_us') };
+    case 'file_data':
+      return {
+        type: 'file_data',
+        flags: n('flags'),
+        id: n('id'),
+        seq: n('seq'),
+        offset: Number(f.offset as string),
+        payload: payload(),
+      };
+    case 'file_ack':
+      return { type: 'file_ack', seq: n('seq') };
     case 'probe_up':
       return { type: 'probe_up', payload: payload() };
     default:
@@ -101,6 +112,8 @@ describe('golden vectors (crates/rd-proto/testvectors/binary.json)', () => {
       'video_ack',
       'ping',
       'pong',
+      'file_data',
+      'file_ack',
       'probe_up',
     ]) {
       expect(types.has(t), t).toBe(true);

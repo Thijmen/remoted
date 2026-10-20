@@ -1,6 +1,7 @@
 // Binary frames — mirror of crates/rd-proto/src/bin.rs (the source of truth).
 // Every binary WebSocket message starts with [type u8][flags u8]; integers are little-endian.
-// u64 fields are BigInt so that every value round-trips exactly.
+// u64 fields are BigInt so that every value round-trips exactly, except file offsets: plain numbers
+// (exact up to 2^53 bytes, 8 PiB).
 
 export const MsgType = {
   VIDEO: 0x01,
@@ -16,6 +17,9 @@ export const MsgType = {
   VIDEO_ACK: 0x20,
   PING: 0x30,
   PONG: 0x31,
+  /** File channels only (docs/files.md). */
+  FILE_DATA: 0x40,
+  FILE_ACK: 0x41,
   PROBE_UP: 0x80,
 } as const;
 
@@ -25,6 +29,8 @@ export type Bytes = Uint8Array<ArrayBuffer>;
 export const VideoFlags = { KEY: 0x01, REFINE: 0x02, FIRST_OF_EPOCH: 0x04 } as const;
 export const AckFlags = { DISCARDED: 0x01 } as const;
 export const KeyFlags = { REPEAT: 0x01 } as const;
+/** FILE_DATA flags. */
+export const FileFlags = { END: 0x01 } as const;
 
 /**
  * Wire button ids. The MOUSE_ABS flags byte is a bitmask of `1 << MouseButton` (left=1, middle=2,
@@ -50,6 +56,8 @@ export const RELEASE_ALL_LEN = 2;
 export const VIDEO_ACK_LEN = 12;
 export const PING_LEN = 24;
 export const PONG_LEN = 24;
+export const FILE_DATA_HEADER_LEN = 20;
+export const FILE_ACK_LEN = 8;
 
 export interface VideoMsg {
   type: 'video';
@@ -127,6 +135,19 @@ export interface PongMsg {
   tOriginUs: bigint;
   tReplyUs: bigint;
 }
+export interface FileDataMsg {
+  type: 'file_data';
+  flags: number;
+  /** The transfer (the request's `id`). */
+  id: number;
+  seq: number;
+  offset: number;
+  payload: Uint8Array;
+}
+export interface FileAckMsg {
+  type: 'file_ack';
+  seq: number;
+}
 export interface ProbeUpMsg {
   type: 'probe_up';
   payload: Uint8Array;
@@ -138,7 +159,8 @@ export interface UnknownMsg {
 
 export type InputMsg = MouseAbsMsg | MouseRelMsg | MouseBtnMsg | WheelMsg | KeyMsg | ReleaseAllMsg;
 
-export type BinMsg = VideoMsg | AudioMsg | InputMsg | VideoAckMsg | PingMsg | PongMsg | ProbeUpMsg | UnknownMsg;
+export type BinMsg =
+  VideoMsg | AudioMsg | InputMsg | VideoAckMsg | PingMsg | PongMsg | FileDataMsg | FileAckMsg | ProbeUpMsg | UnknownMsg;
 
 /** Messages this side can build. */
 export type EncodableMsg = Exclude<BinMsg, UnknownMsg>;
@@ -248,6 +270,19 @@ export function parse(data: ArrayBuffer | Uint8Array): BinMsg {
         tOriginUs: v.getBigUint64(8, true),
         tReplyUs: v.getBigUint64(16, true),
       };
+    case MsgType.FILE_DATA:
+      need(b, t, FILE_DATA_HEADER_LEN);
+      return {
+        type: 'file_data',
+        flags: b[1]!,
+        id: v.getUint32(4, true),
+        seq: v.getUint32(8, true),
+        offset: Number(v.getBigUint64(12, true)),
+        payload: b.subarray(FILE_DATA_HEADER_LEN),
+      };
+    case MsgType.FILE_ACK:
+      need(b, t, FILE_ACK_LEN);
+      return { type: 'file_ack', seq: v.getUint32(4, true) };
     case MsgType.PROBE_UP:
       return { type: 'probe_up', payload: b.subarray(Math.min(2, b.byteLength)) };
     default:
@@ -308,9 +343,32 @@ export function encode(m: EncodableMsg): Bytes {
       return encodePing(m.id, m.tOriginUs);
     case 'pong':
       return encodePong(m.id, m.tOriginUs, m.tReplyUs);
+    case 'file_data':
+      return encodeFileData(m.flags, m.id, m.seq, m.offset, m.payload);
+    case 'file_ack':
+      return encodeFileAck(m.seq);
     case 'probe_up':
       return withPayload(new Uint8Array([MsgType.PROBE_UP, 0]), m.payload);
   }
+}
+
+/** A FILE_DATA frame: header and bytes in one buffer. */
+export function encodeFileData(flags: number, id: number, seq: number, offset: number, payload: Uint8Array): Bytes {
+  const out = new Uint8Array(FILE_DATA_HEADER_LEN + payload.byteLength);
+  const v = new DataView(out.buffer);
+  out[0] = MsgType.FILE_DATA;
+  out[1] = flags;
+  v.setUint32(4, id, true);
+  v.setUint32(8, seq, true);
+  v.setBigUint64(12, BigInt(offset), true);
+  out.set(payload, FILE_DATA_HEADER_LEN);
+  return out;
+}
+
+export function encodeFileAck(seq: number): Bytes {
+  const [b, v] = frame(MsgType.FILE_ACK, 0, FILE_ACK_LEN);
+  v.setUint32(4, seq, true);
+  return b;
 }
 
 export function encodeMouseAbs(buttons: number, x: number, y: number): Bytes {
