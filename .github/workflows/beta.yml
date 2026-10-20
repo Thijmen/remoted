@@ -1,0 +1,213 @@
+name: Beta
+
+# A maintainer comments `/beta` on a pull request: build the Windows rd agent from that PR's
+# head and publish it as a prerelease, `agent-vX.Y.Z-beta.<run>`. The stable update manifest
+# (`agent.json`) is not touched, so installed agents never offer a beta; download the setup
+# from the prerelease and run it by hand.
+#
+# Maintainers only (`OWNER`/`MEMBER`/`COLLABORATOR`) and same-repository pull requests only.
+# The build job has no write token and no signing secrets, so the PR's code cannot publish or
+# exfiltrate them; the publish job only handles the build artifact. Beta builds are therefore
+# unsigned. Keep the Windows steps in sync with agent.yml.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beta-pr-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Windows agent
+    if: >-
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/beta') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.pr.outputs.sha }}
+      number: ${{ steps.pr.outputs.number }}
+      url: ${{ steps.pr.outputs.url }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          number="${{ github.event.issue.number }}"
+          state="$(gh pr view "$number" --json state --jq .state)"
+          cross="$(gh pr view "$number" --json isCrossRepository --jq .isCrossRepository)"
+          if [[ "$state" != "OPEN" ]]; then
+            echo "::error::pull request #$number is $state"
+            exit 1
+          fi
+          if [[ "$cross" != "false" ]]; then
+            echo "::error::/beta only builds pull requests from this repository"
+            exit 1
+          fi
+          sha="$(gh pr view "$number" --json headRefOid --jq .headRefOid)"
+          url="$(gh pr view "$number" --json url --jq .url)"
+          {
+            echo "sha=$sha"
+            echo "number=$number"
+            echo "url=$url"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+
+      # Stamp the beta version into this checkout only; nothing is committed or pushed.
+      - name: Beta version
+        id: version
+        run: |
+          base="$(bun tools/release/sync-versions.ts --print rd-agent)"
+          v="$base-beta.${{ github.run_number }}"
+          bun tools/release/sync-versions.ts --set rd-agent "$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: cargo build --locked --release -p rd-agent
+
+      # The Windows Server image has no Media Foundation unless the feature is added; without
+      # it rd-agent.exe does not even start (agent.yml does the same).
+      - name: Media Foundation
+        shell: pwsh
+        run: |
+          $mf = Join-Path $env:WINDIR 'System32\mfplat.dll'
+          if (-not (Test-Path $mf)) { Install-WindowsFeature Server-Media-Foundation | Out-Null }
+          if (-not (Test-Path $mf)) { throw 'Media Foundation is missing' }
+
+      - name: Smoke test
+        run: |
+          target/release/rd-agent.exe --version
+          target/release/rd-agent.exe selftest --synthetic --encoder software --size 640x360 --seconds 2
+
+      - name: Collect
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          New-Item -ItemType Directory -Force out, pkg | Out-Null
+          # The secure-desktop service is optional: include its binaries when the branch has
+          # them, so this workflow also works on older pull requests.
+          $files = @('target/release/rd-agent.exe', 'target/release/rd-agentw.exe', 'THIRD_PARTY_NOTICES.md')
+          foreach ($f in 'target/release/rd-agent-svc.exe', 'target/release/rd-agent-sec.exe') {
+            if (Test-Path $f) { $files += $f }
+          }
+          Copy-Item $files pkg
+          Compress-Archive -Path pkg/* -DestinationPath "out/rd-agent-$v-windows-x64.zip"
+          Get-ChildItem out
+
+      - name: NSIS
+        shell: pwsh
+        run: |
+          # Same NSIS build Tauri uses (agent.yml downloads it when the runner has none).
+          if (Get-Command makensis -ErrorAction SilentlyContinue) { exit 0 }
+          $nsis = 'C:\Program Files (x86)\NSIS'
+          if (-not (Test-Path "$nsis\makensis.exe")) {
+            $url = 'https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip'
+            $sha = 'C7D27F780DDB6CFFB4730138CD1591E841F4B7EDB155856901CDF5F214394FA1'
+            $zip = Join-Path $env:RUNNER_TEMP 'nsis.zip'
+            Invoke-WebRequest $url -OutFile $zip -MaximumRetryCount 5 -RetryIntervalSec 10
+            $got = (Get-FileHash $zip -Algorithm SHA256).Hash
+            if ($got -ne $sha) { throw "NSIS download checksum mismatch: $got" }
+            Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP -Force
+            $nsis = Join-Path $env:RUNNER_TEMP 'nsis-3.11'
+          }
+          if (-not (Test-Path "$nsis\makensis.exe")) { throw 'makensis.exe not found in $nsis' }
+          Add-Content $env:GITHUB_PATH $nsis
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          makensis -V2 "-DVERSION=$v" "-DSRC=$PWD\pkg" "-DOUTFILE=$PWD\out\rd-agent-$v-windows-x64-setup.exe" packaging/windows/rd-agent.nsi
+          if ($LASTEXITCODE) { throw "makensis failed: $LASTEXITCODE" }
+          Get-ChildItem out
+
+      # Silent install and uninstall (no config here, so the agent is not started).
+      - name: Installer smoke test
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $dir = Join-Path $env:RUNNER_TEMP 'rd-agent'
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\rd-agent'
+          $p = Start-Process "out\rd-agent-$v-windows-x64-setup.exe" -ArgumentList '/S', "/D=$dir" -PassThru
+          $p.WaitForExit()
+          if ($p.ExitCode) { throw "installer exit code $($p.ExitCode)" }
+          foreach ($f in 'rd-agent.exe', 'rd-agentw.exe', 'uninstall.exe') {
+            if (-not (Test-Path "$dir\$f")) { throw "$f was not installed" }
+          }
+          if ((Get-ItemProperty $key).DisplayVersion -ne $v) { throw 'no Apps entry for this version' }
+          & "$dir\rd-agent.exe" --version
+          Start-Process "$dir\uninstall.exe" -ArgumentList '/S' -Wait
+          $deadline = (Get-Date).AddSeconds(30)
+          while ((Test-Path $key) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+          if ((Test-Path $key) -or (Test-Path "$dir\rd-agent.exe")) { throw 'the uninstall left files or the Apps entry' }
+          'install and uninstall OK'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rd-agent-beta
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: Prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # gh release create
+      pull-requests: write # gh pr comment
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      V: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: rd-agent-beta
+          path: out
+
+      - name: Checksums
+        run: cd out && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Release
+        run: |
+          tag="agent-v$V"
+          notes="$(mktemp)"
+          cat > "$notes" <<NOTES
+          Beta build of #${{ needs.build.outputs.number }} (${{ needs.build.outputs.url }}) from ${{ needs.build.outputs.sha }}.
+
+          Windows 10 1703+/11 (x64). Unsigned: SmartScreen asks once (More info -> Run anyway).
+          This build is not in the update manifest, so installed agents do not offer it; download
+          the setup below and run it by hand. To go back, run the previous installer.
+          NOTES
+          gh release create "$tag" out/* \
+            --target "${{ needs.build.outputs.sha }}" \
+            --prerelease \
+            --title "rd agent $V (beta)" \
+            --notes-file "$notes"
+          gh pr comment "${{ needs.build.outputs.number }}" \
+            --body "Beta build: https://github.com/${{ github.repository }}/releases/tag/$tag"
