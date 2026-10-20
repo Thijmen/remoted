@@ -1,5 +1,6 @@
 //! Who is online and who is watching: per machine, the agent's control connection, its last
-//! known state and update status, and at most one viewer session (pending or joined).
+//! known state and update status, at most one viewer session (pending or joined) and up to
+//! [`MAX_FILE_CHANNELS`] file channels (docs/files.md), which are independent of the session.
 //!
 //! All mutation happens under one short `parking_lot` lock that is never held across an
 //! await; messages to agents go through each control socket's bounded queue with `try_send`.
@@ -9,7 +10,9 @@ use std::collections::HashMap;
 use axum::extract::ws::WebSocket;
 use parking_lot::Mutex;
 use rd_proto::close;
-use rd_proto::control::{AgentState, GatewayToAgent, UpdateOutcome, UpdatePhase, UpdateStatus};
+use rd_proto::control::{
+    AgentState, GatewayToAgent, UpdateOutcome, UpdatePhase, UpdateStatus, agent_caps,
+};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -22,6 +25,9 @@ use crate::util::unix_ms;
 /// Capacity of each agent control socket's outgoing queue. Control messages are rare; a full
 /// queue means the socket is wedged and the message is reported as undeliverable.
 pub const CONTROL_QUEUE: usize = 32;
+
+/// File channels per machine (pending and joined).
+pub const MAX_FILE_CHANNELS: usize = 4;
 
 /// `session_end` reason of an agent that ends its session to install an update.
 pub const AGENT_UPDATE_REASON: &str = "agent_update";
@@ -122,9 +128,11 @@ pub struct AgentRegistration {
     pub os: String,
     pub agent_version: String,
     pub state: AgentState,
+    /// `register.caps`: what the agent supports beyond screen sessions.
+    pub caps: Vec<String>,
 }
 
-/// Viewer-side handle for a new session.
+/// Viewer-side handle for a new session or file channel.
 #[derive(Debug)]
 pub struct SessionHandle {
     pub id: String,
@@ -140,6 +148,39 @@ pub struct SessionHandle {
 pub enum StartError {
     #[error("agent offline")]
     Offline,
+}
+
+/// Why a file channel could not be started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FilesStartError {
+    #[error("agent offline")]
+    Offline,
+    #[error("the agent does not support file channels")]
+    Unsupported,
+    #[error("too many file channels")]
+    Busy,
+}
+
+impl FilesStartError {
+    /// Close code + reason sent to the viewer.
+    pub fn viewer_close(self) -> (u16, &'static str) {
+        match self {
+            FilesStartError::Offline => (close::AGENT_OFFLINE, "agent offline"),
+            FilesStartError::Unsupported => (
+                close::UNSUPPORTED,
+                "the agent does not support file transfer",
+            ),
+            FilesStartError::Busy => (close::TRY_AGAIN_LATER, "too many file channels"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FilesStartError::Offline => "agent_offline",
+            FilesStartError::Unsupported => "unsupported",
+            FilesStartError::Busy => "busy",
+        }
+    }
 }
 
 /// Why an update request from the portal was not passed on to the agent.
@@ -225,6 +266,8 @@ struct AgentInfo {
     os: String,
     agent_version: String,
     state: AgentState,
+    /// The agent listed `files` in `register.caps`.
+    files: bool,
 }
 
 #[derive(Default)]
@@ -241,13 +284,19 @@ struct Machine {
     /// Online since / offline since, Unix ms.
     since_ms: Option<u64>,
     session: Option<Session>,
+    /// File channels, pending and joined (at most [`MAX_FILE_CHANNELS`]).
+    files: Vec<Session>,
 }
 
 impl Machine {
-    /// End a session that has not been joined yet: its agent connection is gone.
+    /// End a session and file channels that have not been joined yet: their agent connection
+    /// is gone.
     fn fail_pending_session(&mut self) {
         if let Some(s) = self.session.as_mut().filter(|s| !s.joined) {
             s.signal_end(EndReason::AgentOffline);
+        }
+        for f in self.files.iter_mut().filter(|f| !f.joined) {
+            f.signal_end(EndReason::AgentOffline);
         }
     }
 }
@@ -279,6 +328,8 @@ pub struct MachineView {
     pub recovery: Vec<RecoveryLink>,
     /// The agent's last `update_status`; `None` for agents that never sent one (before 1.5.0).
     pub update: Option<UpdateStatus>,
+    /// The agent supports file channels (`files` in `register.caps`; docs/files.md).
+    pub files: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -342,6 +393,7 @@ impl Registry {
             os: reg.os,
             agent_version: reg.agent_version,
             state: reg.state,
+            files: reg.caps.iter().any(|c| c == agent_caps::FILES),
         });
         m.update = None;
         m.since_ms = Some(unix_ms());
@@ -364,6 +416,9 @@ impl Registry {
         }
         if let Some(s) = m.session.as_mut() {
             s.signal_end(EndReason::AgentOffline);
+        }
+        for f in &mut m.files {
+            f.signal_end(EndReason::AgentOffline);
         }
         if forget {
             inner.machines.remove(machine);
@@ -611,6 +666,104 @@ impl Registry {
         }
     }
 
+    /// Start a file channel for a viewer. Never touches the screen session.
+    pub fn start_files(
+        &self,
+        machine: &str,
+        user: &str,
+        client_ip: &str,
+        dial_timeout: std::time::Duration,
+    ) -> Result<SessionHandle, FilesStartError> {
+        let mut inner = self.inner.lock();
+        let m = inner
+            .machines
+            .get_mut(machine)
+            .ok_or(FilesStartError::Offline)?;
+        let agent = m.agent.as_ref().ok_or(FilesStartError::Offline)?;
+        if !m.info.as_ref().is_some_and(|i| i.files) {
+            return Err(FilesStartError::Unsupported);
+        }
+        if m.files.len() >= MAX_FILE_CHANNELS {
+            return Err(FilesStartError::Busy);
+        }
+        let id = new_session_id();
+        let request = GatewayToAgent::FilesRequest {
+            channel: id.clone(),
+            user: user.to_owned(),
+            client_ip: client_ip.to_owned(),
+        };
+        if !send_control(machine, agent, request) {
+            return Err(FilesStartError::Offline);
+        }
+        let (deliver_tx, deliver_rx) = oneshot::channel();
+        let (end_tx, end_rx) = oneshot::channel();
+        let deadline = Instant::now() + dial_timeout;
+        m.files.push(Session {
+            id: id.clone(),
+            user: user.to_owned(),
+            since_ms: unix_ms(),
+            end: Some(end_tx),
+            deliver: Some(deliver_tx),
+            deadline,
+            joined: false,
+        });
+        Ok(SessionHandle {
+            id,
+            agent_socket: deliver_rx,
+            end: end_rx,
+            deadline,
+        })
+    }
+
+    /// An agent dialed `/ws/agent/files/{channel}`: hand out the delivery slot if the channel is
+    /// pending, not expired and (when known) belongs to `machine`.
+    pub fn claim_files(
+        &self,
+        channel: &str,
+        machine: Option<&str>,
+    ) -> Result<(String, oneshot::Sender<WebSocket>), ClaimError> {
+        let mut inner = self.inner.lock();
+        let (name, f) = inner
+            .machines
+            .iter_mut()
+            .find_map(|(name, m)| {
+                m.files
+                    .iter_mut()
+                    .find(|f| f.id == channel)
+                    .map(|f| (name, f))
+            })
+            .ok_or(ClaimError::Unknown)?;
+        if machine.is_some_and(|want| want != name) {
+            return Err(ClaimError::WrongMachine);
+        }
+        if Instant::now() > f.deadline {
+            return Err(ClaimError::Expired);
+        }
+        let deliver = f.deliver.take().ok_or(ClaimError::AlreadyClaimed)?;
+        Ok((name.clone(), deliver))
+    }
+
+    /// Mark a file channel as joined; returns the agent's current state.
+    pub fn activate_files(&self, machine: &str, channel: &str) -> AgentState {
+        let mut inner = self.inner.lock();
+        let Some(m) = inner.machines.get_mut(machine) else {
+            return AgentState::default();
+        };
+        if let Some(f) = m.files.iter_mut().find(|f| f.id == channel) {
+            f.joined = true;
+        }
+        m.info.as_ref().map(|i| i.state).unwrap_or_default()
+    }
+
+    /// The viewer task is done with a file channel: free its slot. The agent learns from its
+    /// socket closing.
+    pub fn finish_files(&self, machine: &str, channel: &str) {
+        let mut inner = self.inner.lock();
+        if let Some(m) = inner.machines.get_mut(machine) {
+            m.files.retain(|f| f.id != channel);
+        }
+    }
+
     pub fn online_count(&self) -> usize {
         let inner = self.inner.lock();
         inner
@@ -646,6 +799,7 @@ impl Registry {
                 }),
                 recovery: cfg.map(|c| c.recovery.clone()).unwrap_or_default(),
                 update: m.and_then(|m| m.update.clone()),
+                files: info.is_some_and(|i| i.files),
             }
         };
         let configured = |id: &str| self.configured.iter().any(|c| c.machine == id);
@@ -683,7 +837,136 @@ mod tests {
             os: "macOS".into(),
             agent_version: "0.1.0".into(),
             state: AgentState::default(),
+            caps: vec![],
         }
+    }
+
+    fn reg_files(machine: &str) -> AgentRegistration {
+        AgentRegistration {
+            caps: vec!["files".into(), "from_the_future".into()],
+            ..reg(machine)
+        }
+    }
+
+    #[tokio::test]
+    async fn file_channels_need_the_capability_and_are_limited() {
+        let r = Registry::new(vec![]);
+        let dial = Duration::from_secs(10);
+        assert_eq!(
+            r.start_files("mbp", "a@x", "ip", dial).unwrap_err(),
+            FilesStartError::Offline
+        );
+        let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
+        r.register_agent(reg("mbp"), tx);
+        assert_eq!(
+            r.start_files("mbp", "a@x", "ip", dial).unwrap_err(),
+            FilesStartError::Unsupported
+        );
+        assert!(!r.machines(&[])[0].files);
+
+        let (tx, mut rx) = mpsc::channel(CONTROL_QUEUE);
+        r.register_agent(reg_files("mbp"), tx);
+        assert!(r.machines(&[])[0].files);
+        let handles: Vec<_> = (0..MAX_FILE_CHANNELS)
+            .map(|_| r.start_files("mbp", "a@x", "1.2.3.4", dial).unwrap())
+            .collect();
+        assert_eq!(
+            r.start_files("mbp", "a@x", "ip", dial).unwrap_err(),
+            FilesStartError::Busy
+        );
+        let msgs: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(msgs.len(), MAX_FILE_CHANNELS);
+        assert_eq!(
+            msgs[0],
+            GatewayToAgent::FilesRequest {
+                channel: handles[0].id.clone(),
+                user: "a@x".into(),
+                client_ip: "1.2.3.4".into()
+            }
+        );
+        // Claiming: the right machine, once; file channel ids are not session ids.
+        let id = &handles[1].id;
+        assert_eq!(
+            r.claim_files(id, Some("other")).unwrap_err(),
+            ClaimError::WrongMachine
+        );
+        assert!(r.claim_pending(id, Some("mbp")).is_err());
+        assert_eq!(r.claim_files(id, Some("mbp")).unwrap().0, "mbp");
+        assert_eq!(
+            r.claim_files(id, Some("mbp")).unwrap_err(),
+            ClaimError::AlreadyClaimed
+        );
+        assert_eq!(
+            r.claim_files("nope", None).unwrap_err(),
+            ClaimError::Unknown
+        );
+        // A finished channel frees its slot.
+        r.finish_files("mbp", &handles[0].id);
+        assert!(r.start_files("mbp", "a@x", "ip", dial).is_ok());
+    }
+
+    #[tokio::test]
+    async fn file_channels_and_the_session_leave_each_other_alone() {
+        let r = Registry::new(vec![]);
+        let dial = Duration::from_secs(10);
+        let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
+        r.register_agent(reg_files("mbp"), tx);
+        let session = r.start_session("mbp", "a@x", "ip", dial).unwrap();
+        let mut session_end = session.end;
+        let files = r.start_files("mbp", "b@x", "ip", dial).unwrap();
+        let mut files_end = files.end;
+        assert!(
+            session_end.try_recv().is_err(),
+            "a file channel ended the session"
+        );
+        let _second = r.start_session("mbp", "c@x", "ip", dial).unwrap();
+        assert_eq!(session_end.try_recv().unwrap(), EndReason::Kicked);
+        assert!(
+            files_end.try_recv().is_err(),
+            "a session ended a file channel"
+        );
+        r.finish_files("mbp", &files.id);
+        assert!(r.machines(&[])[0].viewer.is_some());
+    }
+
+    #[tokio::test]
+    async fn pending_file_channels_fail_with_their_agent_and_revoke_ends_all() {
+        let r = Registry::new(vec![]);
+        let dial = Duration::from_secs(10);
+        let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
+        let (id, _kick) = r.register_agent(reg_files("mbp"), tx);
+        let joined = r.start_files("mbp", "a@x", "ip", dial).unwrap();
+        let mut joined_end = joined.end;
+        r.claim_files(&joined.id, Some("mbp")).unwrap();
+        r.activate_files("mbp", &joined.id);
+        let pending = r.start_files("mbp", "a@x", "ip", dial).unwrap();
+        let mut pending_end = pending.end;
+        assert!(r.unregister_agent("mbp", id));
+        assert_eq!(pending_end.try_recv().unwrap(), EndReason::AgentOffline);
+        assert!(
+            joined_end.try_recv().is_err(),
+            "a joined channel survives its control socket"
+        );
+        let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
+        r.register_agent(reg_files("mbp"), tx);
+        assert!(joined_end.try_recv().is_err());
+        r.revoke("mbp", "device removed", false);
+        assert_eq!(joined_end.try_recv().unwrap(), EndReason::AgentOffline);
+    }
+
+    #[tokio::test]
+    async fn expired_file_channels_cannot_be_claimed() {
+        let r = Registry::new(vec![]);
+        let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
+        r.register_agent(reg_files("mbp"), tx);
+        let h = r
+            .start_files("mbp", "a@x", "ip", Duration::from_millis(0))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(
+            r.claim_files(&h.id, Some("mbp")).unwrap_err(),
+            ClaimError::Expired
+        );
     }
 
     #[tokio::test]

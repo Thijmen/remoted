@@ -2,10 +2,10 @@
 //! network probe. Operator notes: `docs/gateway.md`; contracts: `docs/protocol.md`.
 //!
 //! Listeners:
-//! - viewer (8080): pages, `/api/*`, `/ws/view/{machine}`, `/ws/probe` — behind Authentik,
-//!   checked against the email allowlist and Origin.
-//! - agent (8081): `/ws/agent` (control) and `/ws/agent/session/{session}` (data) — bearer
-//!   tokens.
+//! - viewer (8080): pages, `/api/*`, `/ws/view/{machine}`, `/ws/files/{machine}`,
+//!   `/ws/probe` — behind Authentik, checked against the email allowlist and Origin.
+//! - agent (8081): `/ws/agent` (control), `/ws/agent/session/{session}` and
+//!   `/ws/agent/files/{channel}` (data) — bearer tokens.
 //! - metrics (9090): `/healthz`, `/metrics`.
 
 mod agent;
@@ -14,6 +14,7 @@ mod auth;
 mod chaos;
 mod config;
 mod devices;
+mod files;
 mod http;
 mod metrics;
 mod probe;

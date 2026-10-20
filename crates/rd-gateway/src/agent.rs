@@ -88,7 +88,7 @@ async fn run_control(st: Arc<AppState>, ident: AgentIdentity, ip: IpAddr, mut so
     }
 
     let machine = reg.machine.clone();
-    info!(%ip, machine, os = reg.os, agent_version = reg.agent_version, "agent registered");
+    info!(%ip, machine, os = reg.os, agent_version = reg.agent_version, caps = ?reg.caps, "agent registered");
     // Register before acknowledging, so the machine is online once the agent hears back.
     let (tx, mut outbox) = mpsc::channel(CONTROL_QUEUE);
     let (conn_id, mut kick) = st.registry.register_agent(reg, tx);
@@ -264,7 +264,7 @@ async fn recv_register(socket: &mut WebSocket) -> Result<AgentRegistration, &'st
                         os,
                         gw_proto,
                         state,
-                        ..
+                        caps,
                     }) => {
                         if gw_proto == 0 {
                             Err("unsupported gw_proto")
@@ -276,6 +276,7 @@ async fn recv_register(socket: &mut WebSocket) -> Result<AgentRegistration, &'st
                                 os,
                                 agent_version,
                                 state,
+                                caps,
                             })
                         }
                     }

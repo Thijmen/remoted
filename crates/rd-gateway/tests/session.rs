@@ -65,7 +65,8 @@ async fn registration_replacement_4009_and_portal_listing() {
         serde_json::json!([{
             "machine": "pc", "name": "Office PC", "managed": false, "online": false, "since_ms": null,
             "os": null, "agent_version": null, "state": null, "viewer": null,
-            "recovery": [{"label": "RDP", "url": "https://guac.example/pc"}], "update": null
+            "recovery": [{"label": "RDP", "url": "https://guac.example/pc"}], "update": null,
+            "files": false
         }])
     );
 

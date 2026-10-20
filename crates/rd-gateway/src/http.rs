@@ -17,6 +17,7 @@ use crate::agent::ws_agent;
 use crate::assets::{self, Caching};
 use crate::auth::{ViewerIdentity, viewer_auth};
 use crate::devices::{Device, DeviceError};
+use crate::files::{ws_agent_files, ws_files};
 use crate::probe;
 use crate::registry::UpdateRefusal;
 use crate::session::{ws_agent_session, ws_view};
@@ -68,6 +69,7 @@ pub fn viewer_router(st: Arc<AppState>) -> Router {
             post(probe::http_up).layer(DefaultBodyLimit::disable()),
         )
         .route("/ws/view/{machine}", get(ws_view))
+        .route("/ws/files/{machine}", get(ws_files))
         .route("/ws/probe", get(probe::ws_probe))
         .fallback(root_file)
         .layer(from_fn_with_state(Arc::clone(&st), viewer_auth))
@@ -79,6 +81,7 @@ pub fn agent_router(st: Arc<AppState>) -> Router {
     Router::new()
         .route("/ws/agent", get(ws_agent))
         .route("/ws/agent/session/{session}", get(ws_agent_session))
+        .route("/ws/agent/files/{channel}", get(ws_agent_files))
         .fallback(|| async { StatusCode::NOT_FOUND })
         .with_state(st)
 }
