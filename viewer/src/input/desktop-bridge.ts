@@ -30,6 +30,8 @@ declare global {
 export interface BridgeHandlers {
   key(code: string, down: boolean, repeat: boolean): void;
   release(): void;
+  /** The app accepted or refused a grab (see `grabbing`, `refusal`). */
+  changed?(): void;
 }
 
 /** An answer that takes longer than this counts as a refusal (DOM keys keep working). */
@@ -71,10 +73,12 @@ export class DesktopBridge {
   /** Bumped by `release()`: an answer to a call sent before it says nothing about the app's state now. */
   private epoch = 0;
   private warned = false;
+  /** Why the app last refused to grab (its error message); null once a grab is accepted. */
+  private lastRefusal: string | null = null;
 
   constructor(
     private readonly host: BridgeHost,
-    handlers: BridgeHandlers,
+    private readonly handlers: BridgeHandlers,
     private readonly warn: (msg: string, err: unknown) => void = (msg, err) => console.warn(msg, err),
     private readonly now: () => number = () => performance.now(),
   ) {
@@ -96,6 +100,40 @@ export class DesktopBridge {
         this.cycle = false;
         handlers.release();
       },
+    });
+  }
+
+  /** The page runs inside the desktop app (rd Desktop). */
+  get inApp(): boolean {
+    return this.host.__TAURI_INTERNALS__ !== undefined;
+  }
+
+  /** Why the app last refused to grab the keyboard, e.g. a missing macOS permission; null when it last grabbed. */
+  get refusal(): string | null {
+    return this.lastRefusal;
+  }
+
+  /**
+   * Call another app command (the Troubleshoot screen's). Rejects outside the app, when the app refuses (an older
+   * app without the command), or without an answer within `INVOKE_TIMEOUT_MS`.
+   */
+  call(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
+    const tauri = this.host.__TAURI_INTERNALS__;
+    if (!tauri) return Promise.reject(new Error('not in the desktop app'));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no answer')), INVOKE_TIMEOUT_MS);
+      const done = (f: () => void) => {
+        clearTimeout(timer);
+        f();
+      };
+      try {
+        Promise.resolve(tauri.invoke(cmd, args)).then(
+          (v) => done(() => resolve(v)),
+          (err: unknown) => done(() => reject(err)),
+        );
+      } catch (err) {
+        done(() => reject(err));
+      }
     });
   }
 
@@ -171,13 +209,16 @@ export class DesktopBridge {
         // After a release() the app is not grabbing, whatever it answered before: ask again if wanted.
         this.told = epoch === this.epoch ? active : null;
         this.refused = null;
+        if (active) this.lastRefusal = null;
       } else {
         // Unknown: a late answer may still apply it. Keys the hook forwards anyway are handled (rdNative.key).
         this.told = null;
         this.refused = active;
+        if (active) this.lastRefusal = errorText(err);
         this.warnOnce('rd: desktop app: rd_set_grab failed; keys stay with the page', err);
       }
       this.pump();
+      this.handlers.changed?.();
     };
     this.inflight = { seq, timer: setTimeout(() => settle(false, new Error('no answer')), INVOKE_TIMEOUT_MS) };
     let answer: unknown;
@@ -199,4 +240,11 @@ export class DesktopBridge {
     this.warned = true;
     this.warn(msg, err);
   }
+}
+
+/** Tauri rejects with the command's error string; anything else is described as well as it can be. */
+function errorText(err: unknown): string {
+  if (typeof err === 'string') return err;
+  if (err instanceof Error) return err.message;
+  return String(err);
 }

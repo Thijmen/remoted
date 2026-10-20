@@ -193,6 +193,19 @@ fn prompt_for_accessibility() {
     }
 }
 
+/// For the viewer's Troubleshoot screen: (Accessibility granted, Secure Keyboard Entry on).
+pub fn permission_status() -> (bool, bool) {
+    (accessibility_trusted(), secure_input_enabled())
+}
+
+/// System Settings › Privacy & Security › Accessibility.
+pub fn open_accessibility_settings() -> Result<(), String> {
+    open::that_detached(
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    )
+    .map_err(|e| format!("cannot open System Settings: {e}"))
+}
+
 fn secure_input_enabled() -> bool {
     // SAFETY: no arguments.
     unsafe { IsSecureEventInputEnabled() != 0 }

@@ -46,6 +46,28 @@ window.__TAURI_INTERNALS__.invoke('rd_set_grab', { active: true | false, seq })
   again as soon as the keys should be grabbed.
 - Errors from `invoke` are logged once — e.g. an older app without the command.
 
+### Page → app: Troubleshoot
+
+The viewer's Settings › Troubleshoot screen (session menu) asks the app two more things. Both
+are optional: an older app refuses them and the page falls back to the `rd_set_grab` error text.
+
+```js
+window.__TAURI_INTERNALS__.invoke('rd_keyboard_status')
+// → { platform: "macos" | "windows" | "other", version, grab,
+//     accessibility: bool | null, secureInput: bool | null }
+window.__TAURI_INTERNALS__.invoke('rd_open_keyboard_settings')
+```
+
+- `rd_keyboard_status` is read-only: the app version, whether it can grab on this platform, and
+  on macOS whether it has the Accessibility permission and whether Secure Keyboard Entry is on
+  (`null` elsewhere).
+- `rd_open_keyboard_settings` opens System Settings › Privacy & Security › Accessibility on
+  macOS (that one page, nothing else); elsewhere it is refused.
+- When a grab is refused, the page asks for the status. If the Accessibility permission is the
+  reason, it shows a banner ("Shortcuts like Cmd+Tab stay on this Mac") with a button to the
+  Troubleshoot screen. The screen also lists the modifier mapping in use and whether the remote
+  machine may inject input.
+
 ### App → page: keys
 
 While the grab is active **and** the app window is the foreground (macOS: key) window, the app
@@ -101,7 +123,8 @@ A mouse click outside the window also ends the grab, so you can never get stuck.
 
 - The app only loads the configured gateway origin (plus, if set, hosts under the configured
   sign-in domain, for the login page); navigation elsewhere opens the system browser. The
-  capability that allows `rd_set_grab` is added at runtime for the gateway origin only. The
+  capability that allows `rd_set_grab` (and `rd_whats_new`, `rd_keyboard_status`,
+  `rd_open_keyboard_settings`) is added at runtime for the gateway origin only. The
   bundled setup page may only read and save the gateway (`capabilities/setup.json`).
 - `rd_whats_new` (no arguments) is allowed for the gateway origin (the same runtime
   capability) and the setup page. It opens the app's own release-notes window, reading the

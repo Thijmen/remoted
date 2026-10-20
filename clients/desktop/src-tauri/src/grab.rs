@@ -19,6 +19,51 @@ type Platform = crate::grab_macos::TapGrab;
 #[cfg(not(any(windows, target_os = "macos")))]
 type Platform = ();
 
+/// What the viewer's Troubleshoot screen shows about the keyboard grab (`rd_keyboard_status`).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyboardStatus {
+    /// "macos", "windows" or "other".
+    pub platform: &'static str,
+    pub version: String,
+    /// The app can grab the keyboard on this platform.
+    pub grab: bool,
+    /// macOS: the Accessibility permission (the tap needs it). `None` elsewhere.
+    pub accessibility: Option<bool>,
+    /// macOS: Secure Keyboard Entry is on, so macOS hides keys from the tap. `None` elsewhere.
+    pub secure_input: Option<bool>,
+}
+
+pub fn keyboard_status(version: String) -> KeyboardStatus {
+    #[cfg(target_os = "macos")]
+    {
+        let (accessibility, secure_input) = crate::grab_macos::permission_status();
+        KeyboardStatus {
+            platform: "macos",
+            version,
+            grab: true,
+            accessibility: Some(accessibility),
+            secure_input: Some(secure_input),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    KeyboardStatus {
+        platform: if cfg!(windows) { "windows" } else { "other" },
+        version,
+        grab: cfg!(windows),
+        accessibility: None,
+        secure_input: None,
+    }
+}
+
+/// Opens the system settings page that the grab depends on (macOS: Accessibility).
+pub fn open_keyboard_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return crate::grab_macos::open_accessibility_settings();
+    #[cfg(not(target_os = "macos"))]
+    Err("no keyboard settings to open on this platform".into())
+}
+
 /// Hook/tap thread -> forwarder thread.
 pub enum Event {
     Key {
