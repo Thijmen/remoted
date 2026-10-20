@@ -30,6 +30,13 @@ fn s(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
+/// The root of the file system the temp dir is on: `/`, or `C:\` on Windows (where `/` is not
+/// an absolute path).
+fn root() -> String {
+    let tmp = std::env::temp_dir();
+    s(tmp.ancestors().last().expect("a path has a root"))
+}
+
 /// The viewer end of a file channel.
 struct Files {
     ws: Ws,
@@ -331,10 +338,13 @@ async fn browse_and_change() {
         .await;
     assert_eq!(del["t"], "ok", "{del}");
     assert!(!dir.join("new").exists());
-    let root = f
-        .request(json!({"t": "delete", "paths": ["/"], "trash": false}), 13)
+    let whole_disk = f
+        .request(
+            json!({"t": "delete", "paths": [root()], "trash": false}),
+            13,
+        )
         .await;
-    assert_eq!(root["code"], "bad_path");
+    assert_eq!(whole_disk["code"], "bad_path");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -722,8 +732,8 @@ async fn protocol_mismatch_and_bad_messages() {
     assert_eq!(f.reply(3).await["code"], "bad_request");
     f.send(json!({"t": "from_the_future", "id": 4})).await;
     // Ignored: the next request is answered normally.
-    let st = f.request(json!({"t": "stat", "path": "/"}), 5).await;
-    assert_eq!(st["t"], "stat");
+    let st = f.request(json!({"t": "stat", "path": root()}), 5).await;
+    assert_eq!(st["t"], "stat", "{st}");
     drop(f);
 
     let mut g = Files::open(&mut setup, CHANNEL_B).await;
