@@ -17,7 +17,7 @@ use rd_agent_core::config::AgentConfig;
 use rd_agent_core::runtime::{Runtime, Timings};
 use rd_agent_core::{
     CodecConfig, DisplayDesc, EncodedFrame, FrameGate, FrameSink, Guard, InputEvent, InputInjector,
-    LockState, Perms, Platform, VideoConfig, VideoPipeline,
+    LockState, Perms, Platform, SecureState, VideoConfig, VideoPipeline,
 };
 use rd_proto::bin::{self, BinMsg, VideoAck, VideoHeader};
 use serde_json::{Value, json};
@@ -69,6 +69,7 @@ pub enum Event {
 
 pub struct FakePlatform {
     locked: AtomicBool,
+    secure: Mutex<SecureState>,
     perms: Mutex<Perms>,
     events: Arc<Mutex<Vec<Event>>>,
     /// Capture rate of the fake pipeline, independent of the requested fps.
@@ -86,6 +87,7 @@ impl FakePlatform {
     pub fn new(capture_fps: u32) -> Arc<Self> {
         Arc::new(FakePlatform {
             locked: AtomicBool::new(false),
+            secure: Mutex::new(SecureState::Unavailable),
             perms: Mutex::new(Perms {
                 screen: true,
                 input: true,
@@ -112,6 +114,10 @@ impl FakePlatform {
 
     pub fn set_locked(&self, locked: bool) {
         self.locked.store(locked, Ordering::SeqCst);
+    }
+
+    pub fn set_secure(&self, secure: SecureState) {
+        *self.secure.lock() = secure;
     }
 
     pub fn set_perms(&self, perms: Perms) {
@@ -190,6 +196,24 @@ impl Platform for FakePlatform {
             gate: None,
             sink: None,
         }))
+    }
+    fn secure_state(&self) -> SecureState {
+        *self.secure.lock()
+    }
+    fn secure_video_pipeline(&self) -> Option<Box<dyn VideoPipeline>> {
+        Some(Box::new(FakePipeline {
+            events: self.events.clone(),
+            capture_fps: self.capture_fps,
+            failure: self.capture_failure.clone(),
+            start_failure: self.start_failure.clone(),
+            static_screen: self.static_screen.clone(),
+            running: None,
+            gate: None,
+            sink: None,
+        }))
+    }
+    fn secure_input_ready(&self) -> bool {
+        *self.secure.lock() == SecureState::Ready
     }
     fn input_injector(&self) -> anyhow::Result<Box<dyn InputInjector>> {
         Ok(Box::new(RecordingInjector(self.events.clone())))

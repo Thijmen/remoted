@@ -15,6 +15,16 @@ path = "src/main.rs"
 name = "rd-agentw"
 path = "src/bin/rd-agentw.rs"
 
+# Windows secure desktop: the LocalSystem service and the SYSTEM helper it launches into the
+# console session (docs/setup-windows.md). Stubs elsewhere.
+[[bin]]
+name = "rd-agent-svc"
+path = "src/bin/rd-agent-svc.rs"
+
+[[bin]]
+name = "rd-agent-sec"
+path = "src/bin/rd-agent-sec.rs"
+
 [dependencies]
 rd-proto = { workspace = true }
 rd-agent-core = { workspace = true }

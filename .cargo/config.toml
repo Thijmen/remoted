@@ -1,0 +1,6 @@
+# Link the C runtime into Windows binaries instead of depending on VCRUNTIME140.dll. Many PCs
+# have no Visual C++ Redistributable; the agent then only started when some other app had put
+# a copy on the user's PATH, and the secure-desktop service (SYSTEM, without that PATH) failed
+# with 0xC0000135 (DLL not found).
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

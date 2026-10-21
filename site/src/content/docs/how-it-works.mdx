@@ -149,9 +149,11 @@ rules.
 - **Keys** travel as USB HID usages, by physical position. The tables come from Chromium's key
   code data (`tools/gen-keymap`), and the agent turns them into macOS key codes or Windows scan
   codes. Caps Lock is synchronised rather than forwarded.
-- **The lock screen is off limits.** While the host is locked, the agent drops every input event
-  (except "release all") and tells the viewer, so nothing is ever typed into a password field
-  by accident.
+- **The lock screen is off limits by default.** While the host is locked, the agent drops every
+  input event (except "release all") and tells the viewer, so nothing is ever typed into a
+  password field by accident. On Windows, the optional secure-desktop service
+  ([Windows setup](/guides/windows-agent/)) shows the real lock screen and UAC prompts in the
+  viewer instead.
 
 ## Security
 

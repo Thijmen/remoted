@@ -7,7 +7,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 pub use rd_flow::Admitted;
 pub use rd_proto::bin::InputEvent;
-pub use rd_proto::control::{AgentState, DisplayDesc, Perms};
+pub use rd_proto::control::{AgentState, DisplayDesc, Perms, SecureState};
 pub use rd_proto::files::{Place, PlaceKind};
 
 /// Requested video output.
@@ -142,12 +142,38 @@ pub trait Platform: Send + Sync + 'static {
     fn native_size(&self, display: u32) -> Option<(u32, u32)>;
     fn permissions(&self) -> Perms;
     fn lock_state(&self) -> LockState;
+    /// Windows: the agent's Remote Desktop session is disconnected (nothing is drawn, so
+    /// nothing can be captured or typed into until someone reconnects).
+    fn session_disconnected(&self) -> bool {
+        false
+    }
     /// Keep the display awake while the guard lives.
     fn keep_awake(&self, reason: &str) -> Box<dyn Guard>;
     /// Tell the OS the user is active (wakes a sleeping display).
     fn declare_user_activity(&self);
     fn video_pipeline(&self) -> anyhow::Result<Box<dyn VideoPipeline>>;
     fn input_injector(&self) -> anyhow::Result<Box<dyn InputInjector>>;
+    /// Whether the secure desktop (the Windows lock screen / UAC prompt) can be shown to the
+    /// viewer. Windows with the helper service reports `Starting`/`Ready`; everything else
+    /// stays `Unavailable`. `Failed` means the helper could not start; the reason is logged.
+    fn secure_state(&self) -> SecureState {
+        SecureState::Unavailable
+    }
+    /// A pipeline that captures the secure desktop (Windows only). `None` when this platform
+    /// has no secure-desktop helper. The runtime starts it while [`Platform::lock_state`] is
+    /// `Locked`, and swaps back to [`Platform::video_pipeline`] on unlock.
+    fn secure_video_pipeline(&self) -> Option<Box<dyn VideoPipeline>> {
+        None
+    }
+    /// Input may be injected while the host is locked because the secure-desktop helper is
+    /// active. When false, the input thread drops it as usual.
+    fn secure_input_ready(&self) -> bool {
+        false
+    }
+    /// Ctrl+Alt+Del on the secure desktop (Windows): `SendSAS`, subject to the policy.
+    fn send_sas(&self) -> anyhow::Result<()> {
+        anyhow::bail!("this platform has no secure desktop")
+    }
     fn audio_source(&self) -> Option<Box<dyn AudioSource>> {
         None
     }

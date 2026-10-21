@@ -43,7 +43,13 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
    supports beyond screen sessions. `files`: file channels.
 2. Gateway → `{"t":"registered","gw_proto":1}`. A newer registration for the same machine replaces the old
    socket (old one closed with code 4009).
-3. Agent → `{"t":"state", ...AgentState}` whenever lock/perms/in_session change (checked every 2 s).
+3. Agent → `{"t":"state", ...AgentState}` whenever lock/perms/in_session/secure/disconnected
+   change (checked every 2 s). `AgentState` is
+   `{"locked":bool,"perms":{"screen":bool,"input":bool},"in_session":bool,"secure":"unavailable"|"starting"|"ready"|"failed","disconnected":bool}`;
+   `secure` is the Windows secure-desktop helper (docs/setup-windows.md), absent on older
+   agents and on macOS. `disconnected` (Windows) means the agent's Remote Desktop session is
+   disconnected: Windows draws nothing for it, so there is nothing to show until someone
+   reconnects; absent on older agents.
 4. Gateway → `{"t":"session_request","session":"<32 hex>","user":"<email>","client_ip":"<ip>"}`.
    Agent must dial `/ws/agent/session/<session>` (same bearer token) within **10 s**. One session per
    machine: a new request implicitly ends the previous one.
@@ -125,7 +131,8 @@ Compatibility: both messages are additive and `gw_proto` stays 1. Older gateways
 8. Viewer sends VIDEO_ACK after each decoder output (or discard), input events, `keyframe_req`
    (see Keyframes below), `pause`/`resume` (tab hidden/visible; the agent sends a keyframe on
    resume by itself, so the viewer need not ask), `set` (partial params; size/display/codec
-   change ⇒ new epoch ⇒ new `video_config` + keyframe).
+   change ⇒ new epoch ⇒ new `video_config` + keyframe), and `sas` (Ctrl+Alt+Del on the Windows
+   secure desktop; the agent answers `{"t":"error","code":"sas"}` when policy blocks it).
 9. PING/PONG both ways: the agent pings every 500 ms (RTT → flow window); the viewer pings every 1 s
    (clock offset). Every PING must be answered immediately with a PONG
    (`t_origin_us` echoed, `t_reply_us` = responder clock).
@@ -138,10 +145,13 @@ Compatibility: both messages are additive and `gw_proto` stays 1. Older gateways
 Agent side: the session socket is the only one carrying media. When it closes the agent stops the
 pipeline, releases all keys/buttons and drops the keep-awake guard.
 
-- **Locked host:** the agent never injects input into the lock screen. While the host is locked
-  (checked at most every 200 ms) every input event except RELEASE_ALL is dropped; keys/buttons
-  still held when the lock is noticed are released. The first dropped event of a locked period
-  makes the agent send the viewer `{"t":"state",…,"locked":true}` (once per period).
+- **Locked host:** without the secure-desktop helper the agent never injects input into the
+  lock screen. While the host is locked (checked at most every 200 ms) every input event except
+  RELEASE_ALL is dropped; keys/buttons still held when the lock is noticed are released. The
+  first dropped event of a locked period makes the agent send the viewer
+  `{"t":"state",…,"locked":true}` (once per period). With `secure:"ready"` the agent swaps to
+  the helper's pipeline, shows the real lock screen, and forwards input to the helper instead
+  of dropping it (docs/setup-windows.md).
 - **Capture stopped:** if capture stops on its own (permission revoked, display gone, capture
   service error) the agent sends `{"t":"error","code":"capture_stopped","msg":…}` once (checked
   every second) and keeps the session open; it is reported again only after capture ran again.

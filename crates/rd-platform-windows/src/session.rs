@@ -7,7 +7,8 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::System::RemoteDesktop::{
     WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTS_SESSIONSTATE_LOCK, WTS_SESSIONSTATE_UNLOCK,
-    WTSFreeMemory, WTSINFOEXW, WTSQuerySessionInformationW, WTSSessionInfoEx,
+    WTSConnectState, WTSDisconnected, WTSFreeMemory, WTSINFOEXW, WTSQuerySessionInformationW,
+    WTSSessionInfoEx,
 };
 use windows::Win32::System::StationsAndDesktops::{
     CloseDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS, GetUserObjectInformationW,
@@ -113,6 +114,37 @@ pub fn lock_state() -> LockState {
         (Some(false), _) | (None, Some(true)) => LockState::Unlocked,
         (None, None) => LockState::Unknown,
     }
+}
+
+/// Whether this process's session is a disconnected one (a Remote Desktop client went away
+/// without signing out). Windows draws nothing for it.
+pub fn disconnected() -> bool {
+    let mut buf = PWSTR::null();
+    let mut bytes = 0u32;
+    // SAFETY: WTS allocates the buffer; freed below.
+    let ok = unsafe {
+        WTSQuerySessionInformationW(
+            Some(WTS_CURRENT_SERVER_HANDLE),
+            WTS_CURRENT_SESSION,
+            WTSConnectState,
+            &mut buf,
+            &mut bytes,
+        )
+    }
+    .is_ok();
+    if !ok {
+        return false;
+    }
+    // SAFETY: for WTSConnectState the buffer is a WTS_CONNECTSTATE_CLASS (an i32).
+    let state = if bytes as usize >= size_of::<i32>() {
+        // SAFETY: as above; WTS returned at least an i32.
+        unsafe { *buf.as_ptr().cast::<i32>() }
+    } else {
+        -1
+    };
+    // SAFETY: allocated by WTSQuerySessionInformationW.
+    unsafe { WTSFreeMemory(buf.as_ptr().cast()) };
+    state == WTSDisconnected.0
 }
 
 fn session_locked() -> Option<bool> {

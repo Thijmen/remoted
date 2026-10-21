@@ -11,8 +11,14 @@
 ;   autostart is installed again from the new folder, which also starts the agent.
 ; - Otherwise the finish page offers `rd-agent setup` (paste the setup code from the portal's
 ;   Add device, or enter the gateway, machine id and token), which turns the autostart on.
-; - Silent: `setup.exe /S` (add `/D=<folder>` last to pick the folder); uninstall with
-;   `uninstall.exe /S`. Silent uninstalls keep the configuration.
+; - Optional: the secure-desktop service (lock screen and UAC in the viewer). The installer
+;   offers it on its own page and runs `rd-agent secure install` elevated (one UAC prompt); the
+;   rest of the install stays per-user. It is offered again on every interactive install, which
+;   also updates the service's copies in Program Files.
+; - Silent: `setup.exe /S` (add `/SECURE` to install the service too, `/D=<folder>` last to pick
+;   the folder); uninstall with `uninstall.exe /S`. Silent installs never ask for elevation
+;   unless /SECURE is given: the agent's own updates run silently, with nobody to answer UAC.
+;   Silent uninstalls keep the configuration.
 ; - Uninstalling stops the agent and removes the autostart. The configuration (with the agent
 ;   token) and the logs in %LOCALAPPDATA%\rd-agent stay unless the user removes them.
 
@@ -44,7 +50,16 @@ InstallDir "$LOCALAPPDATA\Programs\rd-agent"
 InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 BrandingText "${NAME} ${VERSION}"
 
-VIProductVersion "${VERSION}.0"
+; VIProductVersion wants four numeric fields. A beta build is X.Y.Z-beta.N; put N in the
+; fourth field (1.6.1-beta.2 -> 1.6.1.2). Stable versions append .0.
+!define VERSION_NUM "${VERSION}"
+!searchreplace VERSION_NUM "${VERSION}" "-beta." "."
+!if "${VERSION_NUM}" == "${VERSION}"
+  VIProductVersion "${VERSION}.0"
+!else
+  VIProductVersion "${VERSION_NUM}"
+!endif
+
 VIAddVersionKey "ProductName" "${NAME}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "FileVersion" "${VERSION}"
@@ -61,9 +76,10 @@ VIAddVersionKey "LegalCopyright" "rd"
 !define MUI_UNICON "${ICON}"
 !define MUI_ABORTWARNING
 
-!define MUI_WELCOMEPAGE_TEXT "This installs ${NAME} ${VERSION}, the host side of rd: it lets you reach this PC from a Mac or a browser through your rd gateway.$\r$\n$\r$\nIt installs for your Windows account only and needs no administrator rights. For the setup at the end, add this PC in your rd portal (Add device) and keep its setup code at hand."
+!define MUI_WELCOMEPAGE_TEXT "This installs ${NAME} ${VERSION}, the host side of rd: it lets you reach this PC from a Mac or a browser through your rd gateway.$\r$\n$\r$\nIt installs for your Windows account only. Only the optional lock screen service (next page) needs administrator rights. For the setup at the end, add this PC in your rd portal (Add device) and keep its setup code at hand."
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
+Page custom SecurePage SecurePageLeave
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "Set up ${NAME} now (paste the setup code)"
@@ -82,6 +98,9 @@ VIAddVersionKey "LegalCopyright" "rd"
 
 ; The agent was configured before this install (an update or a reinstall).
 Var Configured
+; 1: install (or update) the secure-desktop service, elevated.
+Var Secure
+Var SecureBox
 
 Function .onInit
   ${IfNot} ${RunningX64}
@@ -96,6 +115,56 @@ Function .onInit
     Abort
   ${EndIf}
   ${EnableX64FSRedirection}
+
+  ; Interactive: offered, checked. Silent: only with /SECURE (see the top of this file).
+  StrCpy $Secure "1"
+  ${If} ${Silent}
+    StrCpy $Secure "0"
+    ${GetParameters} $0
+    ClearErrors
+    ${GetOptions} $0 "/SECURE" $1
+    ${IfNot} ${Errors}
+      StrCpy $Secure "1"
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+Function SecurePage
+  !insertmacro MUI_HEADER_TEXT "Lock screen and UAC" "Optional; needs administrator rights once."
+  nsDialogs::Create 1018
+  Pop $0
+  ${NSD_CreateLabel} 0 0 100% 72u "Windows shows the lock screen and UAC prompts on a secure desktop that ${NAME} cannot see or control. A small Windows service (it runs as SYSTEM, from Program Files) shows them in the viewer, so you can sign in to this PC remotely with its normal password when it is locked.$\r$\n$\r$\nInstalling it asks for administrator rights once. If it is already installed, this updates it. You can also do it later from an elevated terminal: rd-agent secure install."
+  Pop $0
+  ${NSD_CreateCheckbox} 0 80u 100% 12u "Install the lock screen service (administrator)"
+  Pop $SecureBox
+  ${If} $Secure == "1"
+    ${NSD_Check} $SecureBox
+  ${EndIf}
+  nsDialogs::Show
+FunctionEnd
+
+Function SecurePageLeave
+  ${NSD_GetState} $SecureBox $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $Secure "1"
+  ${Else}
+    StrCpy $Secure "0"
+  ${EndIf}
+FunctionEnd
+
+; `secure install`, elevated. ExecShellWait reports no exit code, so ask the service manager
+; afterwards: `secure status` exits 0 only when the service runs.
+Function InstallSecure
+  DetailPrint "Installing the rd secure desktop service (administrator)"
+  ExecShellWait "runas" "$INSTDIR\rd-agent.exe" "secure install" SW_HIDE
+  nsExec::ExecToLog '"$INSTDIR\rd-agent.exe" secure status'
+  Pop $0
+  ${If} $0 == "0"
+    DetailPrint "rd secure desktop is running"
+  ${Else}
+    DetailPrint "rd secure desktop is not running"
+    MessageBox MB_ICONEXCLAMATION "The lock screen service was not installed (the administrator prompt was cancelled, or the install failed).$\r$\n$\r$\n${NAME} works without it; a locked PC then stays locked in the viewer. To install it later, run this from an elevated terminal:$\r$\n$\r$\n$\"$INSTDIR\rd-agent.exe$\" secure install" /SD IDOK
+  ${EndIf}
 FunctionEnd
 
 Section "${NAME}" Main
@@ -117,6 +186,8 @@ Section "${NAME}" Main
   SetOutPath "$INSTDIR"
   File "${SRC}\rd-agent.exe"
   File "${SRC}\rd-agentw.exe"
+  File "${SRC}\rd-agent-svc.exe"
+  File "${SRC}\rd-agent-sec.exe"
   File "${SRC}\THIRD_PARTY_NOTICES.md"
   File "/oname=rd-agent.ico" "${ICON}"
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -141,6 +212,10 @@ Section "${NAME}" Main
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "EstimatedSize" "$0"
+
+  ${If} $Secure == "1"
+    Call InstallSecure
+  ${EndIf}
 
   ; An update: turn the autostart on again (from this folder), which also starts the agent.
   ${If} $Configured == "1"
@@ -170,8 +245,19 @@ Section "Uninstall"
   nsExec::ExecToLog '"$INSTDIR\rd-agent.exe" uninstall'
   Pop $0
 
+  ; The secure-desktop service lives in Program Files and runs as SYSTEM: remove it before the
+  ; agent (whose secure uninstall command does that) disappears. Only prompt when it is there.
+  nsExec::ExecToStack '"$SYSDIR\sc.exe" query rd-agent-secure'
+  Pop $0
+  ${If} $0 == "0"
+    DetailPrint "Removing the rd secure desktop service (administrator)"
+    ExecShellWait "runas" "$INSTDIR\rd-agent.exe" "secure uninstall" SW_HIDE
+  ${EndIf}
+
   Delete "$INSTDIR\rd-agent.exe"
   Delete "$INSTDIR\rd-agentw.exe"
+  Delete "$INSTDIR\rd-agent-svc.exe"
+  Delete "$INSTDIR\rd-agent-sec.exe"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES.md"
   Delete "$INSTDIR\rd-agent.ico"
   Delete "$INSTDIR\uninstall.exe"

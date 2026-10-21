@@ -117,7 +117,7 @@ jobs:
           $v = '${{ needs.version.outputs.version }}'
           New-Item -ItemType Directory -Force out, pkg | Out-Null
           # The key tables in rd-agent derive from Chromium (BSD-3-Clause): ship the notice.
-          Copy-Item target/release/rd-agent.exe, target/release/rd-agentw.exe, THIRD_PARTY_NOTICES.md pkg
+          Copy-Item target/release/rd-agent.exe, target/release/rd-agentw.exe, target/release/rd-agent-svc.exe, target/release/rd-agent-sec.exe, THIRD_PARTY_NOTICES.md pkg
           Compress-Archive -Path pkg/* -DestinationPath "out/rd-agent-$v-windows-x64.zip"
           Get-ChildItem out
 

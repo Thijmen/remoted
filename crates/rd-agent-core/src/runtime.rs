@@ -264,10 +264,17 @@ impl Ctx {
     fn refresh_state(&self) -> bool {
         let locked = self.platform.lock_state() == LockState::Locked;
         let perms = self.platform.permissions();
+        let secure = self.platform.secure_state();
+        let disconnected = self.platform.session_disconnected();
         self.state.send_if_modified(|s| {
-            let changed = s.locked != locked || s.perms != perms;
+            let changed = s.locked != locked
+                || s.perms != perms
+                || s.secure != secure
+                || s.disconnected != disconnected;
             s.locked = locked;
             s.perms = perms;
+            s.secure = secure;
+            s.disconnected = disconnected;
             changed
         })
     }

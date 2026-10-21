@@ -51,6 +51,9 @@ enum Command {
     Install,
     /// Stop and remove the login service.
     Uninstall,
+    /// Windows: install, remove or inspect the secure-desktop service that shows the lock
+    /// screen and UAC prompts in the viewer (administrator; docs/setup-windows.md).
+    Secure(SecureArgs),
     /// Show configuration, token, permissions, login service and gateway status.
     Status(ConfigArg),
     /// Install the newest version now, as the portal's Update button does (only for agents
@@ -76,6 +79,22 @@ struct UpdateArgs {
     /// Only show what is available (and the last update's outcome).
     #[arg(long)]
     check: bool,
+}
+
+#[derive(Args)]
+struct SecureArgs {
+    #[command(subcommand)]
+    action: SecureAction,
+}
+
+#[derive(Subcommand)]
+enum SecureAction {
+    /// Copy the service and helper to Program Files and register the service (administrator).
+    Install,
+    /// Stop and remove the service and its copies (administrator).
+    Uninstall,
+    /// Show whether the service is installed and running.
+    Status,
 }
 
 #[derive(Args)]
@@ -212,6 +231,10 @@ fn main() -> ExitCode {
             logging::init_cli();
             host::service::uninstall()
         }
+        Command::Secure(args) => {
+            logging::init_cli();
+            secure_command(args)
+        }
         Command::Status(args) => {
             logging::init_cli();
             status::run(args.config.as_deref())
@@ -245,6 +268,26 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(windows)]
+fn secure_command(args: SecureArgs) -> anyhow::Result<()> {
+    match args.action {
+        SecureAction::Install => rd_platform_windows::secure::service::install(),
+        SecureAction::Uninstall => rd_platform_windows::secure::service::uninstall(),
+        SecureAction::Status => {
+            if !rd_platform_windows::secure::service::status()? {
+                // Not running: a non-zero exit, so scripts and the installer can check it.
+                std::process::exit(3);
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn secure_command(_args: SecureArgs) -> anyhow::Result<()> {
+    anyhow::bail!("the secure desktop service is Windows only")
 }
 
 fn run(args: RunArgs) -> anyhow::Result<()> {
