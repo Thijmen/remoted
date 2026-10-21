@@ -187,7 +187,9 @@ helper comes up, `ready` when it is in the picture, `failed` if it could not sta
   to allow services (`1` or `3`); the viewer reports an error when the policy blocks it.
 - It works in the console session and in a locked Remote Desktop session (the agent's own
   session either way). A *disconnected* Remote Desktop session has no screen at all, so there
-  is no lock screen to show; the viewer then reports that the secure desktop could not start.
+  is no lock screen to show; the viewer says so and does not start the helper. On a VM you
+  reach through Remote Desktop (or Guacamole), either leave that session connected, or sign in
+  on the VM's own console and run the agent there: a console session is always drawn.
 - **Trust boundary:** the service accepts requests from a session's own signed-in user (it
   checks the caller's session and user SID) and only shows that session's secure desktop. Any
   code running as that user can therefore be shown it; use this on a machine you control. It does not cover BitLocker or the

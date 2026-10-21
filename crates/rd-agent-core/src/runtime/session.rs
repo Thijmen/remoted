@@ -551,6 +551,7 @@ impl Session {
     /// True when the host is locked and the platform has a secure-desktop helper to show it.
     fn secure_recommended(&self) -> bool {
         self.ctx.platform.lock_state() == LockState::Locked
+            && !self.ctx.platform.session_disconnected()
             && matches!(
                 self.ctx.platform.secure_state(),
                 SecureState::Starting | SecureState::Ready
@@ -563,8 +564,11 @@ impl Session {
         let Some(stream) = self.stream.as_ref() else {
             return;
         };
-        let want_secure =
-            s.locked && matches!(s.secure, SecureState::Starting | SecureState::Ready);
+        // A disconnected Remote Desktop session has no picture at all: the helper would only
+        // fail, so do not start it.
+        let want_secure = s.locked
+            && !s.disconnected
+            && matches!(s.secure, SecureState::Starting | SecureState::Ready);
         if stream.secure == want_secure {
             return;
         }

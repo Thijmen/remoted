@@ -142,6 +142,11 @@ pub trait Platform: Send + Sync + 'static {
     fn native_size(&self, display: u32) -> Option<(u32, u32)>;
     fn permissions(&self) -> Perms;
     fn lock_state(&self) -> LockState;
+    /// Windows: the agent's Remote Desktop session is disconnected (nothing is drawn, so
+    /// nothing can be captured or typed into until someone reconnects).
+    fn session_disconnected(&self) -> bool {
+        false
+    }
     /// Keep the display awake while the guard lives.
     fn keep_awake(&self, reason: &str) -> Box<dyn Guard>;
     /// Tell the OS the user is active (wakes a sleeping display).

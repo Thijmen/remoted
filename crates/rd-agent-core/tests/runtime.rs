@@ -23,7 +23,7 @@ async fn registers_and_reports_state_changes() {
     assert_eq!(reg["agent_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(
         reg["state"],
-        json!({"locked": false, "perms": {"screen": true, "input": true}, "in_session": false, "secure": "unavailable"})
+        json!({"locked": false, "perms": {"screen": true, "input": true}, "in_session": false, "secure": "unavailable", "disconnected": false})
     );
 
     s.platform.set_locked(true);

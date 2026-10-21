@@ -43,11 +43,13 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
    supports beyond screen sessions. `files`: file channels.
 2. Gateway → `{"t":"registered","gw_proto":1}`. A newer registration for the same machine replaces the old
    socket (old one closed with code 4009).
-3. Agent → `{"t":"state", ...AgentState}` whenever lock/perms/in_session/secure change
-   (checked every 2 s). `AgentState` is
-   `{"locked":bool,"perms":{"screen":bool,"input":bool},"in_session":bool,"secure":"unavailable"|"starting"|"ready"|"failed"}`;
+3. Agent → `{"t":"state", ...AgentState}` whenever lock/perms/in_session/secure/disconnected
+   change (checked every 2 s). `AgentState` is
+   `{"locked":bool,"perms":{"screen":bool,"input":bool},"in_session":bool,"secure":"unavailable"|"starting"|"ready"|"failed","disconnected":bool}`;
    `secure` is the Windows secure-desktop helper (docs/setup-windows.md), absent on older
-   agents and on macOS.
+   agents and on macOS. `disconnected` (Windows) means the agent's Remote Desktop session is
+   disconnected: Windows draws nothing for it, so there is nothing to show until someone
+   reconnects; absent on older agents.
 4. Gateway → `{"t":"session_request","session":"<32 hex>","user":"<email>","client_ip":"<ip>"}`.
    Agent must dial `/ws/agent/session/<session>` (same bearer token) within **10 s**. One session per
    machine: a new request implicitly ends the previous one.

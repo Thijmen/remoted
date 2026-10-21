@@ -147,6 +147,11 @@ pub struct AgentState {
     /// The secure-desktop helper (docs/setup-windows.md). Older agents omit it.
     #[serde(default)]
     pub secure: SecureState,
+    /// Windows: the agent's Remote Desktop session is disconnected. Windows draws nothing for
+    /// it, so there is no lock screen or desktop to show until someone reconnects. Older
+    /// agents omit it.
+    #[serde(default)]
+    pub disconnected: bool,
 }
 
 /// What an agent knows about updates of itself (docs/updates.md), reported to the gateway with
@@ -562,7 +567,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             st,
-            r#"{"t":"state","locked":true,"perms":{"screen":false,"input":false},"in_session":false,"secure":"unavailable"}"#
+            r#"{"t":"state","locked":true,"perms":{"screen":false,"input":false},"in_session":false,"secure":"unavailable","disconnected":false}"#
         );
         let stats = serde_json::to_string(&AgentMsg::Stats(AgentStats::default())).unwrap();
         assert!(

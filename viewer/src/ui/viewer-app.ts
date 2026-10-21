@@ -549,7 +549,13 @@ export class ViewerApp {
     };
     let banner: Banner | null = null;
     if (st.locked) {
-      if (st.secure === 'ready')
+      if (st.disconnected)
+        banner = {
+          level: 'warn',
+          text: `${name}'s Remote Desktop session is disconnected, so Windows shows nothing to sign in to. Reconnect with Remote Desktop to sign in, or use Recovery.`,
+          actions: recovery,
+        };
+      else if (st.secure === 'ready')
         banner = {
           level: 'warn',
           text: `${name} is on the secure desktop (lock screen or UAC) — sign in or answer the prompt in the picture.`,

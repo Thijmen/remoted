@@ -37,6 +37,8 @@ export interface AgentState {
   in_session: boolean;
   /** Windows secure-desktop helper; agents before this feature omit it. */
   secure: SecureState;
+  /** Windows: the agent's Remote Desktop session is disconnected (nothing to show). */
+  disconnected: boolean;
 }
 
 /** Whether the Windows lock screen / UAC prompt can be shown in the viewer. */
@@ -328,6 +330,7 @@ export function agentStateFrom(v: unknown): AgentState {
     perms: { screen: bool(p, 'screen'), input: bool(p, 'input') },
     in_session: bool(o, 'in_session'),
     secure: secureFrom(o.secure),
+    disconnected: bool(o, 'disconnected'),
   };
 }
 

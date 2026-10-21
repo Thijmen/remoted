@@ -105,6 +105,9 @@ impl Platform for WinPlatform {
     fn lock_state(&self) -> LockState {
         session::lock_state()
     }
+    fn session_disconnected(&self) -> bool {
+        session::disconnected()
+    }
     fn keep_awake(&self, reason: &str) -> Box<dyn Guard> {
         power::keep_display_awake(reason)
     }
