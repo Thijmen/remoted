@@ -34,7 +34,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{
-    MSG_CONFIG, MSG_FRAME, MSG_INPUT, MSG_READY, MSG_SAS, MSG_STOP, Pipe, read_message,
+    MSG_CONFIG, MSG_ERROR, MSG_FRAME, MSG_INPUT, MSG_READY, MSG_SAS, MSG_STOP, Pipe, read_message,
     write_message,
 };
 
@@ -46,7 +46,23 @@ pub fn run(pipe_name: &str) -> anyhow::Result<()> {
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }.ok();
 
     let pipe = Pipe::open(pipe_name).context("connecting to the agent")?;
-    let desktop = open_secure_desktop()?;
+    tracing::info!("connected to the agent");
+    // The session reports "locked" a moment before Winlogon becomes the input desktop (and
+    // UAC's prompt takes a moment to appear): give it a few seconds.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let desktop = loop {
+        match open_secure_desktop() {
+            Ok(desktop) => break desktop,
+            Err(e) if Instant::now() < deadline => {
+                tracing::debug!("waiting for the secure desktop: {e:#}");
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(e) => {
+                let _ = write_message(&pipe, MSG_ERROR, format!("{e:#}").as_bytes());
+                return Err(e);
+            }
+        }
+    };
     let screen = {
         // SAFETY: the thread's desktop is now Winlogon; GetDC(NULL) is its screen.
         let screen = unsafe { GetDC(None) };
@@ -65,6 +81,11 @@ pub fn run(pipe_name: &str) -> anyhow::Result<()> {
         (w, h)
     };
 
+    tracing::info!(
+        width = screen_w.0,
+        height = screen_w.1,
+        "attached to the secure desktop"
+    );
     let mut surface = Surface::new(screen, screen_w.0 as u32, screen_w.1 as u32)?;
     let mut injector = crate::input::SendInputInjector::new()
         .context("creating the secure desktop input injector")?;

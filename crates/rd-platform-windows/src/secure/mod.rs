@@ -273,7 +273,12 @@ fn config_payload(cfg: VideoConfig) -> Vec<u8> {
 pub struct SecureDesktop {
     state: AtomicU8,
     active: Mutex<Option<Active>>,
+    /// When `state` last re-checked for a service that was not there.
+    last_probe: Mutex<Instant>,
 }
+
+/// How often an agent without the service looks again (it may be installed later).
+const PROBE_EVERY: Duration = Duration::from_secs(5);
 
 struct Active {
     pipe: Arc<Pipe>,
@@ -284,28 +289,36 @@ struct Active {
 impl SecureDesktop {
     /// Checks whether the service is there. The helper itself starts on demand.
     pub fn new() -> Arc<Self> {
-        // SAFETY: a presence check; it does not connect.
-        let present = unsafe {
-            windows::Win32::System::Pipes::WaitNamedPipeW(&HSTRING::from(CONTROL_PIPE), 500)
-        }
-        .as_bool();
-        Self::with_present(present)
-    }
-
-    fn with_present(present: bool) -> Arc<Self> {
+        let present = service_present();
         if present {
             info!("secure desktop service found");
         } else {
-            debug!("no secure desktop service; the lock screen stays in the last picture");
+            info!(
+                "no secure desktop service running; the lock screen cannot be shown \
+                 (`rd-agent secure install` as administrator)"
+            );
         }
         Arc::new(SecureDesktop {
             state: AtomicU8::new(if present { 1 } else { 0 }),
             active: Mutex::new(None),
+            last_probe: Mutex::new(Instant::now()),
         })
     }
 
     pub fn state(&self) -> SecureState {
-        let raw = self.state.load(Ordering::Relaxed);
+        let mut raw = self.state.load(Ordering::Relaxed);
+        // The service may be installed (or started) after the agent: look again now and then.
+        if raw == 0 {
+            let mut last = self.last_probe.lock();
+            if last.elapsed() >= PROBE_EVERY {
+                *last = Instant::now();
+                if service_present() {
+                    info!("secure desktop service found");
+                    self.set_state(1);
+                    raw = 1;
+                }
+            }
+        }
         // A failed attempt only applies to the locked period that tried it; after an unlock,
         // make the helper available again for the next lock.
         if raw == 3 && crate::session::lock_state() != rd_agent_core::LockState::Locked {
@@ -434,6 +447,13 @@ impl SecureDesktop {
         let ready = read_message(&pipe).context("waiting for the secure desktop helper");
         match ready {
             Ok((MSG_READY, _)) => {}
+            Ok((MSG_ERROR, msg)) => {
+                self.set_state(3);
+                bail!(
+                    "the secure desktop helper failed: {}",
+                    String::from_utf8_lossy(&msg)
+                );
+            }
             Ok((kind, _)) => {
                 self.set_state(3);
                 bail!("unexpected secure desktop message {kind} before ready");
@@ -498,10 +518,11 @@ impl SecureDesktop {
     }
 }
 
+/// Asks the service manager, not the control pipe: the pipe has one instance, so a probe
+/// right after a helper stops (while the service is still recycling it) would wrongly report
+/// "not installed" and disable the secure desktop until the agent restarts.
 fn service_present() -> bool {
-    // SAFETY: a presence check; it does not connect.
-    unsafe { windows::Win32::System::Pipes::WaitNamedPipeW(&HSTRING::from(CONTROL_PIPE), 200) }
-        .as_bool()
+    service::running()
 }
 
 /// `SoftwareSASGeneration`: bit 0 allows services, bit 1 applications. Absent or 0 means no

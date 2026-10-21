@@ -19,7 +19,7 @@ use anyhow::{Context as _, bail, ensure};
 use tracing::{error, info, warn};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_PIPE_CONNECTED, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
-    ERROR_SERVICE_EXISTS, HANDLE, LUID, NO_ERROR,
+    ERROR_SERVICE_EXISTS, HANDLE, LUID, NO_ERROR, STILL_ACTIVE,
 };
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Security::{
@@ -49,8 +49,8 @@ use windows::Win32::System::Services::{
 };
 use windows::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, GetCurrentProcess,
-    OpenProcess, OpenProcessToken, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-    STARTUPINFOW, TerminateProcess,
+    GetExitCodeProcess, OpenProcess, OpenProcessToken, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW, TerminateProcess,
 };
 use windows::Win32::UI::WindowsAndMessaging::{WTS_SESSION_LOGOFF, WTS_SESSION_UNLOCK};
 use windows::core::{HSTRING, PCWSTR, PWSTR};
@@ -87,6 +87,19 @@ impl Service {
 
     fn stop_helper(&self) {
         if let Some(helper) = self.helper.lock().take() {
+            let mut code = 0u32;
+            // SAFETY: the handle is owned by Helper; a query only.
+            if unsafe { GetExitCodeProcess(helper.process, &mut code) }.is_ok()
+                && code != STILL_ACTIVE.0 as u32
+            {
+                // It died on its own: say so, it may not have managed to write its own log.
+                warn!(
+                    code = format!("{code:#x}"),
+                    "the secure desktop helper had exited"
+                );
+            } else {
+                info!("stopping the secure desktop helper");
+            }
             // SAFETY: the handle is owned by Helper and closed below.
             unsafe { TerminateProcess(helper.process, 1) }.ok();
             // SAFETY: closes the only handle to the helper process.
@@ -145,8 +158,16 @@ impl Service {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
+        // The helper must start on the interactive window station. Without lpDesktop,
+        // CreateProcessAsUser puts it on a hidden, non-interactive one (the service's
+        // `Service-0x0-3e7$`), where OpenInputDesktop fails and nothing can be captured.
+        let mut desktop: Vec<u16> = "winsta0\\winlogon"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let startup = STARTUPINFOW {
             cb: size_of::<STARTUPINFOW>() as u32,
+            lpDesktop: PWSTR(desktop.as_mut_ptr()),
             ..Default::default()
         };
         let mut process = PROCESS_INFORMATION::default();
@@ -233,7 +254,10 @@ impl Service {
 
     fn client(&self, pipe: &Pipe) -> anyhow::Result<()> {
         let session = match authorize(pipe.handle()) {
-            Ok(session) => session,
+            Ok(session) => {
+                info!(session, "secure desktop client connected");
+                session
+            }
             Err(e) => {
                 reply(pipe, Err(format!("{e:#}")));
                 return Ok(());
@@ -253,6 +277,7 @@ impl Service {
             };
             match request {
                 SecureRequest::Start { pipe: name } => {
+                    info!(session, "starting the secure desktop helper");
                     if let Err(e) = valid_data_pipe(&name) {
                         reply(pipe, Err(format!("{e:#}")));
                         continue;
@@ -424,6 +449,10 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
     STATUS_HANDLE.store(handle.0 as isize, Ordering::Release);
     set_status(SERVICE_START_PENDING, 0, 3000);
 
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "secure desktop service started"
+    );
     let service = Service::new();
     let _ = SERVICE.set(service.clone());
     // WTSQueryUserToken needs SeTcbPrivilege; SYSTEM usually has it enabled, but be explicit.
@@ -447,6 +476,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
         std::thread::sleep(Duration::from_millis(200));
     }
     service.stop_helper();
+    info!("secure desktop service stopped");
     set_status(SERVICE_STOPPED, 0, 0);
 }
 
@@ -650,6 +680,31 @@ pub fn installed() -> bool {
     // SAFETY: closes the manager handle.
     unsafe { CloseServiceHandle(scm) }.ok();
     installed
+}
+
+/// Whether the service is registered and running. Any user may ask the service manager; this
+/// does not touch the control pipe, so it never blocks and never takes the pipe's only slot.
+pub fn running() -> bool {
+    // SAFETY: handles are closed below.
+    let Ok(scm) = (unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT) })
+    else {
+        return false;
+    };
+    let service = unsafe { OpenServiceW(scm, &HSTRING::from(SERVICE_NAME), SERVICE_QUERY_STATUS) };
+    let running = match service {
+        Ok(service) => {
+            let running = query_status(service)
+                .map(|status| status.dwCurrentState == SERVICE_RUNNING)
+                .unwrap_or(false);
+            // SAFETY: closes the service handle.
+            unsafe { CloseServiceHandle(service) }.ok();
+            running
+        }
+        Err(_) => false,
+    };
+    // SAFETY: closes the manager handle.
+    unsafe { CloseServiceHandle(scm) }.ok();
+    running
 }
 
 pub fn status() -> anyhow::Result<()> {
