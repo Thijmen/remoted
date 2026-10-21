@@ -185,9 +185,12 @@ helper comes up, `ready` when it is in the picture, `failed` if it could not sta
 - Ctrl+Alt+Del needs
   `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\SoftwareSASGeneration`
   to allow services (`1` or `3`); the viewer reports an error when the policy blocks it.
-- **Trust boundary:** the service accepts requests from the console user's processes (it checks
-  the session and the user SID). Any code running as that user can therefore be shown the
-  secure desktop; use this on a machine you control. It does not cover BitLocker or the
+- It works in the console session and in a locked Remote Desktop session (the agent's own
+  session either way). A *disconnected* Remote Desktop session has no screen at all, so there
+  is no lock screen to show; the viewer then reports that the secure desktop could not start.
+- **Trust boundary:** the service accepts requests from a session's own signed-in user (it
+  checks the caller's session and user SID) and only shows that session's secure desktop. Any
+  code running as that user can therefore be shown it; use this on a machine you control. It does not cover BitLocker or the
   pre-boot screen, and v1 only serves a locked session with the agent running (not the
   signed-out screen after a reboot). The lock screen is captured from the primary display;
   the viewer's display picker does not move it on a multi-monitor PC.

@@ -1,10 +1,11 @@
 //! The rd-agent-secure service: LocalSystem, starts at boot, and launches the secure-desktop
-//! helper into the console session when the agent asks for it.
+//! helper into the agent's session when the agent asks for it.
 //!
 //! Installed once with `rd-agent secure install` (administrator). The service's control pipe
-//! allows interactive users; it verifies that the caller runs in the active console session as
-//! that session's user before it starts anything. The helper itself runs as SYSTEM in the
-//! console session and connects to a data pipe whose ACL allows SYSTEM only.
+//! allows interactive users; it verifies that the caller is the user of the session it runs in
+//! (the console or a Remote Desktop session) before it starts anything, and only ever shows a
+//! caller its own session's secure desktop. The helper itself runs as SYSTEM in that session and
+//! connects to a data pipe whose ACL allows SYSTEM only.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -29,14 +30,12 @@ use windows::Win32::Security::{
     TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS, TOKEN_ELEVATION, TOKEN_PRIVILEGES, TOKEN_QUERY,
     TOKEN_USER, TokenElevation, TokenPrimary, TokenSessionId, TokenUser,
 };
-use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+use windows::Win32::Storage::FileSystem::{FlushFileBuffers, PIPE_ACCESS_DUPLEX};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
     PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
-use windows::Win32::System::RemoteDesktop::{
-    ProcessIdToSessionId, WTSGetActiveConsoleSessionId, WTSQueryUserToken,
-};
+use windows::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSQueryUserToken};
 use windows::Win32::System::Services::{
     ChangeServiceConfigW, CloseServiceHandle, ControlService, CreateServiceW, DeleteService,
     OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, RegisterServiceCtrlHandlerExW,
@@ -137,7 +136,7 @@ impl Service {
         unsafe { CloseHandle(token) }.ok();
         dup.context("duplicating the service token")?;
 
-        // Run in the console session, not session 0.
+        // Run in the caller's session, not session 0.
         // SAFETY: `session` is a u32; the token is a primary token.
         let set = unsafe {
             SetTokenInformation(
@@ -150,7 +149,7 @@ impl Service {
         if let Err(e) = set {
             // SAFETY: closes the duplicated token.
             unsafe { CloseHandle(primary) }.ok();
-            return Err(e).context("moving the helper token to the console session");
+            return Err(e).context("moving the helper token to the agent's session");
         }
 
         let app = HSTRING::from(exe.to_string_lossy().as_ref());
@@ -172,7 +171,7 @@ impl Service {
         };
         let mut process = PROCESS_INFORMATION::default();
         // SAFETY: the command line is mutable and NUL-terminated; the token is primary and in
-        // the console session; the process handle is stored below.
+        // the agent's session; the process handle is stored below.
         let created = unsafe {
             CreateProcessAsUserW(
                 Some(primary),
@@ -246,6 +245,10 @@ impl Service {
             if let Err(e) = self.client(&pipe) {
                 warn!("secure desktop control client: {e:#}");
             }
+            // DisconnectNamedPipe throws away whatever the client has not read yet, such as
+            // the reason a request was refused: wait until it has been read.
+            // SAFETY: the pipe handle is open.
+            unsafe { FlushFileBuffers(pipe.handle()) }.ok();
             // SAFETY: the client has gone; the pipe can accept a new one.
             unsafe { DisconnectNamedPipe(pipe.handle()) }.ok();
         }
@@ -326,8 +329,9 @@ fn valid_data_pipe(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The caller must be the console session's user: that is the only session whose lock screen
-/// this service may expose.
+/// The caller must be the signed-in user of the session it runs in: the service then shows it
+/// that session's secure desktop and no other. Console and Remote Desktop sessions alike;
+/// session 0 (services) has no secure desktop to show.
 fn authorize(pipe: HANDLE) -> anyhow::Result<u32> {
     let mut pid = 0u32;
     // SAFETY: the pipe handle is valid for this connection.
@@ -335,12 +339,7 @@ fn authorize(pipe: HANDLE) -> anyhow::Result<u32> {
     let mut session = 0u32;
     // SAFETY: `pid` comes from the pipe.
     unsafe { ProcessIdToSessionId(pid, &mut session) }.context("the client has no session")?;
-    // SAFETY: no preconditions; returns u32::MAX when there is no console session.
-    let console = unsafe { WTSGetActiveConsoleSessionId() };
-    ensure!(
-        console != u32::MAX && session == console,
-        "only the console session may use the secure desktop"
-    );
+    ensure!(session != 0, "session 0 has no secure desktop");
 
     let mut user = HANDLE::default();
     // SAFETY: the service is SYSTEM (SeTcbPrivilege); the token is closed below.
@@ -372,7 +371,7 @@ fn authorize(pipe: HANDLE) -> anyhow::Result<u32> {
 
     // SAFETY: both pointers point at TOKEN_USER structures in live buffers.
     let same = unsafe { EqualSid(sid_of(&user_sid), sid_of(&client_sid)) }.is_ok();
-    ensure!(same, "the client is not the console user");
+    ensure!(same, "the client is not the user of its session");
     Ok(session)
 }
 

@@ -2,7 +2,7 @@
 //!
 //! The agent runs in the user's session and cannot capture or inject the Winlogon desktop; it
 //! is a different desktop owned by SYSTEM. `rd-agent-svc.exe` (LocalSystem, installed once with
-//! administrator rights) launches `rd-agent-sec.exe` into the console session as SYSTEM while
+//! administrator rights) launches `rd-agent-sec.exe` into the agent's session as SYSTEM while
 //! the host is locked. The helper opens the input desktop (`Winlogon`), captures it with GDI,
 //! and injects input with `SendInput`; it talks to this module over a named pipe whose ACL
 //! allows SYSTEM only.
@@ -69,7 +69,7 @@ const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum SecureRequest {
-    /// Launch `rd-agent-sec.exe <pipe>` in the console session, as SYSTEM.
+    /// Launch `rd-agent-sec.exe <pipe>` in the caller's session, as SYSTEM.
     Start { pipe: String },
     /// Terminate the helper and close the data pipe.
     Stop,
