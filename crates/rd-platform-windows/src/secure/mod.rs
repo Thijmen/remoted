@@ -390,11 +390,11 @@ impl SecureDesktop {
 
         // Ask the service to launch the helper. The control connection stays open: when it
         // closes, the service terminates the helper.
-        let control = match Pipe::open(CONTROL_PIPE) {
+        let control = match open_control() {
             Ok(p) => p,
             Err(e) => {
                 self.set_state(3);
-                return Err(e.context("the secure desktop service is not running"));
+                return Err(e.context("connecting to the secure desktop service"));
             }
         };
         let request = serde_json::to_string(&SecureRequest::Start { pipe: name.clone() })?;
@@ -521,6 +521,33 @@ impl SecureDesktop {
         };
         write_message(&active.pipe, MSG_SAS, &[])
     }
+}
+
+/// Opens the service's control pipe. It has one instance, which stays busy for a moment after
+/// the previous helper stops (a viewer that reconnects right away hits that): wait for it.
+fn open_control() -> anyhow::Result<Pipe> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match Pipe::open(CONTROL_PIPE) {
+            Ok(pipe) => return Ok(pipe),
+            Err(e) if Instant::now() < deadline && is_busy(&e) => {
+                // SAFETY: waits for an instance of the named pipe; no handle is created.
+                let _ = unsafe {
+                    windows::Win32::System::Pipes::WaitNamedPipeW(
+                        &HSTRING::from(CONTROL_PIPE),
+                        1000,
+                    )
+                };
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn is_busy(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<windows::core::Error>()
+        .is_some_and(|e| is_win32_error(e, windows::Win32::Foundation::ERROR_PIPE_BUSY.0))
 }
 
 /// Asks the service manager, not the control pipe: the pipe has one instance, so a probe
