@@ -482,6 +482,11 @@ impl SecureDesktop {
             }
             info!("secure desktop stopped");
         }
+        // A helper that failed stays failed while this lock lasts (`state` clears it on unlock):
+        // resetting it here made the session restart the helper every two seconds.
+        if self.state.load(Ordering::Relaxed) == 3 && self.locked() {
+            return;
+        }
         // The service is still installed; the next lock can start a new helper.
         self.set_state(if service_present() { 1 } else { 0 });
     }

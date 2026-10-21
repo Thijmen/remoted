@@ -15,7 +15,7 @@ use rd_agent_core::platform::InputInjector;
 use rd_proto::bin::{self, BinMsg};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection,
     DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, HALFTONE, HDC, HGDIOBJ, ReleaseDC, SRCCOPY,
     SelectObject, SetStretchBltMode, StretchBlt,
 };
@@ -50,9 +50,9 @@ pub fn run(pipe_name: &str) -> anyhow::Result<()> {
     // The session reports "locked" a moment before Winlogon becomes the input desktop (and
     // UAC's prompt takes a moment to appear): give it a few seconds.
     let deadline = Instant::now() + Duration::from_secs(5);
-    let desktop = loop {
-        match open_secure_desktop() {
-            Ok(desktop) => break desktop,
+    let mut attached = loop {
+        match Attached::open() {
+            Ok(attached) => break attached,
             Err(e) if Instant::now() < deadline => {
                 tracing::debug!("waiting for the secure desktop: {e:#}");
                 std::thread::sleep(Duration::from_millis(250));
@@ -63,38 +63,18 @@ pub fn run(pipe_name: &str) -> anyhow::Result<()> {
             }
         }
     };
-    let screen = {
-        // SAFETY: the thread's desktop is now Winlogon; GetDC(NULL) is its screen.
-        let screen = unsafe { GetDC(None) };
-        ensure!(
-            !screen.is_invalid(),
-            "GetDC(NULL) failed on the secure desktop"
-        );
-        screen
-    };
-    let screen_w = {
-        // SAFETY: a plain metric query.
-        let w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-        // SAFETY: a plain metric query.
-        let h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-        ensure!(w > 0 && h > 0, "the secure desktop has no screen");
-        (w, h)
-    };
-
-    tracing::info!(
-        width = screen_w.0,
-        height = screen_w.1,
-        "attached to the secure desktop"
-    );
-    let mut surface = Surface::new(screen, screen_w.0 as u32, screen_w.1 as u32)?;
+    let mut surface = Surface::new(attached.screen, attached.width, attached.height)?;
     let mut injector = crate::input::SendInputInjector::new()
         .context("creating the secure desktop input injector")?;
-    // SAFETY: the pipe is open; the helper is ready to take input.
     let _ = write_message(&pipe, MSG_READY, &[]);
 
     let mut fps = 10u32;
     let mut next = Instant::now();
     let mut last_sent = Instant::now() - Duration::from_secs(2);
+    // Since when captures fail; the desktop may be in a transition (lock, UAC, unlock, a
+    // Remote Desktop resize). Give up after FAIL_FOR.
+    let mut failing_since: Option<Instant> = None;
+    const FAIL_FOR: Duration = Duration::from_secs(10);
     let result = (|| -> anyhow::Result<()> {
         loop {
             // Input from the agent: drain what is there before the next capture.
@@ -119,7 +99,7 @@ pub fn run(pipe_name: &str) -> anyhow::Result<()> {
                     }
                     MSG_CONFIG => {
                         let (width, height, new_fps) = config(&payload)?;
-                        surface = Surface::new(screen, width, height)?;
+                        surface = Surface::new(attached.screen, width, height)?;
                         fps = new_fps;
                         next = Instant::now();
                     }
@@ -131,7 +111,49 @@ pub fn run(pipe_name: &str) -> anyhow::Result<()> {
 
             let now = Instant::now();
             if now >= next {
-                surface.capture(screen, screen_w.0 as u32, screen_w.1 as u32)?;
+                next = now + Duration::from_secs_f64(1.0 / f64::from(fps.clamp(1, 10)));
+                match surface.capture(&attached) {
+                    Ok(()) => {
+                        if let Some(since) = failing_since.take() {
+                            tracing::info!(
+                                after_ms = since.elapsed().as_millis() as u64,
+                                "secure desktop capture works again"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        let since = *failing_since.get_or_insert_with(|| {
+                            tracing::warn!(
+                                width = attached.width,
+                                height = attached.height,
+                                "secure desktop capture failed, retrying: {e:#}"
+                            );
+                            now
+                        });
+                        if now.duration_since(since) >= FAIL_FOR {
+                            let msg = format!("capturing the secure desktop: {e:#}");
+                            let _ = write_message(&pipe, MSG_ERROR, msg.as_bytes());
+                            bail!(msg);
+                        }
+                        // Attach again: the input desktop or the screen size may have changed.
+                        match Attached::open() {
+                            Ok(fresh) => {
+                                tracing::debug!(
+                                    width = fresh.width,
+                                    height = fresh.height,
+                                    "attached to the secure desktop again"
+                                );
+                                attached = fresh;
+                                surface =
+                                    Surface::new(attached.screen, surface.width, surface.height)?;
+                            }
+                            Err(e) => tracing::debug!("re-attaching: {e:#}"),
+                        }
+                        next = now + Duration::from_millis(250);
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                }
                 if surface.changed || now.duration_since(last_sent) >= Duration::from_secs(1) {
                     let mut payload = Vec::with_capacity(16 + surface.pixels().len());
                     payload.extend_from_slice(&now_us().to_le_bytes());
@@ -142,18 +164,58 @@ pub fn run(pipe_name: &str) -> anyhow::Result<()> {
                     surface.changed = false;
                     last_sent = now;
                 }
-                next = now + Duration::from_secs_f64(1.0 / f64::from(fps.clamp(1, 10)));
             }
             std::thread::sleep(Duration::from_millis(5));
         }
     })();
 
     injector.release_all();
-    // SAFETY: the DCs/desktop are owned by this process.
-    unsafe { ReleaseDC(None, screen) };
-    // SAFETY: the desktop handle is owned by this function.
-    unsafe { CloseDesktop(desktop) }.ok();
+    drop(surface);
+    drop(attached);
     result
+}
+
+/// The calling thread attached to the secure desktop, with that desktop's screen DC.
+struct Attached {
+    desktop: HDESK,
+    screen: HDC,
+    width: u32,
+    height: u32,
+}
+
+impl Attached {
+    fn open() -> anyhow::Result<Self> {
+        let desktop = open_secure_desktop()?;
+        // SAFETY: the thread's desktop is now Winlogon; GetDC(NULL) is its screen.
+        let screen = unsafe { GetDC(None) };
+        // SAFETY: plain metric queries, for the desktop this thread is on.
+        let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+        let attached = Attached {
+            desktop,
+            screen,
+            width: w.max(0) as u32,
+            height: h.max(0) as u32,
+        };
+        ensure!(
+            !screen.is_invalid(),
+            "GetDC(NULL) failed on the secure desktop"
+        );
+        ensure!(w > 0 && h > 0, "the secure desktop has no screen ({w}x{h})");
+        tracing::info!(width = w, height = h, "attached to the secure desktop");
+        Ok(attached)
+    }
+}
+
+impl Drop for Attached {
+    fn drop(&mut self) {
+        if !self.screen.is_invalid() {
+            // SAFETY: balances GetDC in `open`.
+            unsafe { ReleaseDC(None, self.screen) };
+        }
+        // SAFETY: the desktop handle is owned by this value. The thread stays attached to it
+        // until the next SetThreadDesktop; closing a thread's own desktop simply fails.
+        unsafe { CloseDesktop(self.desktop) }.ok();
+    }
 }
 
 fn config(payload: &[u8]) -> anyhow::Result<(u32, u32, u32)> {
@@ -233,6 +295,8 @@ struct Surface {
     len: usize,
     previous: Vec<u8>,
     changed: bool,
+    /// The screen at its own size, when the frame is scaled.
+    grab: Option<Box<Surface>>,
 }
 
 impl Surface {
@@ -286,6 +350,7 @@ impl Surface {
             len: width as usize * height as usize * 4,
             previous: Vec::new(),
             changed: true,
+            grab: None,
         })
     }
 
@@ -295,32 +360,40 @@ impl Surface {
     }
 
     /// Fits the whole secure desktop into the frame and tells whether it changed.
-    fn capture(
-        &mut self,
-        screen: HDC,
-        screen_width: u32,
-        screen_height: u32,
-    ) -> anyhow::Result<()> {
-        // SAFETY: both DCs are valid; the target is the DIB selected into `memory`.
-        let ok = unsafe {
-            SetStretchBltMode(self.memory, HALFTONE);
-            StretchBlt(
-                self.memory,
-                0,
-                0,
-                self.width as i32,
-                self.height as i32,
-                Some(screen),
-                0,
-                0,
-                screen_width as i32,
-                screen_height as i32,
-                SRCCOPY | CAPTUREBLT,
-            )
-        };
-        // StretchBlt returns a BOOL; false means the desktop refused (lock screen gone).
-        if !ok.as_bool() {
-            bail!("StretchBlt on the secure desktop failed");
+    ///
+    /// Reads the screen with a plain `BitBlt` at its own size (what the normal GDI capture
+    /// does) and scales memory to memory, so the screen DC never has to stretch. On failure
+    /// the error carries Windows' reason.
+    fn capture(&mut self, attached: &Attached) -> anyhow::Result<()> {
+        let (screen_width, screen_height) = (attached.width, attached.height);
+        if (self.width, self.height) == (screen_width, screen_height) {
+            blit_screen(self.memory, attached)?;
+        } else {
+            let grab = match self.grab.take() {
+                Some(grab) if (grab.width, grab.height) == (screen_width, screen_height) => grab,
+                _ => Box::new(Surface::new(attached.screen, screen_width, screen_height)?),
+            };
+            blit_screen(grab.memory, attached)?;
+            // SAFETY: both are memory DCs with DIBs selected; the rectangles are their sizes.
+            unsafe {
+                SetStretchBltMode(self.memory, HALFTONE);
+                StretchBlt(
+                    self.memory,
+                    0,
+                    0,
+                    self.width as i32,
+                    self.height as i32,
+                    Some(grab.memory),
+                    0,
+                    0,
+                    screen_width as i32,
+                    screen_height as i32,
+                    SRCCOPY,
+                )
+            }
+            .ok()
+            .context("scaling the secure desktop")?;
+            self.grab = Some(grab);
         }
         // GDI omits the cursor; draw it into the frame (UAC needs to be clickable).
         self.draw_cursor(screen_width, screen_height);
@@ -378,6 +451,33 @@ impl Surface {
             let _ = unsafe { DeleteObject(HGDIOBJ(icon.hbmMask.0)) }.ok();
         }
     }
+}
+
+/// Copies the whole screen into `target` (a memory DC at the screen's size). Tries without
+/// CAPTUREBLT too: some display drivers refuse layered-window capture on the secure desktop.
+fn blit_screen(target: HDC, attached: &Attached) -> anyhow::Result<()> {
+    let (w, h) = (attached.width as i32, attached.height as i32);
+    // SAFETY: `target` holds a DIB of the screen's size; the screen DC is valid.
+    let with = unsafe {
+        BitBlt(
+            target,
+            0,
+            0,
+            w,
+            h,
+            Some(attached.screen),
+            0,
+            0,
+            SRCCOPY | CAPTUREBLT,
+        )
+    };
+    let Err(first) = with else {
+        return Ok(());
+    };
+    // SAFETY: as above.
+    unsafe { BitBlt(target, 0, 0, w, h, Some(attached.screen), 0, 0, SRCCOPY) }.map_err(|e| {
+        anyhow::anyhow!("BitBlt from the secure desktop: {e} (with CAPTUREBLT: {first})")
+    })
 }
 
 impl Drop for Surface {
