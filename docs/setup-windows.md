@@ -154,15 +154,20 @@ which also captures the shortcuts a browser never sees.
 Windows shows the lock screen and UAC prompts on a *secure desktop*
 that a program in your session cannot capture or control. `rd-agent` can install a small
 LocalSystem service that runs a helper in your session while it is locked, so the viewer shows
-the real desktop and your input reaches it:
+the real desktop and your input reaches it.
+
+The installer offers it on its **Lock screen and UAC** page (checked by default): it asks for
+administrator rights once and leaves the rest of the install per-user. To install it later, or
+on a silent install:
 
 ```powershell
 # In an elevated terminal (administrator):
 & "$env:LOCALAPPDATA\Programs\rd-agent\rd-agent.exe" secure install
+# or, silently: rd-agent-<version>-windows-x64-setup.exe /S /SECURE
 ```
 
-The service starts at boot. Restart the agent once (`rd-agent install`) so it finds the new
-service. From then on, when the PC is locked or a UAC prompt is up, the
+The service starts at boot; a running agent finds it within a few seconds. From then on, when
+the PC is locked or a UAC prompt is up, the
 viewer shows the actual screen: type the Windows password in the picture, click UAC buttons,
 and use **Send Ctrl+Alt+Del** from the banner. Nothing is stored; the password only travels
 through the session to the helper. The portal shows the secure state (`starting` while the
@@ -173,8 +178,10 @@ helper comes up, `ready` when it is in the picture, `failed` if it could not sta
   and helper log to `%ProgramData%\rd\agent\logs` (`secure-service.log`,
   `secure-helper.log`) for diagnosing a start failure.
 - The install copies `rd-agent-svc.exe` and `rd-agent-sec.exe` to `%ProgramFiles%\rd-agent`.
-  The per-user agent updates itself, but not those copies: run `secure install` again after
-  updating the agent so they match.
+  The per-user agent updates itself silently, and a silent update cannot ask for
+  administrator rights, so it does not update those copies: run the installer interactively
+  (or `secure install`) after an update to refresh them.
+- `rd-agent secure status` exits 0 only when the service is running.
 - Ctrl+Alt+Del needs
   `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\SoftwareSASGeneration`
   to allow services (`1` or `3`); the viewer reports an error when the policy blocks it.

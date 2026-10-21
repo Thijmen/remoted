@@ -275,7 +275,13 @@ fn secure_command(args: SecureArgs) -> anyhow::Result<()> {
     match args.action {
         SecureAction::Install => rd_platform_windows::secure::service::install(),
         SecureAction::Uninstall => rd_platform_windows::secure::service::uninstall(),
-        SecureAction::Status => rd_platform_windows::secure::service::status(),
+        SecureAction::Status => {
+            if !rd_platform_windows::secure::service::status()? {
+                // Not running: a non-zero exit, so scripts and the installer can check it.
+                std::process::exit(3);
+            }
+            Ok(())
+        }
     }
 }
 

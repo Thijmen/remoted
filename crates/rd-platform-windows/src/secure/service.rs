@@ -707,7 +707,9 @@ pub fn running() -> bool {
     running
 }
 
-pub fn status() -> anyhow::Result<()> {
+/// Prints the service state; true when it is running (`rd-agent secure status` exits 0 only
+/// then, which the installer checks).
+pub fn status() -> anyhow::Result<bool> {
     // SAFETY: handles are closed below.
     let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT) }
         .context("opening the service manager")?;
@@ -718,7 +720,7 @@ pub fn status() -> anyhow::Result<()> {
             // SAFETY: closes the manager handle.
             unsafe { CloseServiceHandle(scm) }.ok();
             println!("rd secure desktop is not installed");
-            return Ok(());
+            return Ok(false);
         }
         Err(e) => {
             // SAFETY: closes the manager handle.
@@ -743,7 +745,7 @@ pub fn status() -> anyhow::Result<()> {
     unsafe { CloseServiceHandle(service) }.ok();
     // SAFETY: closes the manager handle.
     unsafe { CloseServiceHandle(scm) }.ok();
-    Ok(())
+    Ok(status.dwCurrentState == SERVICE_RUNNING)
 }
 
 fn stop_service() -> anyhow::Result<()> {
