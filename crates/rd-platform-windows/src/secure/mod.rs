@@ -24,23 +24,25 @@ use rd_agent_core::platform::{InputEvent, InputInjector, SecureState, VideoConfi
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_PIPE_CONNECTED, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL,
-    LocalFree,
+    CloseHandle, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, ERROR_SUCCESS, GENERIC_READ,
+    GENERIC_WRITE, HANDLE, HLOCAL, LocalFree, WAIT_OBJECT_0,
 };
 use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
-    ReadFile, WriteFile,
+    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, OPEN_EXISTING,
+    PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
+use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
     PeekNamedPipe,
 };
 use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW};
-use windows::core::HSTRING;
+use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::core::{HSTRING, PCWSTR};
 
 pub mod helper;
 pub mod service;
@@ -86,21 +88,61 @@ pub enum SecureReply {
 // ---------------------------------------------------------------------------
 // named pipes
 
-/// A synchronous named-pipe handle. Reads and writes may happen on different threads.
-pub struct Pipe(HANDLE);
+/// A named-pipe handle. Reads and writes may happen on different threads.
+///
+/// The agent's data pipe is *overlapped*: Windows serializes all I/O on a synchronous handle,
+/// so with one thread blocked reading frames and another writing input, the input write (which
+/// waits for the helper to read) held up the frame reader while the helper waited for that
+/// reader: a deadlock. Overlapped handles run reads and writes independently. The helper's end
+/// (one thread) and the control pipe stay synchronous.
+pub struct Pipe {
+    handle: HANDLE,
+    overlapped: bool,
+}
 
 // SAFETY: a pipe handle is a kernel object and may be used from any thread; writes are
 // serialized by `SecureDesktop`'s mutex, reads by the pipeline's reader thread.
 unsafe impl Send for Pipe {}
 unsafe impl Sync for Pipe {}
 
+/// A manual-reset event for one overlapped operation, closed on drop.
+struct Event(HANDLE);
+
+impl Event {
+    fn new() -> anyhow::Result<Self> {
+        // SAFETY: an unnamed manual-reset event, closed in Drop.
+        let handle = unsafe { CreateEventW(None, true, false, PCWSTR::null()) }
+            .context("creating an event")?;
+        Ok(Event(handle))
+    }
+}
+
+impl Drop for Event {
+    fn drop(&mut self) {
+        // SAFETY: this Event owns the handle.
+        unsafe { CloseHandle(self.0) }.ok();
+    }
+}
+
 impl Pipe {
+    /// A synchronous handle (the helper's end, the control pipe).
     pub fn from_handle(handle: HANDLE) -> Self {
-        Pipe(handle)
+        Pipe {
+            handle,
+            overlapped: false,
+        }
+    }
+
+    /// A handle created with `FILE_FLAG_OVERLAPPED`.
+    fn from_overlapped(handle: HANDLE) -> Self {
+        Pipe {
+            handle,
+            overlapped: true,
+        }
     }
 
     pub fn handle(&self) -> HANDLE {
-        self.0
+        self.handle
     }
 
     pub fn open(name: &str) -> anyhow::Result<Self> {
@@ -117,13 +159,39 @@ impl Pipe {
             )
         }
         .with_context(|| format!("opening {name}"))?;
-        Ok(Pipe(handle))
+        Ok(Pipe::from_handle(handle))
+    }
+
+    /// Waits for an overlapped operation started with `ov`; returns the bytes transferred.
+    fn finish(&self, started: windows::core::Result<()>, ov: &OVERLAPPED) -> anyhow::Result<u32> {
+        if let Err(e) = started
+            && !is_win32_error(&e, ERROR_IO_PENDING.0)
+        {
+            return Err(e.into());
+        }
+        let mut n = 0u32;
+        // SAFETY: `ov` belongs to an operation on this handle; waiting keeps the buffer it
+        // uses borrowed until the operation is complete.
+        unsafe { GetOverlappedResult(self.handle, ov, &mut n, true) }?;
+        Ok(n)
     }
 
     pub fn read(&self, buf: &mut [u8]) -> anyhow::Result<usize> {
+        if self.overlapped {
+            let event = Event::new()?;
+            let mut ov = OVERLAPPED {
+                hEvent: event.0,
+                ..Default::default()
+            };
+            // SAFETY: `buf` stays borrowed until `finish` has waited for the read.
+            let started = unsafe { ReadFile(self.handle, Some(buf), None, Some(&mut ov)) };
+            let n = self.finish(started, &ov).context("reading a pipe")?;
+            return Ok(n as usize);
+        }
         let mut n = 0u32;
         // SAFETY: `buf` is writable for its whole length; the handle is open.
-        unsafe { ReadFile(self.0, Some(buf), Some(&mut n), None) }.context("reading a pipe")?;
+        unsafe { ReadFile(self.handle, Some(buf), Some(&mut n), None) }
+            .context("reading a pipe")?;
         Ok(n as usize)
     }
 
@@ -139,13 +207,28 @@ impl Pipe {
         Ok(())
     }
 
+    fn write(&self, buf: &[u8]) -> anyhow::Result<u32> {
+        if self.overlapped {
+            let event = Event::new()?;
+            let mut ov = OVERLAPPED {
+                hEvent: event.0,
+                ..Default::default()
+            };
+            // SAFETY: `buf` stays borrowed until `finish` has waited for the write.
+            let started = unsafe { WriteFile(self.handle, Some(buf), None, Some(&mut ov)) };
+            return self.finish(started, &ov).context("writing a pipe");
+        }
+        let mut n = 0u32;
+        // SAFETY: `buf` is readable; the handle is open.
+        unsafe { WriteFile(self.handle, Some(buf), Some(&mut n), None) }
+            .context("writing a pipe")?;
+        Ok(n)
+    }
+
     pub fn write_all(&self, buf: &[u8]) -> anyhow::Result<()> {
         let mut off = 0;
         while off < buf.len() {
-            let mut n = 0u32;
-            // SAFETY: `buf[off..]` is readable; the handle is open.
-            unsafe { WriteFile(self.0, Some(&buf[off..]), Some(&mut n), None) }
-                .context("writing a pipe")?;
+            let n = self.write(&buf[off..])?;
             if n == 0 {
                 bail!("the pipe closed");
             }
@@ -158,16 +241,47 @@ impl Pipe {
     pub fn peek(&self) -> anyhow::Result<u32> {
         let mut available = 0u32;
         // SAFETY: a query of the pipe's buffer; no data is consumed.
-        unsafe { PeekNamedPipe(self.0, None, 0, None, Some(&mut available), None) }
+        unsafe { PeekNamedPipe(self.handle, None, 0, None, Some(&mut available), None) }
             .context("peeking a pipe")?;
         Ok(available)
+    }
+
+    /// Server side of an overlapped pipe: waits up to `timeout` for the client to connect.
+    fn accept(&self, timeout: Duration) -> anyhow::Result<bool> {
+        let event = Event::new()?;
+        let mut ov = OVERLAPPED {
+            hEvent: event.0,
+            ..Default::default()
+        };
+        // SAFETY: `ov` lives until the operation has completed or been cancelled below.
+        let started = unsafe { ConnectNamedPipe(self.handle, Some(&mut ov)) };
+        match started {
+            Ok(()) => return Ok(true),
+            Err(e) if is_win32_error(&e, ERROR_PIPE_CONNECTED.0) => return Ok(true),
+            Err(e) if is_win32_error(&e, ERROR_IO_PENDING.0) => {}
+            Err(e) => return Err(e).context("waiting for the helper to connect"),
+        }
+        // SAFETY: a wait on our own event.
+        let waited = unsafe { WaitForSingleObject(event.0, timeout.as_millis() as u32) };
+        let mut n = 0u32;
+        if waited == WAIT_OBJECT_0 {
+            // SAFETY: the operation has completed.
+            unsafe { GetOverlappedResult(self.handle, &ov, &mut n, false) }
+                .context("waiting for the helper to connect")?;
+            return Ok(true);
+        }
+        // SAFETY: cancels our own pending connect, then waits until it is gone so `ov` and
+        // the event can be dropped.
+        unsafe { CancelIoEx(self.handle, Some(&ov)) }.ok();
+        let _ = unsafe { GetOverlappedResult(self.handle, &ov, &mut n, true) };
+        Ok(false)
     }
 }
 
 impl Drop for Pipe {
     fn drop(&mut self) {
         // SAFETY: this Pipe owns the handle.
-        unsafe { CloseHandle(self.0) }.ok();
+        unsafe { CloseHandle(self.handle) }.ok();
     }
 }
 
@@ -374,7 +488,7 @@ impl SecureDesktop {
         let handle = unsafe {
             CreateNamedPipeW(
                 &HSTRING::from(name.as_str()),
-                PIPE_ACCESS_DUPLEX,
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                 1,
                 0,
@@ -386,7 +500,7 @@ impl SecureDesktop {
         if handle == windows::Win32::Foundation::INVALID_HANDLE_VALUE {
             bail!("creating the secure desktop pipe failed");
         }
-        let pipe = Arc::new(Pipe::from_handle(handle));
+        let pipe = Arc::new(Pipe::from_overlapped(handle));
 
         // Ask the service to launch the helper. The control connection stays open: when it
         // closes, the service terminates the helper.
@@ -412,21 +526,10 @@ impl SecureDesktop {
         }
 
         // The helper connects as SYSTEM; it may take a moment to start.
-        let raw = pipe.handle().0 as isize;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let _connect = std::thread::Builder::new()
-            .name("rd-secure-connect".into())
-            .spawn(move || {
-                // SAFETY: the handle is open until the main thread drops `pipe`.
-                let result =
-                    unsafe { ConnectNamedPipe(HANDLE(raw as *mut std::ffi::c_void), None) };
-                let _ = tx.send(result);
-            })?;
-        let connected = match rx.recv_timeout(Duration::from_secs(10)) {
-            Ok(Ok(())) => true,
-            Ok(Err(e)) => is_win32_error(&e, ERROR_PIPE_CONNECTED.0),
-            Err(_) => false,
-        };
+        let connected = pipe.accept(Duration::from_secs(10)).unwrap_or_else(|e| {
+            warn!("{e:#}");
+            false
+        });
         if !connected {
             drop(pipe);
             self.set_state(3);
@@ -646,6 +749,8 @@ impl SecurePipeline {
                 };
                 let mut last_submit = Instant::now();
                 let mut last_capture_us = 0u64;
+                // Logged once each, at info/warn: these explain a picture that never shows.
+                let (mut first_frame, mut warned_stale, mut warned_encode) = (true, false, false);
                 loop {
                     if stop2.load(Ordering::Relaxed) {
                         break;
@@ -734,9 +839,23 @@ impl SecurePipeline {
                             let height =
                                 u32::from_le_bytes(payload[12..16].try_into().expect("4 bytes"));
                             let bgra = &payload[16..];
+                            if first_frame {
+                                first_frame = false;
+                                info!(width, height, "first secure desktop frame");
+                            }
                             if (width, height) != (cfg.width, cfg.height) {
                                 // A frame from before a reconfigure; the helper's next frame
-                                // has the new size.
+                                // has the new size. Repeated, it means the sizes disagree.
+                                if !warned_stale {
+                                    warned_stale = true;
+                                    warn!(
+                                        width,
+                                        height,
+                                        want_width = cfg.width,
+                                        want_height = cfg.height,
+                                        "secure desktop frame has the wrong size; dropping"
+                                    );
+                                }
                                 debug!(
                                     width,
                                     height,
@@ -760,7 +879,10 @@ impl SecurePipeline {
                                 height,
                                 &mut image.planes(),
                             ) {
-                                debug!("secure desktop conversion failed: {e:#}");
+                                if !warned_encode {
+                                    warned_encode = true;
+                                    warn!("secure desktop conversion failed: {e:#}");
+                                }
                                 gate2.cancel(admitted.seq);
                                 continue;
                             }
@@ -769,8 +891,10 @@ impl SecurePipeline {
                                 capture_us,
                                 admitted.seq,
                                 admitted.force_keyframe,
-                            ) {
-                                debug!("secure desktop encode failed: {e:#}");
+                            ) && !warned_encode
+                            {
+                                warned_encode = true;
+                                warn!("secure desktop encode failed: {e:#}");
                             }
                             last_capture_us = capture_us;
                             last_submit = Instant::now();

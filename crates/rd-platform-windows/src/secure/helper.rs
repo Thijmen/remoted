@@ -74,6 +74,7 @@ pub fn run(pipe_name: &str) -> anyhow::Result<()> {
     // Since when captures fail; the desktop may be in a transition (lock, UAC, unlock, a
     // Remote Desktop resize). Give up after FAIL_FOR.
     let mut failing_since: Option<Instant> = None;
+    let mut frames_sent = 0u64;
     const FAIL_FOR: Duration = Duration::from_secs(10);
     let result = (|| -> anyhow::Result<()> {
         loop {
@@ -161,6 +162,14 @@ pub fn run(pipe_name: &str) -> anyhow::Result<()> {
                     payload.extend_from_slice(&surface.height.to_le_bytes());
                     payload.extend_from_slice(surface.pixels());
                     write_message(&pipe, MSG_FRAME, &payload)?;
+                    if frames_sent == 0 {
+                        tracing::info!(
+                            width = surface.width,
+                            height = surface.height,
+                            "first secure desktop frame sent"
+                        );
+                    }
+                    frames_sent += 1;
                     surface.changed = false;
                     last_sent = now;
                 }
