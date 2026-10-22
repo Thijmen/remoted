@@ -19,6 +19,8 @@ use rd_agent_core::{
     CodecConfig, DisplayDesc, EncodedFrame, FrameGate, FrameSink, Guard, InputEvent, InputInjector,
     LockState, Perms, Platform, SecureState, VideoConfig, VideoPipeline,
 };
+#[cfg(unix)]
+use rd_agent_core::{PtyProcess, PtyRequest};
 use rd_proto::bin::{self, BinMsg, VideoAck, VideoHeader};
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
@@ -230,6 +232,19 @@ impl Platform for FakePlatform {
         self.record(Event::Trashed(path.to_path_buf()));
         Ok(())
     }
+    fn pty_supported(&self) -> bool {
+        cfg!(unix)
+    }
+    /// A real pseudo terminal running `/bin/sh -i` (whatever the config says), with a plain
+    /// prompt and no history file, so the tests do not depend on the user's shell setup.
+    #[cfg(unix)]
+    fn spawn_pty(&self, req: &PtyRequest) -> std::io::Result<PtyProcess> {
+        let mut req = req.clone();
+        req.env.push(("PS1".into(), "$ ".into()));
+        req.env.push(("HISTFILE".into(), "/dev/null".into()));
+        req.env.push(("ENV".into(), "/dev/null".into()));
+        rd_agent_core::pty::spawn_with(&req, rd_agent_core::pty::Launch::plain("/bin/sh", ["-i"]))
+    }
 }
 
 struct AwakeGuard(Arc<Mutex<Vec<Event>>>);
@@ -399,13 +414,26 @@ impl Agent {
         timings: Timings,
         configure: impl FnOnce(Runtime) -> Runtime,
     ) -> Agent {
-        let cfg = AgentConfig {
+        Agent::start_configured(gateway_url, platform, timings, |_| {}, configure)
+    }
+
+    /// Like [`Agent::start_with`], with `edit` applied to the config first.
+    pub fn start_configured(
+        gateway_url: &str,
+        platform: Arc<FakePlatform>,
+        timings: Timings,
+        edit: impl FnOnce(&mut AgentConfig),
+        configure: impl FnOnce(Runtime) -> Runtime,
+    ) -> Agent {
+        let mut cfg = AgentConfig {
             gateway_url: gateway_url.into(),
             machine: "mbp".into(),
             token: Some(TOKEN.into()),
             defaults: Default::default(),
             update: Default::default(),
+            terminal: Default::default(),
         };
+        edit(&mut cfg);
         let (tx, rx) = oneshot::channel();
         let runtime = configure(Runtime::new(cfg, platform).timings(timings));
         let task = tokio::spawn(runtime.run_until(async {
@@ -593,6 +621,11 @@ impl FakeGateway {
             .await
             .expect("no session connection")
             .unwrap()
+    }
+
+    /// True if no new session (or channel) connection arrives within `d`.
+    pub async fn no_session_within(&mut self, d: Duration) -> bool {
+        tokio::time::timeout(d, self.sessions.recv()).await.is_err()
     }
 
     /// True if no new control connection arrives within `d`.
@@ -820,9 +853,18 @@ pub struct Setup {
 }
 
 pub async fn setup_with(platform: Arc<FakePlatform>, timings: Timings) -> Setup {
+    setup_configured(platform, timings, |_| {}).await
+}
+
+/// Like [`setup_with`], with `edit` applied to the agent's config.
+pub async fn setup_configured(
+    platform: Arc<FakePlatform>,
+    timings: Timings,
+    edit: impl FnOnce(&mut AgentConfig),
+) -> Setup {
     init_tracing();
     let mut gw = FakeGateway::start().await;
-    let agent = Agent::start(&gw.url, platform.clone(), timings);
+    let agent = Agent::start_configured(&gw.url, platform.clone(), timings, edit, |r| r);
     let control = gw.control().await;
     Setup {
         gw,

@@ -14,6 +14,7 @@
 //! - `display`     — monitors, DPI scale, wire display ids
 //! - `files`       — file browser places (known folders, drives), Recycle Bin
 //! - `power`       — power requests (keep the display awake, declare user activity)
+//! - `pty`         — the terminal's pseudo console (ConPTY)
 //! - `session`     — lock state, OS description, permissions
 
 #![cfg(windows)]
@@ -31,13 +32,15 @@ pub mod geometry;
 pub mod input;
 pub mod mf;
 pub mod power;
+pub mod pty;
 pub mod secure;
 pub mod session;
 
 use std::sync::Arc;
 
 use rd_agent_core::{
-    DisplayDesc, Guard, InputInjector, LockState, Perms, Place, Platform, VideoPipeline,
+    DisplayDesc, Guard, InputInjector, LockState, Perms, Place, Platform, PtyProcess, PtyRequest,
+    VideoPipeline,
 };
 
 pub use encoder::EncoderPreference;
@@ -149,5 +152,12 @@ impl Platform for WinPlatform {
     }
     fn trash(&self, path: &std::path::Path) -> std::io::Result<()> {
         files::trash(path)
+    }
+    /// ConPTY exists (Windows 10 1809 or later).
+    fn pty_supported(&self) -> bool {
+        pty::supported()
+    }
+    fn spawn_pty(&self, req: &PtyRequest) -> std::io::Result<PtyProcess> {
+        pty::spawn(req)
     }
 }

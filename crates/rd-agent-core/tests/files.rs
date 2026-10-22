@@ -226,7 +226,13 @@ async fn setup_files() -> (Setup, Files) {
 #[tokio::test]
 async fn hello_lists_places_and_caps() {
     let mut setup = setup().await;
-    assert_eq!(setup.control.register["caps"], json!(["files"]));
+    // The fake platform has a pseudo terminal on Unix (tests/terminal.rs).
+    let caps = if cfg!(unix) {
+        json!(["files", "terminal"])
+    } else {
+        json!(["files"])
+    };
+    assert_eq!(setup.control.register["caps"], caps);
     let mut f = Files::open(&mut setup, CHANNEL_A).await;
     // Requests before hello are refused.
     let early = f.request(json!({"t": "list", "path": "/"}), 1).await;

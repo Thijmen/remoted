@@ -1,6 +1,8 @@
 //! Traits implemented by platform crates. The runtime owns one [`Platform`] and creates a
-//! [`VideoPipeline`] / [`InputInjector`] (/ [`AudioSource`]) per session.
+//! [`VideoPipeline`] / [`InputInjector`] (/ [`AudioSource`]) per session, and a
+//! [`PtyProcess`] per terminal shell.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -191,6 +193,76 @@ pub trait Platform: Send + Sync + 'static {
         let _ = path;
         Err(std::io::ErrorKind::Unsupported.into())
     }
+    /// [`Platform::spawn_pty`] works here (docs/terminal.md: Unix `openpty`, Windows 10 1809+
+    /// ConPTY). The agent offers the terminal only when this is true.
+    fn pty_supported(&self) -> bool {
+        false
+    }
+    /// Starts a shell in a pseudo terminal. Blocking (fork/exec, CreateProcess): the runtime
+    /// calls it on a blocking thread.
+    fn spawn_pty(&self, req: &PtyRequest) -> io::Result<PtyProcess> {
+        let _ = req;
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
+/// Size of a pseudo terminal in character cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PtySize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// What [`Platform::spawn_pty`] starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PtyRequest {
+    pub size: PtySize,
+    /// The `[terminal] shell` setting; `None` for the platform's default shell.
+    pub shell: Option<String>,
+    /// Variables set in the shell's environment on top of the agent's own (the platform adds
+    /// its own, e.g. `TERM` on Unix).
+    pub env: Vec<(String, String)>,
+    /// Variables of the agent's environment the shell must not see (`RD_AGENT_TOKEN`).
+    pub env_remove: Vec<String>,
+}
+
+/// How a shell ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PtyExit {
+    /// Exit status, when the process exited by itself.
+    pub code: Option<i32>,
+    /// Unix: the signal that ended it.
+    pub signal: Option<i32>,
+}
+
+/// A shell running in a pseudo terminal, from [`Platform::spawn_pty`].
+///
+/// The runtime reads and writes on dedicated threads (never on the network task):
+/// - `reader` yields the terminal's output. Once the shell has exited and the output it wrote
+///   is read, it returns end of file (`Ok(0)`) or an error, even if processes the shell left
+///   behind still hold the terminal open.
+/// - `writer` takes input for the shell; it fails once the shell has exited.
+/// - [`PtyChild`] resizes, hangs up, kills and waits.
+pub struct PtyProcess {
+    /// What runs, for the terminal's title: "zsh", "pwsh", ...
+    pub name: String,
+    pub reader: Box<dyn io::Read + Send>,
+    pub writer: Box<dyn io::Write + Send>,
+    pub child: Arc<dyn PtyChild>,
+}
+
+/// Control of a [`PtyProcess`]'s shell. Every method may be called from any thread, also
+/// after the shell exited (then they do nothing).
+pub trait PtyChild: Send + Sync + 'static {
+    fn resize(&self, size: PtySize) -> io::Result<()>;
+    /// Asks the shell to end, as closing a terminal window does (Unix: SIGHUP to its process
+    /// group; Windows: closes the pseudo console). The runtime calls [`PtyChild::kill`] when it
+    /// is still running 3 s later. May block briefly: not for the network task.
+    fn hangup(&self);
+    /// Ends the shell for sure (Unix: SIGKILL to its process group; Windows: TerminateProcess).
+    fn kill(&self);
+    /// Blocks until the shell exited; called once, on a thread of its own.
+    fn wait(&self) -> PtyExit;
 }
 
 /// The user's home folder: `HOME`, or `USERPROFILE` on Windows.

@@ -9,7 +9,8 @@
 //! - `input`    — CGEvent injection (mouse abs/rel/buttons/click-state, wheel, keys via HID->kVK)
 //! - `power`    — IOPM assertions (keep display awake, declare user activity)
 //! - `session`  — lock state, permission preflight, OS description, displays
-//! - `files`    — file browser places, Move to Trash
+//! - `files`    — file browser places, Move to Trash (the terminal's pseudo terminal is the Unix
+//!   one in `rd_agent_core::pty`)
 //! - `keychain` — agent token storage
 //! - `selftest` — capture+encode benchmark, SPS/VUI assertions, optional `.rdv` recording
 
@@ -30,7 +31,8 @@ pub mod session;
 use std::sync::Arc;
 
 use rd_agent_core::{
-    DisplayDesc, Guard, InputInjector, LockState, Perms, Place, Platform, VideoPipeline,
+    DisplayDesc, Guard, InputInjector, LockState, Perms, Place, Platform, PtyProcess, PtyRequest,
+    VideoPipeline,
 };
 
 pub use encoder::RateControl;
@@ -129,5 +131,13 @@ impl Platform for MacPlatform {
     }
     fn trash(&self, path: &std::path::Path) -> std::io::Result<()> {
         files::trash(path)
+    }
+    fn pty_supported(&self) -> bool {
+        true
+    }
+    /// The login shell (or `[terminal] shell`) in an `openpty` terminal: rd_agent_core's Unix
+    /// pseudo terminal.
+    fn spawn_pty(&self, req: &PtyRequest) -> std::io::Result<PtyProcess> {
+        rd_agent_core::pty::spawn(req)
     }
 }

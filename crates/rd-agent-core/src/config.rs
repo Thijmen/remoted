@@ -21,6 +21,9 @@ pub struct AgentConfig {
     /// Self-updates (docs/updates.md). Written only when it differs from the default.
     #[serde(default, skip_serializing_if = "UpdateSettings::is_default")]
     pub update: UpdateSettings,
+    /// The terminal (docs/terminal.md). Written only when it differs from the default.
+    #[serde(default, skip_serializing_if = "TerminalSettings::is_default")]
+    pub terminal: TerminalSettings,
 }
 
 /// `[update]` in config.toml.
@@ -47,6 +50,58 @@ impl UpdateSettings {
 
 fn yes() -> bool {
     true
+}
+
+/// `[terminal]` in config.toml (docs/terminal.md, Settings).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSettings {
+    /// Offer the terminal (`terminal` in `register.caps`). When off, terminal requests are
+    /// ignored and the portal shows no Terminal button.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// What to start instead of the platform's default shell. macOS: a program (started as a
+    /// login shell) or a command line (run by the login shell); Windows: a command line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    /// How long a shell without a terminal attached keeps running, in minutes (1-1440; see
+    /// [`TerminalSettings::keep`]).
+    #[serde(default = "default_keep_minutes")]
+    pub keep_minutes: u32,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        TerminalSettings {
+            enabled: true,
+            shell: None,
+            keep_minutes: DEFAULT_KEEP_MINUTES,
+        }
+    }
+}
+
+const DEFAULT_KEEP_MINUTES: u32 = 15;
+
+fn default_keep_minutes() -> u32 {
+    DEFAULT_KEEP_MINUTES
+}
+
+impl TerminalSettings {
+    fn is_default(&self) -> bool {
+        *self == TerminalSettings::default()
+    }
+
+    /// `keep_minutes`, clamped to 1 minute … 1 day.
+    pub fn keep(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.keep_minutes.clamp(1, 1440)) * 60)
+    }
+
+    /// `shell`, unless it is empty.
+    pub fn shell(&self) -> Option<&str> {
+        self.shell
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,6 +203,10 @@ mod tests {
             token: Some("rd1.mbp.secret".into()),
             defaults: StreamDefaults::default(),
             update: UpdateSettings::default(),
+            terminal: TerminalSettings {
+                shell: Some("/bin/bash".into()),
+                ..TerminalSettings::default()
+            },
         };
         cfg.save(&path).unwrap();
         assert_eq!(AgentConfig::load(&path).unwrap(), cfg);
@@ -192,5 +251,39 @@ mod tests {
                 .unwrap();
         assert!(!cfg.update.check);
         assert!(toml::to_string(&cfg).unwrap().contains("check = false"));
+    }
+
+    #[test]
+    fn terminal_settings() {
+        let cfg: AgentConfig =
+            toml::from_str("gateway_url = \"ws://x\"\nmachine = \"m\"\n").unwrap();
+        assert_eq!(cfg.terminal, TerminalSettings::default());
+        assert!(cfg.terminal.enabled);
+        assert_eq!(cfg.terminal.shell(), None);
+        assert_eq!(cfg.terminal.keep(), std::time::Duration::from_secs(15 * 60));
+        // The default is not written out.
+        assert!(!toml::to_string(&cfg).unwrap().contains("terminal"));
+
+        let cfg: AgentConfig = toml::from_str(
+            "gateway_url = \"ws://x\"\nmachine = \"m\"\n[terminal]\nenabled = false\n",
+        )
+        .unwrap();
+        assert!(!cfg.terminal.enabled);
+        assert_eq!(cfg.terminal.keep_minutes, 15);
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(
+            text.contains("[terminal]") && text.contains("enabled = false"),
+            "{text}"
+        );
+        assert_eq!(toml::from_str::<AgentConfig>(&text).unwrap(), cfg);
+
+        let t: TerminalSettings =
+            toml::from_str("shell = \" /bin/bash \"\nkeep_minutes = 0\n").unwrap();
+        assert!(t.enabled);
+        assert_eq!(t.shell(), Some("/bin/bash"));
+        assert_eq!(t.keep(), std::time::Duration::from_secs(60));
+        let t: TerminalSettings = toml::from_str("shell = \"\"\nkeep_minutes = 99999\n").unwrap();
+        assert_eq!(t.shell(), None);
+        assert_eq!(t.keep(), std::time::Duration::from_secs(1440 * 60));
     }
 }

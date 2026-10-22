@@ -3,18 +3,22 @@
 //!
 //! ```text
 //! control.rs   /ws/agent: register, state reports, session_request/session_end, reconnect
-//!   └─ session.rs   one task per viewer session on its own /ws/agent/session/{id} socket
-//!        ├─ reader task   ACK/PING/PONG/input handled inline (never waits on video)
-//!        ├─ writer task   sole owner of the socket's sink; control messages jump the video queue
-//!        ├─ video.rs      EncodedFrame -> video_config / VIDEO, epochs and flags
-//!        ├─ flow.rs       FrameGate on top of rd_flow::FlowGate + BitrateController
-//!        └─ input.rs      dedicated thread owning the InputInjector
+//!   ├─ session.rs   one task per viewer session on its own /ws/agent/session/{id} socket
+//!   │    ├─ reader task   ACK/PING/PONG/input handled inline (never waits on video)
+//!   │    ├─ writer task   sole owner of the socket's sink; control messages jump the video queue
+//!   │    ├─ video.rs      EncodedFrame -> video_config / VIDEO, epochs and flags
+//!   │    ├─ flow.rs       FrameGate on top of rd_flow::FlowGate + BitrateController
+//!   │    └─ input.rs      dedicated thread owning the InputInjector
+//!   ├─ files/       file channels on /ws/agent/files/{channel} (docs/files.md)
+//!   └─ terminal/    terminal channels on /ws/agent/terminal/{channel} (docs/terminal.md)
+//! terminal/shells.rs   the shells (Ctx::shells): outlive channels and control reconnects,
+//!                      ended by `close`, their exit, the keep time or runtime shutdown
 //! net.rs       TCP (TCP_NODELAY, TCP_NOTSENT_LOWAT) + rustls + WebSocket handshake
 //! updates.rs   the hookup for the binary's self-updater (update_status, update, session holds)
 //! ```
 //!
-//! Sessions outlive control reconnects: a joined session keeps streaming on its data socket
-//! while the control socket is re-established.
+//! Sessions and channels outlive control reconnects: a joined session keeps streaming on its
+//! data socket while the control socket is re-established. Shells outlive their channels too.
 
 mod backoff;
 mod control;
@@ -24,6 +28,7 @@ mod input;
 mod net;
 mod session;
 mod task;
+mod terminal;
 mod updates;
 mod video;
 
@@ -212,6 +217,11 @@ struct Ctx {
     gate: Arc<SessionGate>,
     /// Uploads of lost file channels, kept for resuming.
     interrupted: Arc<files::Interrupted>,
+    /// The terminal's shells.
+    shells: Arc<terminal::Shells>,
+    /// The terminal is enabled in the config and the platform has pseudo terminals: listed
+    /// in `register.caps`.
+    terminal: bool,
     /// The binary's update status and where `update` / `registered` go; `None` without an
     /// update hookup.
     updates: Option<(
@@ -244,10 +254,19 @@ impl Ctx {
             timings.upload_resume_keep,
             tokio::runtime::Handle::current(),
         );
+        let terminal = cfg.terminal.enabled && platform.pty_supported();
+        let shells = terminal::Shells::new(
+            platform.clone(),
+            cfg.terminal.clone(),
+            version.clone(),
+            tokio::runtime::Handle::current(),
+        );
         let ctx = Ctx {
             cfg,
             platform,
             interrupted,
+            shells,
+            terminal,
             timings,
             version,
             gateway,
@@ -339,6 +358,7 @@ mod tests {
             token: None,
             defaults: Default::default(),
             update: Default::default(),
+            terminal: Default::default(),
         };
         assert!(token(&cfg).is_err());
         cfg.token = Some("  ".into());

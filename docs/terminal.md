@@ -26,7 +26,8 @@ When the connection drops (Wi-Fi, a laptop that sleeps, a gateway restart) the s
 running on the machine. The terminal reconnects by itself and shows what the shell printed in
 the meantime, and you continue where you were. A reloaded page reattaches the same way.
 
-The agent keeps a shell without a terminal attached for 15 minutes (`keep_minutes`, see
+The agent keeps a shell without a terminal attached for 15 minutes from the moment it was
+detached (`keep_minutes`, see
 [Settings](#settings)), then ends it. It keeps the last 1 MiB of output for the replay; when
 more was printed while you were away, the terminal shows the most recent 1 MiB. A shell is also
 ended when the agent restarts (for example to install an update), and then the terminal offers
@@ -65,8 +66,14 @@ keep_minutes = 15     # how long a shell without a terminal attached keeps runni
 
 The default shell is the user's login shell on macOS (started as a login shell, like
 Terminal.app), and on Windows PowerShell 7 (`pwsh.exe`) when it is installed, else Windows
-PowerShell. The shell gets `TERM=xterm-256color` (macOS), `COLORTERM=truecolor` and
-`TERM_PROGRAM=rd`; on macOS also `LANG=en_US.UTF-8` when no locale is set.
+PowerShell. The shell gets `COLORTERM=truecolor`, `TERM_PROGRAM=rd` and
+`TERM_PROGRAM_VERSION` (the agent's version); on macOS also `TERM=xterm-256color`,
+`LANG=en_US.UTF-8` when no locale is set, and `HOME`, `USER`, `LOGNAME` and `SHELL` from the
+user database when the agent's environment lacks them.
+
+`shell` on macOS: a single word (a path, or a name looked up in `PATH`) that is listed in
+`/etc/shells` starts as a login shell; any other single word runs as given; a line with spaces
+runs through the login shell (`-l -c "<line>"`). On Windows it is a command line.
 
 Changes take effect when the agent restarts.
 
@@ -150,6 +157,9 @@ A shell is attached to one channel at a time. An `attach` to a shell that anothe
 shows takes it over: that channel gets `{"t":"detached","reason":"taken_over"}` and is closed
 with **4001** (the viewer does not reconnect by itself).
 
+Any other message before `hello` (or one that is not JSON) is answered with `bad_request` and
+the channel is closed (1000). After `hello`, messages that are not JSON are ignored.
+
 **While attached.**
 
 | Message | Dir | Meaning |
@@ -160,11 +170,11 @@ with **4001** (the viewer does not reconnect by itself).
 | TERM_OUT (binary) | A→V | The shell's output, from `offset`. |
 | TERM_ACK (binary) | V→A | The viewer has shown output up to a TERM_OUT `seq`. |
 | `{"t":"state",…AgentState}` | A→V | The agent's state changed (`in_session` sets the output's target delay, below). |
-| `{"t":"exit","code":0}` | A→V | The shell ended (`code`: its exit status; on macOS `signal` instead when a signal ended it). Sent after its last output; then the agent closes the channel with 1000. |
+| `{"t":"exit","code":0}` | A→V | The shell ended (`code`: its exit status; on macOS `signal` instead when a signal ended it; on Windows the process exit code, negative for NTSTATUS values such as 0xC000013A). Sent after its last output; then the agent closes the channel with 1000. |
 | PING / PONG | both | As on a file channel: the agent answers every PING at once; the viewer pings every 5 s and reconnects after 20 s of silence. |
 
 A shell that ends while no channel is attached is kept, with its output and exit status, until
-its keep time runs out, so a reattach still shows how it ended (replay, then `exit`).
+the keep time since its detach runs out, so a reattach still shows how it ended (replay, then `exit`).
 
 ### Binary frames
 
@@ -198,6 +208,14 @@ link carries it), the agent skips to the oldest byte it still has; the viewer no
 ### Agent side
 
 `crates/rd-agent-core/src/runtime/terminal/` (the shells, their history and the channels),
-the pseudo terminal in `rd-agent-core` (Unix: `openpty`) and `rd-platform-windows` (ConPTY).
-At most 8 shells per agent (attached or not). The shell's environment is the agent's, without
-`RD_AGENT_TOKEN`, plus the variables listed in [Settings](#settings).
+the pseudo terminal in `crates/rd-agent-core/src/pty.rs` (Unix: `openpty`) and
+`crates/rd-platform-windows/src/pty.rs` (ConPTY, looked up at run time so the agent still
+starts on Windows before 1809). At most 8 shells per agent (attached or not). The shell's
+environment is the agent's, without `RD_AGENT_TOKEN`, plus the variables listed in
+[Settings](#settings).
+
+- Input goes to the shell through a queue of at most 1 MiB. While a shell does not read its
+  input (a large paste into a busy program), the agent stops reading that channel, so its PINGs
+  wait too; a paste the shell leaves unread for over 20 s makes the viewer reconnect.
+- When the agent stops, it closes the terminal channels (1001), hangs up every shell and kills
+  what is left after 1 s.
