@@ -1,13 +1,14 @@
 //! The `rd-agent run` side of updates: checks the manifest (1 minute after start, then every
 //! 6 hours, unless `[update] check = false`), keeps `update_status` current, writes the
-//! registered marker, and installs when the gateway sends `update`.
+//! registered marker, and installs when the gateway sends `update`. The tray menu can ask for
+//! a check or an install too ([`Command`]).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use rd_agent_core::runtime::{SessionControl, UpdateEvent, Updates};
 use rd_proto::control::{Perms, UpdateOutcome, UpdatePhase, UpdateStatus};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 use tracing::{error, info, warn};
@@ -25,6 +26,15 @@ const POLL: Duration = Duration::from_secs(5);
 const SESSION_END_WAIT: Duration = Duration::from_secs(5);
 /// The helper records itself in the update lock within this time of being started.
 const HELPER_START: Duration = Duration::from_secs(60);
+
+/// Asked for on the machine (the tray menu).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    /// Check for a new version now.
+    Check,
+    /// Install `version`, as the portal's Update button does.
+    Install(String),
+}
 
 /// What the background work came back with.
 enum Done {
@@ -50,7 +60,12 @@ struct Service {
 }
 
 /// Runs until the runtime drops its end of `updates`.
-pub async fn run(updates: Updates, updater: Arc<Updater>, check: bool) {
+pub async fn run(
+    updates: Updates,
+    updater: Arc<Updater>,
+    check: bool,
+    mut commands: mpsc::UnboundedReceiver<Command>,
+) {
     let Updates {
         status,
         mut events,
@@ -83,6 +98,7 @@ pub async fn run(updates: Updates, updater: Arc<Updater>, check: bool) {
     let mut next_check = Instant::now() + FIRST_CHECK;
     let mut poll = tokio::time::interval(POLL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut commands_open = true;
     loop {
         tokio::select! {
             () = sleep_until(next_check), if check => {
@@ -95,6 +111,19 @@ pub async fn run(updates: Updates, updater: Arc<Updater>, check: bool) {
                 None => return,
                 Some(UpdateEvent::Registered { state }) => service.registered(state.perms),
                 Some(UpdateEvent::Install { version }) => service.install_requested(version),
+            },
+            command = commands.recv(), if commands_open => match command {
+                None => commands_open = false,
+                Some(Command::Check) => {
+                    if service.job.is_none() {
+                        info!("checking for updates (asked on this machine)");
+                        service.start_check();
+                    }
+                }
+                Some(Command::Install(version)) => {
+                    info!(version, "installing an update (asked on this machine)");
+                    service.install_requested(version);
+                }
             },
             _ = poll.tick() => service.poll_files(),
             done = job(&mut service.job) => {

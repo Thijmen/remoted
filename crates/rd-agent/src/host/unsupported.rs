@@ -59,4 +59,20 @@ pub mod service {
     pub fn status() -> anyhow::Result<ServiceStatus> {
         bail!(UNSUPPORTED)
     }
+
+    pub fn start_at_login() -> anyhow::Result<Option<bool>> {
+        Ok(None)
+    }
+
+    pub fn set_start_at_login(_on: bool) -> anyhow::Result<()> {
+        bail!(UNSUPPORTED)
+    }
+
+    pub fn stop_from_within() -> bool {
+        false
+    }
+
+    pub fn start() -> anyhow::Result<()> {
+        bail!(UNSUPPORTED)
+    }
 }

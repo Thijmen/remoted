@@ -1,7 +1,7 @@
 //! rd-agent: the rd host agent (macOS and Windows).
 //!
 //! ```text
-//! rd-agent run        [--config PATH] [--gateway URL] [--machine ID] [--source screen|synthetic] [--token-env VAR]
+//! rd-agent run        [--config PATH] [--gateway URL] [--machine ID] [--source screen|synthetic] [--token-env VAR] [--no-tray]
 //! rd-agent setup      interactive, in person: config.toml (with the token, readable only by you), permissions, login service
 //! rd-agent install | uninstall     login service management (macOS: LaunchAgent; Windows: autostart + rd-agentw.exe)
 //! rd-agent status     config, token, permissions, login service state, gateway reachability
@@ -14,15 +14,17 @@ mod host;
 mod logging;
 mod setup;
 mod status;
+mod tray;
 mod update;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use rd_agent_core::runtime::{Runtime, update_link};
+use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
+use rd_agent_core::runtime::{Activity, Runtime, update_link};
 use rd_proto::control::UpdateStatus;
+use tokio::sync::{Notify, mpsc, watch};
 use tracing::{error, info};
 
 /// This build's version: reported to the gateway and viewers, and what updates compare
@@ -36,8 +38,9 @@ pub const VERSION: &str = match option_env!("RD_AGENT_TEST_VERSION") {
 #[derive(Parser)]
 #[command(name = "rd-agent", version = VERSION, about = "rd remote desktop host agent")]
 struct Cli {
+    /// Without one: opening RD Agent.app starts the agent through its login service.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -142,6 +145,9 @@ struct RunArgs {
     /// file / the Keychain.
     #[arg(long, value_name = "VAR")]
     token_env: Option<String>,
+    /// No menu bar / notification area icon (also `[tray] enabled = false`).
+    #[arg(long)]
+    no_tray: bool,
 }
 
 #[derive(Args)]
@@ -203,7 +209,10 @@ fn parse_size(s: &str) -> Result<(u32, u32), String> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match cli.command {
+    let Some(command) = cli.command else {
+        return opened();
+    };
+    let result = match command {
         Command::Run(args) => {
             let _logs = logging::init_agent();
             // Logged (stderr, file, os_log) rather than printed: usually nobody watches stderr.
@@ -270,6 +279,27 @@ fn main() -> ExitCode {
     }
 }
 
+/// No subcommand. From a terminal: the help. Otherwise RD Agent.app was opened (Finder,
+/// Spotlight, Login Items): start the agent through its login service, and exit.
+fn opened() -> ExitCode {
+    use std::io::IsTerminal as _;
+    if std::io::stdout().is_terminal() || !cfg!(target_os = "macos") {
+        let _ = Cli::command().print_help();
+        return ExitCode::from(2);
+    }
+    let _logs = logging::init_agent();
+    match host::service::start() {
+        Ok(()) => {
+            info!("opened: started the agent");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            error!("opened, but cannot start the agent: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg(windows)]
 fn secure_command(args: SecureArgs) -> anyhow::Result<()> {
     match args.action {
@@ -317,19 +347,59 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
     let stopped = guard.stopped();
     #[cfg(not(windows))]
     let stopped = std::future::pending::<()>();
-    runtime.block_on(async move {
-        tokio::spawn(update::service::run(updates, updater, check));
-        Runtime::new(cfg, platform)
-            .version(VERSION)
-            .updates(link)
-            .run_until(shutdown_signal(stopped))
-            .await
-    })
+    let want_tray = cfg.tray.enabled && !args.no_tray;
+    let machine = cfg.machine.clone();
+    let agent = move |ui: Option<tray::Ui>| {
+        runtime.block_on(async move {
+            let (activity_tx, activity) = watch::channel(Activity::default());
+            let (paused, paused_rx) = watch::channel(false);
+            let (commands, commands_rx) = mpsc::unbounded_channel();
+            let quit = Arc::new(Notify::new());
+            let update = updates.status.subscribe();
+            tokio::spawn(update::service::run(updates, updater, check, commands_rx));
+            if let Some(ui) = ui {
+                tokio::spawn(tray::control(
+                    ui,
+                    tray::Hooks {
+                        version: VERSION.to_owned(),
+                        machine,
+                        activity,
+                        update,
+                        paused,
+                        updates: commands,
+                        quit: quit.clone(),
+                    },
+                ));
+            }
+            Runtime::new(cfg, platform)
+                .version(VERSION)
+                .updates(link)
+                .activity(activity_tx)
+                .pause(paused_rx)
+                .run_until(shutdown_signal(stopped, quit))
+                .await
+        })
+    };
+    if want_tray && tray::available() {
+        // The icon needs the main thread for the platform's event loop.
+        tray::run(move |ui| agent(Some(ui)))
+    } else {
+        if want_tray {
+            info!("no desktop session to show the tray icon in");
+        }
+        agent(None)
+    }
 }
 
-/// SIGTERM (launchd stopping us), SIGINT / Ctrl-C, or `stopped` (Windows: the stop event of
-/// `rd-agent install` / `uninstall`; never on macOS).
-async fn shutdown_signal(stopped: impl std::future::Future<Output = ()>) {
+/// SIGTERM (launchd stopping us), SIGINT / Ctrl-C, Quit in the tray menu, or `stopped`
+/// (Windows: the stop event of `rd-agent install` / `uninstall`; never on macOS).
+async fn shutdown_signal(stopped: impl std::future::Future<Output = ()>, quit: Arc<Notify>) {
+    let stopped = async {
+        tokio::select! {
+            () = stopped => info!("asked to stop; shutting down"),
+            () = quit.notified() => info!("quit from the tray menu; shutting down"),
+        }
+    };
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -338,7 +408,7 @@ async fn shutdown_signal(stopped: impl std::future::Future<Output = ()>) {
                 tokio::select! {
                     _ = term.recv() => info!("SIGTERM received; shutting down"),
                     _ = tokio::signal::ctrl_c() => info!("SIGINT received; shutting down"),
-                    () = stopped => info!("asked to stop; shutting down"),
+                    () = stopped => {}
                 }
             }
             Err(e) => {
@@ -354,15 +424,13 @@ async fn shutdown_signal(stopped: impl std::future::Future<Output = ()>) {
     {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => info!("Ctrl-C received; shutting down"),
-            () = stopped => info!("asked to stop; shutting down"),
+            () = stopped => {}
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory as _;
-
     use super::*;
 
     #[test]
@@ -390,10 +458,11 @@ mod tests {
             "synthetic",
         ])
         .unwrap();
-        let Command::Run(args) = cli.command else {
+        let Some(Command::Run(args)) = cli.command else {
             panic!("expected run");
         };
         assert_eq!(args.source, Source::Synthetic);
+        assert!(!args.no_tray);
         assert_eq!(args.machine.as_deref(), Some("mbp"));
     }
 }
