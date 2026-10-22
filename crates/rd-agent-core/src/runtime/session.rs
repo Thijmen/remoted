@@ -231,7 +231,7 @@ async fn connect_and_run(
         },
     };
     info!(user, "session socket connected");
-    let active = ctx.session_active();
+    let active = ctx.session_active(user);
     let end = Session::start(ctx.clone(), ws).await.run(stop).await;
     (end, Some(active))
 }

@@ -24,6 +24,30 @@ pub struct AgentConfig {
     /// The terminal (docs/terminal.md). Written only when it differs from the default.
     #[serde(default, skip_serializing_if = "TerminalSettings::is_default")]
     pub terminal: TerminalSettings,
+    /// The menu bar (macOS) / notification area (Windows) icon. Written only when it differs
+    /// from the default.
+    #[serde(default, skip_serializing_if = "TraySettings::is_default")]
+    pub tray: TraySettings,
+}
+
+/// `[tray]` in config.toml.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraySettings {
+    /// Show the icon with the agent's status, pause/resume, update and quit.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+impl Default for TraySettings {
+    fn default() -> Self {
+        TraySettings { enabled: true }
+    }
+}
+
+impl TraySettings {
+    fn is_default(&self) -> bool {
+        *self == TraySettings::default()
+    }
 }
 
 /// `[update]` in config.toml.
@@ -207,6 +231,7 @@ mod tests {
                 shell: Some("/bin/bash".into()),
                 ..TerminalSettings::default()
             },
+            tray: Default::default(),
         };
         cfg.save(&path).unwrap();
         assert_eq!(AgentConfig::load(&path).unwrap(), cfg);

@@ -432,6 +432,7 @@ impl Agent {
             defaults: Default::default(),
             update: Default::default(),
             terminal: Default::default(),
+            tray: Default::default(),
         };
         edit(&mut cfg);
         let (tx, rx) = oneshot::channel();
