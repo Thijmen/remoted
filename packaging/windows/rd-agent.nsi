@@ -195,6 +195,8 @@ Section "${NAME}" Main
   ; rd-agent.exe is a console program: the shortcuts keep its window open afterwards.
   CreateDirectory "${DATA}\logs"
   CreateDirectory "${SHORTCUTS}"
+  ; Starts the agent in the background (again, after Quit in its notification-area menu).
+  CreateShortcut "${SHORTCUTS}\rd agent.lnk" "$INSTDIR\rd-agentw.exe" "" "$INSTDIR\rd-agent.ico"
   CreateShortcut "${SHORTCUTS}\rd agent setup.lnk" "$WINDIR\System32\cmd.exe" '/k ""$INSTDIR\rd-agent.exe" setup"' "$INSTDIR\rd-agent.ico"
   CreateShortcut "${SHORTCUTS}\rd agent status.lnk" "$WINDIR\System32\cmd.exe" '/k ""$INSTDIR\rd-agent.exe" status"' "$INSTDIR\rd-agent.ico"
   CreateShortcut "${SHORTCUTS}\rd agent logs.lnk" "${DATA}\logs"
@@ -263,6 +265,7 @@ Section "Uninstall"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
+  Delete "${SHORTCUTS}\rd agent.lnk"
   Delete "${SHORTCUTS}\rd agent setup.lnk"
   Delete "${SHORTCUTS}\rd agent status.lnk"
   Delete "${SHORTCUTS}\rd agent logs.lnk"

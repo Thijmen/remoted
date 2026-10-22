@@ -67,6 +67,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/rd-agent"
 # The key tables derive from Chromium (BSD-3-Clause): ship the notice.
 cp THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
+# The same icon as rd Desktop (Finder, Login Items, System Settings > Privacy & Security).
+cp clients/desktop/src-tauri/icons/icon.icns "$APP/Contents/Resources/AppIcon.icns"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$BUILD/g" "$HERE/Info.plist.template" \
   > "$APP/Contents/Info.plist"
 plutil -lint -s "$APP/Contents/Info.plist"
