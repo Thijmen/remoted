@@ -8,6 +8,8 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>rd-agent</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.thijmen.rd.agent</string>
 	<key>CFBundleInfoDictionaryVersion</key>

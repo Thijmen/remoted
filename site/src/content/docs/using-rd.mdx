@@ -212,7 +212,7 @@ arrives there. Useful to check a modifier mapping or a layout.
 | The viewer says | Why | What happens |
 | --- | --- | --- |
 | Another viewer took over this machine. | You connected from somewhere else. | Stays disconnected. |
-| _Name_ is offline. Waiting for it to come back… | The agent is not connected to the gateway. | Connects when the machine is back, and offers its recovery links meanwhile. |
+| _Name_ is offline. Waiting for it to come back… | The agent is not connected to the gateway, or someone paused remote access in its menu bar / notification area icon. | Connects when the machine is back, and offers its recovery links meanwhile. |
 | agent did not answer | The agent didn't open the session within 10 s. | Retries. |
 | Updating _Name_… Reconnecting when it is back. | The agent is installing an update. | Reconnects by itself, usually within a minute. |
 | Session closed after a long period without input. | No keyboard or mouse input for an hour (`RD_SESSION_IDLE_TIMEOUT`). | Stays disconnected. |
