@@ -314,7 +314,8 @@ fn open_pty(size: PtySize) -> io::Result<(OwnedFd, OwnedFd)> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut ws,
+            // `*mut` on macOS, `*const` on Linux: a raw pointer fits both.
+            &raw mut ws,
         )
     })?;
     // SAFETY: openpty returned two new descriptors that nothing else owns.
