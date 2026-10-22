@@ -3,7 +3,8 @@
 // Uploads stream back to back: the `write` of the next file follows the last bytes of the one
 // before without waiting for its `done`, all through one BulkWindow. Downloads run one at a time;
 // their bytes are staged on disk (sink.ts) and acknowledged once written. Both pick up where they
-// stopped when the channel reconnects.
+// stopped when the channel reconnects. A preview is a download that goes first and hands the file
+// to the page instead of saving it; it is not in the transfer list.
 
 import { type FileDataMsg, FileFlags, encodeFileAck, encodeFileData } from '../proto/bin';
 import type { AgentState } from '../proto/control';
@@ -135,6 +136,32 @@ interface DownloadJob extends JobBase {
   progress: number;
   /** A resume found the file changed: start over without `expect`. */
   restart: boolean;
+  /** Set for a preview. */
+  preview: PreviewHooks | null;
+}
+
+interface PreviewHooks {
+  type: string;
+  progress(p: PreviewProgress): void;
+  resolve(file: PreviewFile): void;
+  reject(e: FileError): void;
+}
+
+export interface PreviewProgress {
+  done: number;
+  total: number | null;
+}
+
+export interface PreviewFile {
+  blob: Blob;
+  /** Free the staged file once nothing shows it any more. */
+  release(): void;
+}
+
+export interface PreviewRequest {
+  /** The file, or a FileError (code `cancelled` after `cancel()`). */
+  result: Promise<PreviewFile>;
+  cancel(): void;
 }
 
 type Job = UploadJob | DownloadJob;
@@ -345,11 +372,45 @@ export class TransferManager {
   download(paths: string[], opts: { zip: boolean; name: string; folder: boolean }): void {
     const first = paths[0];
     if (!first) return;
-    this.jobs.push({
+    this.jobs.push(this.downloadJob(paths, opts, null));
+    this.channel.want(true);
+    this.changed();
+    void this.startDownload();
+  }
+
+  /**
+   * Fetch the file at `path` to show it in the page, typed `type`. It goes before queued downloads,
+   * and a running single-file download steps aside for it (it continues where it was afterwards).
+   */
+  preview(path: string, type: string, progress: (p: PreviewProgress) => void): PreviewRequest {
+    let hooks!: PreviewHooks;
+    const result = new Promise<PreviewFile>((resolve, reject) => {
+      hooks = { type, progress, resolve, reject };
+    });
+    const job = this.downloadJob([path], { zip: false, name: baseName(path, this.sep), folder: false }, hooks);
+    this.jobs.push(job);
+    const active = this.activeDown;
+    if (active && !active.zip && !active.preview) {
+      if (active.id !== null) this.channel.sendJson({ t: 'cancel', id: active.id });
+      active.id = null;
+      active.state = 'queued';
+      this.activeDown = null;
+    }
+    this.channel.want(true);
+    void this.startDownload();
+    return { result, cancel: () => this.cancelPreview(job) };
+  }
+
+  private downloadJob(
+    paths: string[],
+    opts: { zip: boolean; name: string; folder: boolean },
+    preview: PreviewHooks | null,
+  ): DownloadJob {
+    return {
       key: this.nextKey++,
       dir: 'down',
       name: opts.name,
-      where: parentOf(first, this.sep),
+      where: parentOf(paths[0]!, this.sep),
       folder: opts.folder,
       state: 'queued',
       error: null,
@@ -365,10 +426,29 @@ export class TransferManager {
       files: 0,
       progress: 0,
       restart: false,
-    });
-    this.channel.want(true);
-    this.changed();
+      preview,
+    };
+  }
+
+  private cancelPreview(job: DownloadJob): void {
+    if (!this.jobs.includes(job)) return;
+    if (job === this.activeDown) {
+      if (job.id !== null) this.channel.sendJson({ t: 'cancel', id: job.id });
+      this.activeDown = null;
+    }
+    const sink = job.sink;
+    job.sink = null;
+    void sink?.discard();
+    job.state = 'cancelled';
+    this.dropPreview(job);
+    job.preview!.reject(new FileError('cancelled', 'Cancelled'));
     void this.startDownload();
+  }
+
+  /** A finished preview leaves the job list (nothing shows it). */
+  private dropPreview(job: DownloadJob): void {
+    const i = this.jobs.indexOf(job);
+    if (i >= 0) this.jobs.splice(i, 1);
   }
 
   pause(key: number): void {
@@ -458,17 +538,17 @@ export class TransferManager {
 
   /** Anything not finished (queued, running, paused, waiting for the connection)? */
   get busy(): boolean {
-    return this.jobs.some((j) => !isFinished(j.state));
+    return this.listed().some((j) => !isFinished(j.state));
   }
 
   /** Anything moving or about to (paused transfers do not count). */
   get working(): boolean {
-    return this.jobs.some((j) => j.state === 'queued' || j.state === 'running' || j.state === 'waiting');
+    return this.listed().some((j) => j.state === 'queued' || j.state === 'running' || j.state === 'waiting');
   }
 
   views(): JobView[] {
     const now = performance.now();
-    return this.jobs.map((j) => this.view(j, now));
+    return this.listed().map((j) => this.view(j, now));
   }
 
   /** Totals over unfinished transfers, for the compact indicator. */
@@ -479,7 +559,7 @@ export class TransferManager {
     let rate = 0;
     let paused = true;
     const now = performance.now();
-    for (const j of this.jobs) {
+    for (const j of this.listed()) {
       if (isFinished(j.state)) continue;
       const v = this.view(j, now);
       count++;
@@ -684,9 +764,8 @@ export class TransferManager {
 
   private async startDownload(): Promise<void> {
     if (this.activeDown || !this.channel.ready) return;
-    const job = this.jobs.find(
-      (j): j is DownloadJob => j.dir === 'down' && (j.state === 'queued' || j.state === 'waiting'),
-    );
+    const next = (j: Job): j is DownloadJob => j.dir === 'down' && (j.state === 'queued' || j.state === 'waiting');
+    const job = this.jobs.find((j): j is DownloadJob => next(j) && j.preview !== null) ?? this.jobs.find(next);
     if (!job) return;
     this.activeDown = job;
     job.state = 'running';
@@ -735,6 +814,7 @@ export class TransferManager {
             return;
           }
         }
+        job.preview?.progress({ done: job.sink.size, total: job.size });
         this.changed();
         return;
       case 'progress':
@@ -765,11 +845,18 @@ export class TransferManager {
     if (!sink) throw new SinkError('bytes arrived before the download started');
     await sink.write(m.offset, m.payload);
     if (!job.zip) job.meter.add(sink.size);
+    job.preview?.progress({ done: sink.size, total: job.size });
     if ((m.flags & FileFlags.END) === 0) {
       this.changed();
       return;
     }
-    await sink.save(job.name);
+    if (job.preview) {
+      const blob = await sink.open(job.preview.type);
+      this.dropPreview(job);
+      job.preview.resolve({ blob, release: () => void sink.discard() });
+    } else {
+      await sink.save(job.name);
+    }
     job.sink = null;
     job.state = 'done';
     job.id = null;
@@ -787,14 +874,23 @@ export class TransferManager {
     job.sink = null;
     void sink?.discard();
     if (this.activeDown === job) this.activeDown = null;
+    if (job.preview) {
+      this.dropPreview(job);
+      job.preview.reject(new FileError('io', message));
+    }
     this.changed();
     void this.startDownload();
   }
 
   // -------------------------------------------------------------------------
 
+  /** The transfers the user sees (previews are not among them). */
+  private listed(): Job[] {
+    return this.jobs.filter((j) => j.dir === 'up' || !j.preview);
+  }
+
   private job(key: number): Job | undefined {
-    return this.jobs.find((j) => j.key === key);
+    return this.listed().find((j) => j.key === key);
   }
 
   private view(j: Job, now: number): JobView {

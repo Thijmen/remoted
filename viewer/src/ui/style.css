@@ -2036,6 +2036,134 @@ button.ghost:hover {
 
 /* Narrow: the drawer, small windows */
 
+/* ---------------------------------------------------------------- file preview */
+
+.files-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: color-mix(in srgb, var(--bg) 96%, transparent);
+  backdrop-filter: blur(6px);
+  outline: none;
+  animation: fade-in 0.12s ease-out;
+}
+
+.preview-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-title {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.preview-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-count {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 0;
+  padding: 16px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.preview-body p {
+  max-width: 360px;
+  margin: 0;
+}
+
+.preview-loading progress {
+  max-width: 280px;
+}
+
+.preview-error .icon {
+  color: var(--warn);
+}
+
+.preview-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.preview-media {
+  padding: 12px;
+}
+
+.preview-image,
+.preview-video {
+  max-width: 100%;
+  max-height: 100%;
+  min-height: 0;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.preview-image {
+  /* A checkerboard behind transparent images. */
+  background: repeating-conic-gradient(#1c2029 0% 25%, #232834 0% 50%) 50% / 16px 16px;
+}
+
+.preview-video {
+  width: 100%;
+  background: #000;
+}
+
+.preview-audio-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: min(420px, 100%);
+}
+
+.preview-audio-wrap > .icon {
+  padding: 22px;
+  border-radius: 50%;
+  background: var(--surface-3);
+  color: var(--accent-hover);
+}
+
+.preview-audio {
+  width: 100%;
+}
+
+.preview-meta {
+  padding: 8px 16px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 @container files (max-width: 700px) {
   .files-places {
     display: none;

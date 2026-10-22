@@ -1,15 +1,17 @@
-// The file browser (docs/files.md): browse the remote machine's folders, download, upload by drop
-// or picker, new folder, rename, move to the Trash. Used as a drawer next to the remote screen and
+// The file browser (docs/files.md): browse the remote machine's folders, preview images, audio
+// and video, download, upload by drop or picker, new folder, rename, move to the Trash. Used as a drawer next to the remote screen and
 // as a page of its own on the connect screen.
 
 import { FileError } from '../files/channel';
 import type { FilesController } from '../files/controller';
 import { formatMtime, formatSize } from '../files/format';
+import { mediaType } from '../files/media';
 import { baseName, caseSensitive, invalidName, joinPath } from '../files/paths';
 import { type UploadItem, dragHasFiles, itemsFromDrop, itemsFromFiles, totals } from '../files/sources';
 import { type Entry, FileCaps, type Place, describeFileError } from '../proto/files';
 import { type Child, h, setChildren } from './dom';
 import { clashDialog, confirmDialog, noticeDialog } from './files-dialogs';
+import { FilePreview } from './files-preview';
 import { TransfersView } from './files-transfers';
 import { type IconName, icon } from './icons';
 
@@ -104,6 +106,7 @@ export class FilesBrowser {
   private unsubscribe: (() => void) | null = null;
   private renderQueued = false;
   private lastClick: { name: string; at: number } | null = null;
+  private preview: FilePreview | null = null;
   /** Finished uploads already accounted for (the folder is refreshed when one lands in it). */
   private readonly landed = new Set<number>();
 
@@ -232,6 +235,7 @@ export class FilesBrowser {
   close(): void {
     if (!this.opened) return;
     this.opened = false;
+    this.closePreview(false);
     this.closeMenu();
     this.unsubscribe?.();
     this.unsubscribe = null;
@@ -277,6 +281,7 @@ export class FilesBrowser {
       if (this.history[this.history.length - 1] !== path) this.history.push(path);
       this.historyAt = this.history.length - 1;
     }
+    this.closePreview(false);
     const ok = await this.load(path, true);
     if (ok && this.listing) localStorage.setItem(prefKey(this.files.machine, 'dir'), this.listing.path);
     return ok;
@@ -701,6 +706,13 @@ export class FilesBrowser {
     setChildren(
       this.actions,
       uploadMenu,
+      btn(
+        'eye',
+        'Preview',
+        () => this.openPreview(sel[0]!),
+        ready && sel.length === 1 && canPreview(sel[0]!),
+        'Preview (Space)',
+      ),
       btn('download', 'Download', () => this.downloadSelected(), ready && sel.length > 0),
       btn('folderPlus', 'New folder', () => this.startNewFolder(), ready),
       h('span', { className: 'spacer' }),
@@ -816,7 +828,7 @@ export class FilesBrowser {
       case 'Enter': {
         handled();
         const sel = this.selectedEntries();
-        if (sel.length === 1 && sel[0]!.kind === 'dir') this.openEntry(sel[0]!);
+        if (sel.length === 1 && (sel[0]!.kind === 'dir' || canPreview(sel[0]!))) this.openEntry(sel[0]!);
         else if (sel.length) this.downloadSelected();
         return;
       }
@@ -825,6 +837,11 @@ export class FilesBrowser {
         return (handled(), this.goUp());
       case 'Delete':
         return (handled(), void this.deleteSelected(e.shiftKey));
+      case ' ': {
+        const cur = this.view[this.cursor];
+        if (cur && canPreview(cur)) return (handled(), this.openPreview(cur));
+        return;
+      }
       case 'F2':
         return (handled(), this.startRename());
       case 'F5':
@@ -869,7 +886,38 @@ export class FilesBrowser {
   private openEntry(e: Entry): void {
     if (!this.listing) return;
     if (e.kind === 'dir') void this.navigate(joinPath(this.listing.path, e.name, this.sep));
+    else if (canPreview(e)) this.openPreview(e);
     else if (e.kind === 'file') this.download([e]);
+  }
+
+  /** Preview `e` (an image, audio or video file) over the list. */
+  private openPreview(e: Entry): void {
+    const listing = this.listing;
+    if (!listing || !canPreview(e)) return;
+    const entries = this.view.filter(canPreview);
+    const index = entries.findIndex((x) => x.name === e.name);
+    if (index < 0) return;
+    this.closePreview(false);
+    const preview = new FilePreview({
+      files: this.files,
+      dir: listing.path,
+      sep: this.sep,
+      entries,
+      shown: (x) => this.selectName(x.name),
+      download: (x) => this.download([x]),
+      close: () => this.closePreview(true),
+    });
+    this.preview = preview;
+    this.el.append(preview.el);
+    preview.show(index);
+    preview.focus();
+  }
+
+  private closePreview(refocus: boolean): void {
+    if (!this.preview) return;
+    this.preview.destroy();
+    this.preview = null;
+    if (refocus) this.focus();
   }
 
   private downloadSelected(): void {
@@ -1052,6 +1100,9 @@ export class FilesBrowser {
       ? [
           e.kind === 'dir' && sel.length === 1
             ? { label: 'Open', iconName: 'folder', run: () => this.openEntry(e) }
+            : null,
+          sel.length === 1 && canPreview(e)
+            ? { label: 'Preview', iconName: 'eye', run: () => this.openPreview(e) }
             : null,
           {
             label: sel.length > 1 || e.kind === 'dir' ? 'Download as zip' : 'Download',
@@ -1408,4 +1459,9 @@ export function describeItems(items: UploadItem[]): string {
   if (t.files) parts.push(`${t.files} ${t.files === 1 ? 'file' : 'files'}`);
   if (items.some((i) => i.kind === 'dir')) parts.push(`${t.dirs} ${t.dirs === 1 ? 'folder' : 'folders'}`);
   return `${parts.join(', ')} (${formatSize(t.bytes)})`;
+}
+
+/** An image, audio or video file the browser may be able to show. */
+function canPreview(e: Entry): boolean {
+  return e.kind === 'file' && mediaType(e.name) !== null;
 }

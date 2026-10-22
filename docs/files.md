@@ -12,7 +12,14 @@ session or without one (browsing files never takes over the screen).
   next to it.
 - **Without a session:** click **Browse files** on the machine's connect screen (or **Files** on
   its card in the portal).
-- **Download:** double-click a file, or select files and click **Download**. One file arrives as
+- **Preview:** double-click an image, audio or video file (or select it and press Space, or click
+  **Preview**) to see or play it over the file list. ← and → step through the other media in the
+  folder; Esc closes. The preview fetches the whole file first (it asks before fetching one over
+  200 MB) and plays it with the browser's own player, so what plays depends on the browser
+  (HEIC photos only in Safari, for example); anything it cannot show offers **Download**
+  instead. A preview goes ahead of queued downloads, and a running download pauses for it and
+  then continues.
+- **Download:** double-click any other file, or select files and click **Download**. One file arrives as
   itself; several files or a folder arrive as one `.zip`. Downloads land in the browser's
   download folder (rd Desktop: your Downloads folder).
 - **Upload:** drop files or folders onto the file list (or onto a folder in it), or use
