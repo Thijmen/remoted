@@ -5,10 +5,21 @@
 # The bump PR needs the repository variable GITOPS_REPO (owner/name) and the secret
 # INFRA_ARGOCD_PAT (contents + pull-requests write on that repo); it is skipped without
 # either. GITHUB_TOKEN covers the GHCR push.
+#
+# Preview: run the workflow by hand on any branch with `preview` checked
+# (`gh workflow run gateway-image.yml --ref <branch> -f preview=true`). It builds
+# `X.Y.Z-preview.<sha>` from that branch, does not move `latest` and pushes no
+# `gateway-v*` tag, and opens the same bump PR (marked as a preview). The next build from
+# main replaces it.
 name: Gateway image
 
 on:
   workflow_dispatch:
+    inputs:
+      preview:
+        description: "Preview build of this branch (no latest tag, no release tag)"
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -30,7 +41,8 @@ jobs:
       contents: write
       packages: write
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.tag.outputs.version }}
+      preview: ${{ inputs.preview == true }}
       has_infra_pat: ${{ steps.pat.outputs.present }}
     steps:
       - name: Check for the GitOps token
@@ -47,6 +59,22 @@ jobs:
         with:
           tag_prefix: "gateway-v"
           version_format: "${major}.${minor}.${patch}"
+      - name: Preview version
+        id: tag
+        env:
+          PREVIEW: ${{ inputs.preview == true }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$PREVIEW" = "true" ]; then
+            version="${VERSION}-preview.$(git rev-parse --short=7 HEAD)"
+            tags="ghcr.io/thijmen/rd-gateway:${version}"
+          else
+            version="$VERSION"
+            tags="ghcr.io/thijmen/rd-gateway:${version}"$'\n'"ghcr.io/thijmen/rd-gateway:latest"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          { echo "tags<<EOF"; echo "$tags"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          echo "::notice::rd-gateway ${version}"
       # The Dockerfile cross-compiles Rust with cargo-zigbuild on the build
       # platform, so no QEMU is needed.
       - uses: docker/setup-buildx-action@v4
@@ -61,12 +89,11 @@ jobs:
           file: deploy/Dockerfile
           platforms: linux/arm64
           push: true
-          tags: |
-            ghcr.io/thijmen/rd-gateway:${{ steps.version.outputs.version }}
-            ghcr.io/thijmen/rd-gateway:latest
+          tags: ${{ steps.tag.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Tag commit
+        if: inputs.preview != true
         run: |
           git tag "gateway-v${{ steps.version.outputs.version }}"
           git push origin "gateway-v${{ steps.version.outputs.version }}"
@@ -93,9 +120,10 @@ jobs:
         with:
           token: ${{ secrets.INFRA_ARGOCD_PAT }}
           commit-message: "chore(rd): update gateway image to ${{ needs.build.outputs.version }}"
-          title: "chore(rd): update gateway image to ${{ needs.build.outputs.version }}"
+          title: "chore(rd): update gateway image to ${{ needs.build.outputs.version }}${{ needs.build.outputs.preview == 'true' && format(' (preview of {0})', github.ref_name) || '' }}"
           body: |
             Automated PR to update the rd-gateway image tag.
+            ${{ needs.build.outputs.preview == 'true' && format('**Preview** of branch `{0}` ({1}), not a release. To go back, merge the tag of the previous release, or wait for the next build from main.', github.ref_name, github.sha) || '' }}
 
             **Image:** `ghcr.io/thijmen/rd-gateway:${{ needs.build.outputs.version }}`
             **Source:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

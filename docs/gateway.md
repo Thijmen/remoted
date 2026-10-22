@@ -316,6 +316,19 @@ The result ships on `gcr.io/distroless/static-debian12:nonroot`. The image runs 
 persistent volume there (writable by gid 65532, e.g. `fsGroup: 65532`) and keep the root
 filesystem read-only. Mount provisioned token hashes, if any, at `/etc/rd/agents`.
 
+`.github/workflows/gateway-image.yml` builds and pushes `ghcr.io/thijmen/rd-gateway` on every
+push to `main` that touches the gateway, protocol, flow control or viewer (`X.Y.Z` and
+`latest`, git tag `gateway-vX.Y.Z`), and opens a PR on the GitOps repo that bumps the
+deployed tag. To try a branch before it is merged, run the workflow by hand with **preview**:
+
+```sh
+gh workflow run gateway-image.yml --ref my-branch -f preview=true
+```
+
+That builds `X.Y.Z-preview.<sha>` from the branch, leaves `latest` and the release tags alone,
+and opens the same bump PR, marked as a preview. Merging it deploys the preview. The next
+build from `main` (or merging the previous tag back) replaces it.
+
 ## Tests
 
 ```sh
