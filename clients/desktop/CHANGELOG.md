@@ -1,5 +1,11 @@
 # rd-desktop
 
+## 1.7.1
+
+### Patch Changes
+
+- b5f2e0f: The update window no longer opens over a terminal page (rd's new browser terminal).
+
 ## 1.7.0
 
 ### Minor Changes
