@@ -218,7 +218,7 @@ install in a temporary folder, with its own LaunchAgent label, never touches the
 For testing a pull request on a real machine, a maintainer comments `/beta` on it. The Beta
 workflow (`.github/workflows/beta.yml`) builds the agent from that PR's head for Windows and
 macOS and publishes it as a prerelease, `agent-vX.Y.Z-beta.<run>`. `/beta windows` or
-`/beta mac` builds only one of them.
+`/beta macos` builds only one of them; `/beta both` is the same as `/beta`.
 
 - maintainers only (`OWNER`, `MEMBER` or `COLLABORATOR`), and pull requests from this
   repository (not forks);

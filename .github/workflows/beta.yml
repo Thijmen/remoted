@@ -2,7 +2,7 @@ name: Beta
 
 # A maintainer comments `/beta` on a pull request: build the rd agent from that PR's head for
 # Windows and macOS and publish it as a prerelease, `agent-vX.Y.Z-beta.<run>`. `/beta windows`
-# or `/beta mac` builds one of them. The stable update manifest (`agent.json`) is not touched,
+# or `/beta macos` builds one of them. The stable update manifest (`agent.json`) is not touched,
 # so installed agents never offer a beta; download it from the prerelease and install it by hand.
 #
 # Maintainers only (`OWNER`/`MEMBER`/`COLLABORATOR`) and same-repository pull requests only.
@@ -46,19 +46,27 @@ jobs:
       windows: ${{ steps.targets.outputs.windows }}
       macos: ${{ steps.targets.outputs.macos }}
     steps:
-      # `/beta` builds both; `/beta windows`, `/beta mac` (or `macos`) one of them.
+      # `/beta` or `/beta both` builds both; `/beta windows` or `/beta macos` one of them.
       - name: Targets
         id: targets
         env:
           BODY: ${{ github.event.comment.body }}
         run: |
-          rest="$(printf '%s\n' "$BODY" | head -n 1 | awk '{ print tolower($2) }')"
-          windows=true macos=true
-          case "$rest" in
-            "") ;;
-            win*) macos=false ;;
-            mac*) windows=false ;;
-            *) echo "::error::unknown /beta target: $rest (use windows or mac)"; exit 1 ;;
+          line="$(printf '%s\n' "$BODY" | head -n 1 | tr -d '\r')"
+          command="$(printf '%s\n' "$line" | awk '{ print tolower($1) }')"
+          target="$(printf '%s\n' "$line" | awk '{ print tolower($2) }')"
+          if [[ "$command" != "/beta" ]]; then
+            echo "::error::not a /beta command: $command"
+            exit 1
+          fi
+          case "$target" in
+            "" | both) windows=true macos=true ;;
+            windows | win) windows=true macos=false ;;
+            macos | mac) windows=false macos=true ;;
+            *)
+              echo "::error::unknown /beta target: $target (use windows, macos or both)"
+              exit 1
+              ;;
           esac
           echo "windows=$windows" >> "$GITHUB_OUTPUT"
           echo "macos=$macos" >> "$GITHUB_OUTPUT"
@@ -317,7 +325,7 @@ jobs:
   publish:
     name: Prerelease
     needs: [pr, build, sign-macos]
-    # One of the builds may be skipped (`/beta windows`, `/beta mac`), none may fail.
+    # One of the builds may be skipped (`/beta windows`, `/beta macos`), none may fail.
     if: >-
       always() && needs.pr.result == 'success' &&
       !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
