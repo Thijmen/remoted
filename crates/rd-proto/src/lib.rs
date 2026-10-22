@@ -13,6 +13,7 @@ pub mod control;
 pub mod files;
 pub mod keymap;
 pub mod setup_code;
+pub mod terminal;
 
 /// Viewer <-> agent protocol version spoken by this build.
 pub const PROTO_VERSION: u16 = 1;
@@ -43,9 +44,10 @@ pub mod close {
     /// within a minute: viewers should keep reconnecting meanwhile.
     pub const AGENT_UPDATING: u16 = 4010;
     /// The agent does not support what the viewer asked for (a file channel to an agent
-    /// without the `files` capability).
+    /// without the `files` capability, a terminal to one without `terminal`).
     pub const UNSUPPORTED: u16 = 4011;
-    /// Standard close code 1013 (try again later): too many file channels to this machine.
+    /// Standard close code 1013 (try again later): too many file (or terminal) channels to
+    /// this machine.
     pub const TRY_AGAIN_LATER: u16 = 1013;
 }
 

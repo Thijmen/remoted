@@ -15,7 +15,9 @@ rd-agent (Mac/Win) --WSS--> Traefik --> rd-gateway :8081  (per-agent bearer toke
 - Agents dial OUT. One long-lived **control** WS per agent: `GET {gateway_url}/ws/agent`.
 - Per viewer session the agent dials a NEW **data** WS: `GET {gateway_url}/ws/agent/session/{session}`.
 - File channels (browse and transfer files, [files.md](files.md)) are joined the same way:
-  viewer `GET /ws/files/{machine}`, agent `GET /ws/agent/files/{channel}`.
+  viewer `GET /ws/files/{machine}`, agent `GET /ws/agent/files/{channel}`. So are terminal
+  channels (a shell, [terminal.md](terminal.md)): viewer `GET /ws/terminal/{machine}`, agent
+  `GET /ws/agent/terminal/{channel}`.
 - Viewer connects `GET /ws/view/{machine}` on the viewer origin. The gateway joins viewer WS ⇄ agent
   data WS and copies messages unchanged in both directions (it only parses JSON it owns and peeks the
   first byte of binary frames for input-idle tracking / byte counters).
@@ -40,7 +42,8 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
 
 1. Agent → `{"t":"register","machine":"mbp","agent_version":"1.5.0","os":"macOS 26.3 (25D125)","gw_proto":1,"state":{...},"caps":["files"]}`
    `caps` (optional, added after gw_proto 1 shipped; older gateways ignore it): what the agent
-   supports beyond screen sessions. `files`: file channels.
+   supports beyond screen sessions. `files`: file channels. `terminal`: terminal channels
+   ([terminal.md](terminal.md); only while the terminal is enabled in the agent's config).
 2. Gateway → `{"t":"registered","gw_proto":1}`. A newer registration for the same machine replaces the old
    socket (old one closed with code 4009).
 3. Agent → `{"t":"state", ...AgentState}` whenever lock/perms/in_session/secure/disconnected
@@ -58,6 +61,9 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
    (only to agents with the `files` cap): dial `/ws/agent/files/<channel>` within **10 s**. A
    machine has up to 4 file channels next to its session; they are independent of it (no
    `session_end`, the channel ends when its sockets close). See [files.md](files.md).
+   Gateway → `{"t":"terminal_request","channel":"<32 hex>","user":"<email>","client_ip":"<ip>"}`
+   (only to agents with the `terminal` cap): dial `/ws/agent/terminal/<channel>` within
+   **10 s**; up to 8 per machine, likewise independent. See [terminal.md](terminal.md).
 6. Keepalive: the gateway sends WebSocket Ping frames every 15 s on every leg and closes a leg after
    45 s without Pong. The agent reconnects its control socket if it receives nothing for 30 s.
    Agent reconnect backoff: 1 s → 30 s exponential with ±20 % jitter, reset after a registration.
@@ -140,7 +146,8 @@ Compatibility: both messages are additive and `gw_proto` stays 1. Older gateways
     4006 session ended by agent, 4008 idle (no input for `RD_SESSION_IDLE_TIMEOUT`, default 3600 s), 4009 replaced,
     4010 agent updating (it comes back by itself, usually within a minute: keep reconnecting, and treat the 4003
     and 4004 that follow while it restarts as part of the update), 4011 not supported by the agent (a file
-    channel to an agent without the `files` cap), 1013 try again later (a fifth file channel).
+    channel to an agent without the `files` cap, or a terminal to one without `terminal`), 1013 try again later
+    (a fifth file channel, a ninth terminal).
 
 Agent side: the session socket is the only one carrying media. When it closes the agent stops the
 pipeline, releases all keys/buttons and drops the keep-awake guard.

@@ -25,6 +25,7 @@ use super::files::Channels as FileChannels;
 use super::net::{DialError, WsStream, valid_session_id};
 use super::session::{self, Ended, StopReason};
 use super::task::TaskGuard;
+use super::terminal::Channels as TerminalChannels;
 use super::{Ctx, UpdateEvent};
 
 /// Largest control message we accept (the gateway's limit is 64 KiB too).
@@ -45,12 +46,18 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(600);
 pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
     let mut sessions = Sessions::new(ctx.clone());
     let mut files = FileChannels::new(ctx.clone());
+    let mut terminals = TerminalChannels::new(ctx.clone());
     let mut backoff = Backoff::new(ctx.timings.backoff_min, ctx.timings.backoff_max);
     let mut unavailable_since: Option<Instant> = None;
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
         // `shutdown` is never polled again once it resolved: every path that sees it breaks.
-        let outcome = connect_and_serve(&ctx, &mut sessions, &mut files, shutdown.as_mut()).await;
+        let mut channels = ChannelSets {
+            files: &mut files,
+            terminals: &mut terminals,
+        };
+        let outcome =
+            connect_and_serve(&ctx, &mut sessions, &mut channels, shutdown.as_mut()).await;
         if !matches!(outcome, Outcome::Unavailable) {
             unavailable_since = None;
         }
@@ -86,6 +93,15 @@ pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
     }
     sessions.shutdown().await;
     files.shutdown().await;
+    terminals.shutdown().await;
+    // Shells end with the agent (they would be gone with its process anyway).
+    ctx.shells.shutdown().await;
+}
+
+/// The file and terminal channels (they outlive control connections).
+struct ChannelSets<'a> {
+    files: &'a mut FileChannels,
+    terminals: &'a mut TerminalChannels,
 }
 
 /// How a control connection attempt ended.
@@ -121,7 +137,7 @@ fn classify_http(status: StatusCode, retry_after: Option<Duration>) -> Outcome {
 async fn connect_and_serve<F: Future<Output = ()>>(
     ctx: &Arc<Ctx>,
     sessions: &mut Sessions,
-    files: &mut FileChannels,
+    channels: &mut ChannelSets<'_>,
     mut shutdown: Pin<&mut F>,
 ) -> Outcome {
     let url = ctx.gateway.control_url();
@@ -167,7 +183,8 @@ async fn connect_and_serve<F: Future<Output = ()>>(
     Control {
         ctx,
         sessions,
-        files,
+        files: &mut *channels.files,
+        terminals: &mut *channels.terminals,
         ws,
         registered: false,
     }
@@ -179,6 +196,7 @@ struct Control<'a> {
     ctx: &'a Arc<Ctx>,
     sessions: &'a mut Sessions,
     files: &'a mut FileChannels,
+    terminals: &'a mut TerminalChannels,
     ws: WsStream,
     registered: bool,
 }
@@ -194,7 +212,7 @@ impl Control<'_> {
             os: self.ctx.platform.os_description(),
             gw_proto: GW_PROTO_VERSION,
             state: *state.borrow_and_update(),
-            caps: vec![agent_caps::FILES.into()],
+            caps: self.caps(),
         };
         if !self.send(&register).await {
             return self.lost();
@@ -272,6 +290,7 @@ impl Control<'_> {
     async fn shut_down(mut self) -> Outcome {
         self.sessions.shutdown().await;
         self.files.shutdown().await;
+        self.terminals.shutdown().await;
         while let Some(ended) = self.sessions.try_ended() {
             let msg = AgentToGateway::SessionEnd {
                 session: ended.session,
@@ -350,10 +369,40 @@ impl Control<'_> {
                     );
                 }
             }
+            Ok(GatewayToAgent::TerminalRequest {
+                channel,
+                user,
+                client_ip,
+            }) => {
+                if !self.ctx.terminal {
+                    warn!(
+                        channel,
+                        "ignoring a terminal request: the terminal is off on this machine"
+                    );
+                } else if valid_session_id(&channel) {
+                    info!(channel, user, client_ip, "terminal channel requested");
+                    self.terminals.start(channel, user);
+                } else {
+                    warn!(
+                        channel,
+                        "ignoring a terminal channel request with an invalid id"
+                    );
+                }
+            }
             Ok(GatewayToAgent::Unknown) => debug!("unknown gateway message ignored"),
             Err(e) => warn!("unparseable gateway message ignored: {e}"),
         }
         false
+    }
+
+    /// `register.caps`: files always; the terminal when it is enabled and the platform has
+    /// pseudo terminals.
+    fn caps(&self) -> Vec<String> {
+        let mut caps = vec![agent_caps::FILES.to_owned()];
+        if self.ctx.terminal {
+            caps.push(agent_caps::TERMINAL.to_owned());
+        }
+        caps
     }
 
     fn update_event(&self, event: UpdateEvent) {

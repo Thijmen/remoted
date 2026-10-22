@@ -152,6 +152,14 @@ describe('chords', () => {
     expect(take()).toEqual([]);
   });
 
+  it('Ctrl+Alt+Shift+` toggles the terminal', () => {
+    const { kb, take, chords } = setup();
+    expect(kb.handle(ev('Backquote', { ctrl: true, alt: true, shift: true }), true, true)).toBe('consume');
+    expect(kb.handle(ev('Backquote'), false, true)).toBe('consume');
+    expect(chords).toEqual(['terminal']);
+    expect(take()).toEqual([]);
+  });
+
   it('a new press after a lost keyup is forwarded again', () => {
     const { kb, take } = setup();
     kb.handle(ev('KeyD', { ctrl: true, alt: true, shift: true }), true, true);

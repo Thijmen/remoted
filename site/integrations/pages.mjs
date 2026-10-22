@@ -48,6 +48,13 @@ export const syncedPages = [
 			'Browse the remote machine, download files and folders, upload by dropping them in, and the file channel protocol.',
 	},
 	{
+		source: 'docs/terminal.md',
+		slug: 'guides/terminal',
+		title: 'Terminal',
+		description:
+			'A shell on the remote machine in the browser, over port 443, that survives a dropped connection; settings and the terminal channel protocol.',
+	},
+	{
 		source: 'docs/updates.md',
 		slug: 'guides/updates',
 		title: 'Updates',

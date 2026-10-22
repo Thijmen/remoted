@@ -281,6 +281,8 @@ export interface MachineInfo {
   update: UpdateStatus | null;
   /** The agent supports file transfer (docs/files.md); false on older agents and gateways. */
   files: boolean;
+  /** The agent offers a terminal (docs/terminal.md); false on older agents and gateways. */
+  terminal: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +542,7 @@ export function parseMachines(v: unknown): MachineInfo[] {
       recovery: recoveryFrom(m.recovery),
       update: updateStatusFrom(m.update),
       files: bool(m, 'files'),
+      terminal: bool(m, 'terminal'),
     });
   }
   return out;

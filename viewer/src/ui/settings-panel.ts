@@ -143,6 +143,7 @@ const SHORTCUTS: ReadonlyArray<[key: string, label: string]> = [
   ['F', 'fullscreen'],
   ['M', 'next display'],
   ['E', 'files'],
+  ['`', 'terminal'],
   ['L', 'pointer lock'],
   ['H', 'stats'],
   ['T', 'latency test'],

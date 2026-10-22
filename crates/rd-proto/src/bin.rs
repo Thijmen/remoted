@@ -16,6 +16,9 @@
 //! | 0x31 | PONG        | both| pad u16, id u32, t_origin_us u64, t_reply_us u64                  | 24  |
 //! | 0x40 | FILE_DATA   | both| pad u16, id u32, seq u32, offset u64, then the bytes (files.md)   | 20+ |
 //! | 0x41 | FILE_ACK    | both| pad u16, seq u32 (cumulative)                                    | 8   |
+//! | 0x50 | TERM_OUT    | A→V | pad u16, seq u32, offset u64, then shell output (terminal.md)    | 16+ |
+//! | 0x51 | TERM_ACK    | V→A | pad u16, seq u32 (cumulative)                                    | 8   |
+//! | 0x52 | TERM_IN     | V→A | then keyboard / paste bytes for the shell                        | 2+  |
 //! | 0x80 | PROBE_UP    | V→G | opaque payload (gateway network probe only)                      | 2+  |
 //!
 //! Mouse button bitmask (MOUSE_ABS flags): bit0 = left, bit1 = middle, bit2 = right,
@@ -42,6 +45,9 @@ pub mod ty {
     /// File channels only (docs/files.md).
     pub const FILE_DATA: u8 = 0x40;
     pub const FILE_ACK: u8 = 0x41;
+    pub const TERM_OUT: u8 = 0x50;
+    pub const TERM_ACK: u8 = 0x51;
+    pub const TERM_IN: u8 = 0x52;
     pub const PROBE_UP: u8 = 0x80;
 
     /// True for viewer->agent input messages (used by the gateway for idle tracking).
@@ -100,6 +106,9 @@ pub const PING_LEN: usize = 24;
 pub const PONG_LEN: usize = 24;
 pub const FILE_DATA_HEADER_LEN: usize = 20;
 pub const FILE_ACK_LEN: usize = 8;
+pub const TERM_OUT_HEADER_LEN: usize = 16;
+pub const TERM_ACK_LEN: usize = 8;
+pub const TERM_IN_HEADER_LEN: usize = 2;
 
 // ---------------------------------------------------------------------------
 // little-endian helpers
@@ -621,6 +630,74 @@ impl FileAck {
 }
 
 // ---------------------------------------------------------------------------
+// terminal channels
+
+/// Header of a TERM_OUT frame; the shell's output bytes follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TermOutHeader {
+    /// Counts the TERM_OUT frames the agent sends on a channel, from 1.
+    pub seq: u32,
+    /// Position of the first byte in the shell's output stream (bytes since the shell started).
+    pub offset: u64,
+}
+
+impl TermOutHeader {
+    pub fn write(&self, out: &mut Vec<u8>) {
+        out.reserve(TERM_OUT_HEADER_LEN);
+        out.extend_from_slice(&[ty::TERM_OUT, 0, 0, 0]);
+        out.extend_from_slice(&self.seq.to_le_bytes());
+        out.extend_from_slice(&self.offset.to_le_bytes());
+    }
+
+    /// Build a complete TERM_OUT message (header + bytes).
+    pub fn to_message(&self, payload: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(TERM_OUT_HEADER_LEN + payload.len());
+        self.write(&mut v);
+        v.extend_from_slice(payload);
+        v
+    }
+
+    fn parse_body(b: &[u8]) -> Result<(Self, &[u8]), ProtoError> {
+        need(b, ty::TERM_OUT, TERM_OUT_HEADER_LEN)?;
+        Ok((
+            TermOutHeader {
+                seq: u32_at(b, 4),
+                offset: u64_at(b, 8),
+            },
+            &b[TERM_OUT_HEADER_LEN..],
+        ))
+    }
+}
+
+/// Cumulative TERM_ACK: the viewer has shown every TERM_OUT up to and including `seq`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TermAck {
+    pub seq: u32,
+}
+
+impl TermAck {
+    pub fn to_message(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(TERM_ACK_LEN);
+        v.extend_from_slice(&[ty::TERM_ACK, 0, 0, 0]);
+        v.extend_from_slice(&self.seq.to_le_bytes());
+        v
+    }
+
+    fn parse_body(b: &[u8]) -> Result<Self, ProtoError> {
+        need(b, ty::TERM_ACK, TERM_ACK_LEN)?;
+        Ok(TermAck { seq: u32_at(b, 4) })
+    }
+}
+
+/// Build a TERM_IN message: bytes for the shell's input.
+pub fn term_in_message(payload: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(TERM_IN_HEADER_LEN + payload.len());
+    v.extend_from_slice(&[ty::TERM_IN, 0]);
+    v.extend_from_slice(payload);
+    v
+}
+
+// ---------------------------------------------------------------------------
 // top-level parse
 
 /// A parsed binary message. Payloads borrow from the input buffer.
@@ -634,6 +711,9 @@ pub enum BinMsg<'a> {
     Pong(Pong),
     FileData(FileDataHeader, &'a [u8]),
     FileAck(FileAck),
+    TermOut(TermOutHeader, &'a [u8]),
+    TermAck(TermAck),
+    TermIn(&'a [u8]),
     ProbeUp(&'a [u8]),
     /// Unknown or reserved type: must be ignored by receivers (forward compatibility).
     Unknown(u8),
@@ -665,6 +745,15 @@ pub fn parse(b: &[u8]) -> Result<BinMsg<'_>, ProtoError> {
             BinMsg::FileData(h, p)
         }
         ty::FILE_ACK => BinMsg::FileAck(FileAck::parse_body(b)?),
+        ty::TERM_OUT => {
+            let (h, p) = TermOutHeader::parse_body(b)?;
+            BinMsg::TermOut(h, p)
+        }
+        ty::TERM_ACK => BinMsg::TermAck(TermAck::parse_body(b)?),
+        ty::TERM_IN => {
+            need(b, ty::TERM_IN, TERM_IN_HEADER_LEN)?;
+            BinMsg::TermIn(&b[TERM_IN_HEADER_LEN..])
+        }
         ty::PROBE_UP => BinMsg::ProbeUp(if b.len() >= 2 { &b[2..] } else { &[] }),
         other => BinMsg::Unknown(other),
     })
@@ -780,6 +869,33 @@ mod tests {
         assert!(!ty::is_input(ty::FILE_DATA));
         assert!(matches!(
             parse(&[ty::FILE_ACK, 0, 0]),
+            Err(ProtoError::TooShort { .. })
+        ));
+    }
+
+    #[test]
+    fn terminal_roundtrip() {
+        let h = TermOutHeader {
+            seq: 3,
+            offset: 1 << 40,
+        };
+        let m = h.to_message(b"hi");
+        assert_eq!(m.len(), TERM_OUT_HEADER_LEN + 2);
+        assert_eq!(parse(&m).unwrap(), BinMsg::TermOut(h, b"hi"));
+        let a = TermAck { seq: 9 };
+        assert_eq!(parse(&a.to_message()).unwrap(), BinMsg::TermAck(a));
+        assert_eq!(
+            parse(&term_in_message(b"\x03")).unwrap(),
+            BinMsg::TermIn(b"\x03")
+        );
+        assert_eq!(parse(&term_in_message(b"")).unwrap(), BinMsg::TermIn(b""));
+        assert!(!ty::is_input(ty::TERM_IN));
+        assert!(matches!(
+            parse(&[ty::TERM_OUT, 0, 0, 0, 1]),
+            Err(ProtoError::TooShort { .. })
+        ));
+        assert!(matches!(
+            parse(&[ty::TERM_IN]),
             Err(ProtoError::TooShort { .. })
         ));
     }

@@ -1,7 +1,7 @@
 // Binary frames — mirror of crates/rd-proto/src/bin.rs (the source of truth).
 // Every binary WebSocket message starts with [type u8][flags u8]; integers are little-endian.
-// u64 fields are BigInt so that every value round-trips exactly, except file offsets: plain numbers
-// (exact up to 2^53 bytes, 8 PiB).
+// u64 fields are BigInt so that every value round-trips exactly, except file and terminal output offsets:
+// plain numbers (exact up to 2^53 bytes, 8 PiB).
 
 export const MsgType = {
   VIDEO: 0x01,
@@ -20,6 +20,10 @@ export const MsgType = {
   /** File channels only (docs/files.md). */
   FILE_DATA: 0x40,
   FILE_ACK: 0x41,
+  /** Terminal channels only (docs/terminal.md). */
+  TERM_OUT: 0x50,
+  TERM_ACK: 0x51,
+  TERM_IN: 0x52,
   PROBE_UP: 0x80,
 } as const;
 
@@ -58,6 +62,9 @@ export const PING_LEN = 24;
 export const PONG_LEN = 24;
 export const FILE_DATA_HEADER_LEN = 20;
 export const FILE_ACK_LEN = 8;
+export const TERM_OUT_HEADER_LEN = 16;
+export const TERM_ACK_LEN = 8;
+export const TERM_IN_HEADER_LEN = 2;
 
 export interface VideoMsg {
   type: 'video';
@@ -148,6 +155,24 @@ export interface FileAckMsg {
   type: 'file_ack';
   seq: number;
 }
+export interface TermOutMsg {
+  type: 'term_out';
+  /** Counts the TERM_OUT frames on a channel, from 1. */
+  seq: number;
+  /** Position of the first byte in the shell's output (bytes since the shell started). */
+  offset: number;
+  /** Shell output (view into the received buffer); may end inside a UTF-8 character. */
+  payload: Uint8Array;
+}
+export interface TermAckMsg {
+  type: 'term_ack';
+  seq: number;
+}
+export interface TermInMsg {
+  type: 'term_in';
+  /** Bytes for the shell's input. */
+  payload: Uint8Array;
+}
 export interface ProbeUpMsg {
   type: 'probe_up';
   payload: Uint8Array;
@@ -160,7 +185,19 @@ export interface UnknownMsg {
 export type InputMsg = MouseAbsMsg | MouseRelMsg | MouseBtnMsg | WheelMsg | KeyMsg | ReleaseAllMsg;
 
 export type BinMsg =
-  VideoMsg | AudioMsg | InputMsg | VideoAckMsg | PingMsg | PongMsg | FileDataMsg | FileAckMsg | ProbeUpMsg | UnknownMsg;
+  | VideoMsg
+  | AudioMsg
+  | InputMsg
+  | VideoAckMsg
+  | PingMsg
+  | PongMsg
+  | FileDataMsg
+  | FileAckMsg
+  | TermOutMsg
+  | TermAckMsg
+  | TermInMsg
+  | ProbeUpMsg
+  | UnknownMsg;
 
 /** Messages this side can build. */
 export type EncodableMsg = Exclude<BinMsg, UnknownMsg>;
@@ -283,6 +320,20 @@ export function parse(data: ArrayBuffer | Uint8Array): BinMsg {
     case MsgType.FILE_ACK:
       need(b, t, FILE_ACK_LEN);
       return { type: 'file_ack', seq: v.getUint32(4, true) };
+    case MsgType.TERM_OUT:
+      need(b, t, TERM_OUT_HEADER_LEN);
+      return {
+        type: 'term_out',
+        seq: v.getUint32(4, true),
+        offset: Number(v.getBigUint64(8, true)),
+        payload: b.subarray(TERM_OUT_HEADER_LEN),
+      };
+    case MsgType.TERM_ACK:
+      need(b, t, TERM_ACK_LEN);
+      return { type: 'term_ack', seq: v.getUint32(4, true) };
+    case MsgType.TERM_IN:
+      need(b, t, TERM_IN_HEADER_LEN);
+      return { type: 'term_in', payload: b.subarray(TERM_IN_HEADER_LEN) };
     case MsgType.PROBE_UP:
       return { type: 'probe_up', payload: b.subarray(Math.min(2, b.byteLength)) };
     default:
@@ -347,6 +398,12 @@ export function encode(m: EncodableMsg): Bytes {
       return encodeFileData(m.flags, m.id, m.seq, m.offset, m.payload);
     case 'file_ack':
       return encodeFileAck(m.seq);
+    case 'term_out':
+      return encodeTermOut(m.seq, m.offset, m.payload);
+    case 'term_ack':
+      return encodeTermAck(m.seq);
+    case 'term_in':
+      return encodeTermIn(m.payload);
     case 'probe_up':
       return withPayload(new Uint8Array([MsgType.PROBE_UP, 0]), m.payload);
   }
@@ -369,6 +426,29 @@ export function encodeFileAck(seq: number): Bytes {
   const [b, v] = frame(MsgType.FILE_ACK, 0, FILE_ACK_LEN);
   v.setUint32(4, seq, true);
   return b;
+}
+
+/** A TERM_OUT frame (the agent's; the viewer builds it in tests). */
+export function encodeTermOut(seq: number, offset: number, payload: Uint8Array): Bytes {
+  const out = new Uint8Array(TERM_OUT_HEADER_LEN + payload.byteLength);
+  const v = new DataView(out.buffer);
+  out[0] = MsgType.TERM_OUT;
+  v.setUint32(4, seq, true);
+  v.setBigUint64(8, BigInt(offset), true);
+  out.set(payload, TERM_OUT_HEADER_LEN);
+  return out;
+}
+
+/** Cumulative TERM_ACK: every TERM_OUT up to and including `seq` was shown. */
+export function encodeTermAck(seq: number): Bytes {
+  const [b, v] = frame(MsgType.TERM_ACK, 0, TERM_ACK_LEN);
+  v.setUint32(4, seq, true);
+  return b;
+}
+
+/** A TERM_IN frame: bytes for the shell's input (callers keep it within MAX_IN_CHUNK). */
+export function encodeTermIn(payload: Uint8Array): Bytes {
+  return withPayload(new Uint8Array([MsgType.TERM_IN, 0]), payload);
 }
 
 export function encodeMouseAbs(buttons: number, x: number, y: number): Bytes {

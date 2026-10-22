@@ -48,6 +48,10 @@ pub struct Metrics {
     pub files_active: Gauge,
     pub files_bytes_down: Counter,
     pub files_bytes_up: Counter,
+    pub terminal_started: Counter,
+    pub terminal_active: Gauge,
+    pub terminal_bytes_down: Counter,
+    pub terminal_bytes_up: Counter,
 }
 
 impl Metrics {
@@ -112,6 +116,30 @@ impl Metrics {
             "counter",
             "Payload bytes relayed viewer to agent on file channels.",
             self.files_bytes_up.get(),
+        );
+        put(
+            "rd_terminal_channels_active",
+            "gauge",
+            "Joined terminal channels.",
+            self.terminal_active.get(),
+        );
+        put(
+            "rd_terminal_channels_started_total",
+            "counter",
+            "Terminal channels requested.",
+            self.terminal_started.get(),
+        );
+        put(
+            "rd_terminal_bytes_down_total",
+            "counter",
+            "Payload bytes relayed agent to viewer on terminal channels.",
+            self.terminal_bytes_down.get(),
+        );
+        put(
+            "rd_terminal_bytes_up_total",
+            "counter",
+            "Payload bytes relayed viewer to agent on terminal channels.",
+            self.terminal_bytes_up.get(),
         );
         put(
             "rd_agent_auth_failures_total",

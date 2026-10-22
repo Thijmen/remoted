@@ -16,8 +16,8 @@ use tracing::info;
 use crate::agent::ws_agent;
 use crate::assets::{self, Caching};
 use crate::auth::{ViewerIdentity, viewer_auth};
+use crate::channels::{ws_agent_files, ws_agent_terminal, ws_files, ws_terminal};
 use crate::devices::{Device, DeviceError};
-use crate::files::{ws_agent_files, ws_files};
 use crate::probe;
 use crate::registry::UpdateRefusal;
 use crate::session::{ws_agent_session, ws_view};
@@ -37,6 +37,7 @@ pub fn viewer_router(st: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(|s, h| page(s, h, "index.html")))
         .route("/m/{machine}", get(viewer_page))
+        .route("/t/{machine}", get(terminal_page))
         .route("/probe", get(|s, h| page(s, h, "probe.html")))
         .route("/latency-target", get(|s, h| page(s, h, "latency.html")))
         .route("/keytest", get(|s, h| page(s, h, "keytest.html")))
@@ -70,6 +71,7 @@ pub fn viewer_router(st: Arc<AppState>) -> Router {
         )
         .route("/ws/view/{machine}", get(ws_view))
         .route("/ws/files/{machine}", get(ws_files))
+        .route("/ws/terminal/{machine}", get(ws_terminal))
         .route("/ws/probe", get(probe::ws_probe))
         .fallback(root_file)
         .layer(from_fn_with_state(Arc::clone(&st), viewer_auth))
@@ -82,6 +84,7 @@ pub fn agent_router(st: Arc<AppState>) -> Router {
         .route("/ws/agent", get(ws_agent))
         .route("/ws/agent/session/{session}", get(ws_agent_session))
         .route("/ws/agent/files/{channel}", get(ws_agent_files))
+        .route("/ws/agent/terminal/{channel}", get(ws_agent_terminal))
         .fallback(|| async { StatusCode::NOT_FOUND })
         .with_state(st)
 }
@@ -135,6 +138,16 @@ async fn viewer_page(
     Path(_machine): Path<String>,
 ) -> Response {
     page(st, headers, "viewer.html").await
+}
+
+/// `/t/{machine}`: the terminal page (docs/terminal.md); it reads the machine from
+/// `location.pathname`.
+async fn terminal_page(
+    st: State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(_machine): Path<String>,
+) -> Response {
+    page(st, headers, "terminal.html").await
 }
 
 async fn hashed_asset(

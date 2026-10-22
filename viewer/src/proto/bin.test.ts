@@ -83,6 +83,12 @@ function expected(f: Record<string, unknown>): EncodableMsg {
       };
     case 'file_ack':
       return { type: 'file_ack', seq: n('seq') };
+    case 'term_out':
+      return { type: 'term_out', seq: n('seq'), offset: Number(f.offset as string), payload: payload() };
+    case 'term_ack':
+      return { type: 'term_ack', seq: n('seq') };
+    case 'term_in':
+      return { type: 'term_in', payload: payload() };
     case 'probe_up':
       return { type: 'probe_up', payload: payload() };
     default:
@@ -114,6 +120,9 @@ describe('golden vectors (crates/rd-proto/testvectors/binary.json)', () => {
       'pong',
       'file_data',
       'file_ack',
+      'term_out',
+      'term_ack',
+      'term_in',
       'probe_up',
     ]) {
       expect(types.has(t), t).toBe(true);
@@ -152,6 +161,13 @@ describe('parse errors and forward compatibility', () => {
   it('returns unknown for unknown and reserved types', () => {
     expect(parse(new Uint8Array([0x7f, 0, 1, 2]))).toEqual({ type: 'unknown', ty: 0x7f });
     expect(parse(new Uint8Array([MsgType.CURSOR]))).toEqual({ type: 'unknown', ty: MsgType.CURSOR });
+  });
+
+  it('rejects short terminal frames and accepts an empty TERM_IN', () => {
+    expect(() => parse(new Uint8Array([MsgType.TERM_OUT, 0, 0, 0, 1]))).toThrow(ProtoError);
+    expect(() => parse(new Uint8Array([MsgType.TERM_ACK, 0, 0]))).toThrow(ProtoError);
+    expect(() => parse(new Uint8Array([MsgType.TERM_IN]))).toThrow(ProtoError);
+    expect(normalise(parse(new Uint8Array([MsgType.TERM_IN, 0])))).toEqual({ type: 'term_in', payload: '' });
   });
 
   it('handles a 1-byte PROBE_UP and RELEASE_ALL', () => {

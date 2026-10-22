@@ -7,6 +7,7 @@
 //! - [`nv12`]: converting BGRA frames to NV12 for capture paths without a GPU.
 //! - [`clock`]: the agent's monotonic microsecond clock (all wire timestamps use it).
 //! - [`config`]: agent configuration file.
+//! - `pty` (Unix): pseudo terminals for the terminal's shells.
 //! - [`selftest`]: the platform-neutral part of `rd-agent selftest`.
 
 pub mod clock;
@@ -15,6 +16,8 @@ pub mod h264;
 pub mod nv12;
 pub mod pattern;
 pub mod platform;
+#[cfg(unix)]
+pub mod pty;
 pub mod runtime;
 pub mod selftest;
 

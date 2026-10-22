@@ -280,11 +280,11 @@ fn is_under(host: &str, domain: &str) -> bool {
             .is_some_and(|sub| sub.ends_with('.') && sub.len() > 1)
 }
 
-/// Is `url` a session page of the gateway (`/m/<machine>`)? The update window does not open
-/// over one: it waits until the page is left.
+/// Is `url` a session page of the gateway (`/m/<machine>`, or the terminal page `/t/<machine>`)?
+/// The update window does not open over one: it waits until the page is left.
 pub fn is_session_page(settings: Option<&Settings>, url: &Url) -> bool {
     settings.is_some_and(|s| url.origin() == s.gateway_url.origin())
-        && url.path().starts_with("/m/")
+        && (url.path().starts_with("/m/") || url.path().starts_with("/t/"))
 }
 
 /// May a URL that is not allowed in the window be handed to the system browser?
@@ -417,6 +417,8 @@ mod tests {
             gw,
             &u("https://rd.example.com/m/my%20pc?x=1")
         ));
+        assert!(is_session_page(gw, &u("https://rd.example.com/t/mbp")));
+        assert!(!is_session_page(gw, &u("https://rd.example.com/tools")));
         assert!(!is_session_page(gw, &u("https://rd.example.com/")));
         assert!(!is_session_page(gw, &u("https://rd.example.com/portal")));
         assert!(!is_session_page(gw, &u("https://rd.example.com/mbp")));

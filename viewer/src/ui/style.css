@@ -195,7 +195,8 @@ button.big {
   font-weight: 600;
 }
 
-button.block {
+button.block,
+.button.block {
   width: 100%;
 }
 
@@ -2068,6 +2069,287 @@ button.ghost:hover {
   .files-drawer,
   .files-menu,
   .transfer-bar.indeterminate > span {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------- terminal */
+
+:root {
+  --term-bg: #0f1117;
+}
+
+.term-view {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--term-bg);
+}
+
+.term-host {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 2px 4px 10px;
+  overflow: hidden;
+}
+
+/* The box xterm fits into (no padding: the fit addon measures it). */
+.term-screen {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.term-screen .xterm {
+  height: 100%;
+}
+
+.term-screen .xterm .xterm-viewport {
+  background-color: var(--term-bg);
+}
+
+.term-notice {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  align-items: center;
+  width: max-content;
+  max-width: calc(100% - 28px);
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 34px rgb(0 0 0 / 40%);
+  color: var(--text);
+  font-size: 13px;
+  transform: translateX(-50%);
+}
+
+.term-notice.warn {
+  border-left-color: var(--warn);
+}
+
+.term-notice.error {
+  border-left-color: var(--bad);
+}
+
+.term-prompt {
+  top: 14px;
+  bottom: auto;
+}
+
+.term-find {
+  position: absolute;
+  top: 8px;
+  right: 18px;
+  z-index: 6;
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  padding: 3px 3px 3px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-2);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 35%);
+  color: var(--muted);
+}
+
+.term-find input {
+  width: 200px;
+  margin-left: 4px;
+  padding: 3px 8px;
+}
+
+.term-heading {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.term-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+
+.term-status {
+  display: inline-flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.term-tools {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+}
+
+.term-font {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.term-size {
+  min-width: 2.5ch;
+  font: 12px/1 var(--mono);
+  text-align: center;
+}
+
+/* The terminal page (/t/{machine}). */
+body.term-page {
+  height: 100vh;
+  overflow: hidden;
+  background: var(--term-bg);
+}
+
+.term-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+}
+
+.term-head {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  align-items: center;
+  min-height: 46px;
+  padding: 6px 10px 6px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.term-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 650;
+}
+
+.term-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+@media (prefers-color-scheme: light) {
+  body.term-page {
+    color-scheme: light;
+    --bg: #f4f5f8;
+    --surface: #ffffff;
+    --surface-2: #f2f4f8;
+    --surface-3: #e7eaf0;
+    --border: #e2e5eb;
+    --border-strong: #cdd2dc;
+    --text: #1f2430;
+    --muted: #636c7d;
+    --accent: #2f62e0;
+    --accent-hover: #4a7cf0;
+    --term-bg: #fbfbfd;
+  }
+
+  body.term-page .term-notice,
+  body.term-page .term-find {
+    box-shadow: 0 10px 30px rgb(20 30 60 / 14%);
+  }
+}
+
+/* The terminal panel during a session. */
+.term-panel {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 26;
+  display: flex;
+  flex-direction: column;
+  height: var(--term-h, 320px);
+  border-top: 1px solid var(--border-strong);
+  background: var(--surface);
+  box-shadow: 0 -18px 50px rgb(0 0 0 / 40%);
+  animation: slide-up 0.18s ease-out;
+}
+
+.term-panel:focus-within {
+  border-top-color: color-mix(in srgb, var(--accent) 70%, var(--border-strong));
+}
+
+.term-panel.beside-files {
+  right: var(--files-w, 540px);
+}
+
+.term-panel-head {
+  display: flex;
+  flex: none;
+  gap: 10px;
+  align-items: center;
+  min-height: 38px;
+  padding: 3px 6px 3px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.term-panel-head .term-heading .icon {
+  color: var(--muted);
+}
+
+.term-panel:focus-within .term-panel-head .term-heading .icon {
+  color: var(--accent-hover);
+}
+
+.term-resizer {
+  position: absolute;
+  top: -4px;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 8px;
+  cursor: row-resize;
+}
+
+.term-resizer:hover,
+.term-resizer.active {
+  background: linear-gradient(180deg, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px);
+}
+
+.stage.with-terminal {
+  bottom: var(--term-h, 320px);
+}
+
+body.with-terminal .transfer-indicator {
+  bottom: calc(var(--term-h, 320px) + 16px);
+}
+
+@keyframes slide-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .term-panel {
     animation: none;
   }
 }

@@ -96,7 +96,7 @@ Every response on the viewer port carries the CSP, COOP (`same-origin`), COEP
 
 | Route | Response |
 |---|---|
-| `/`, `/m/{machine}`, `/probe`, `/latency-target`, `/keytest` | `index.html`, `viewer.html`, `probe.html`, `latency.html`, `keytest.html` with `Cache-Control: no-cache` (and an `ETag` when embedded). A page missing from the build gets a 503 placeholder that explains how to build the viewer. |
+| `/`, `/m/{machine}`, `/t/{machine}`, `/probe`, `/latency-target`, `/keytest` | `index.html`, `viewer.html`, `terminal.html`, `probe.html`, `latency.html`, `keytest.html` with `Cache-Control: no-cache` (and an `ETag` when embedded). A page missing from the build gets a 503 placeholder that explains how to build the viewer. |
 | `/assets/*` | hashed Vite output, `Cache-Control: public, max-age=31536000, immutable` |
 | other `GET /<file>` | other top-level files of the build (favicon, …), `no-cache`; else 404 |
 | `GET /api/me` | `{"email":"…","uid":"…","dev":false,"devices":true}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`; `devices`: whether *Add device* is on) |
@@ -105,6 +105,7 @@ Every response on the viewer port carries the CSP, COOP (`same-origin`), COEP
 | `POST /api/machines/{machine}/update` | tell the agent to install its update; see [Agent updates](#agent-updates) |
 | `GET /ws/view/{machine}` | viewer session |
 | `GET /ws/files/{machine}` | file channel; see [File channels](#file-channels) |
+| `GET /ws/terminal/{machine}` | terminal channel; see [Terminal channels](#terminal-channels) |
 | `GET /ws/probe`, `GET /api/probe/down`, `POST /api/probe/up`, `POST /api/probe/report` | network probe (`protocol.md`); the report is logged as one `probe_report {…}` line (≤ 1 MiB, else 413) |
 
 `/api/machines` lists the machines from `RD_MACHINES_FILE` in file order, then any other machine
@@ -116,7 +117,8 @@ the machines file (`[]` otherwise). `name` falls back to the device's name, then
 `update` is the agent's last `update_status` (fields in [protocol.md](protocol.md#updates-rd-agent-150-and-later),
 empty ones left out), kept while offline and dropped when the agent registers again until it
 reports anew; `null` for agents that never send one (before 1.5.0).
-`files` is true when the agent listed `files` in `register.caps` (it can open file channels).
+`files` is true when the agent listed `files` in `register.caps` (it can open file channels),
+`terminal` when it listed `terminal` (it offers a terminal, [terminal.md](terminal.md)).
 Devices added in the portal follow the machines file, in the order they were added, and have
 `"managed": true`.
 
@@ -241,6 +243,22 @@ a `files_close` line with the same fields plus `duration_ms`, `bytes_up`, `bytes
 `reason` (the session reasons above). What is transferred is not visible to the gateway; the
 agent logs it.
 
+## Terminal channels
+
+A terminal channel ([terminal.md](terminal.md)) works like a file channel, with these
+differences:
+
+- The viewer opens `/ws/terminal/{machine}`, the agent gets `terminal_request{channel, user,
+  client_ip}` and dials `/ws/agent/terminal/{channel}`.
+- Up to 8 per machine (pending and joined), counted apart from the file channels; a ninth is
+  closed with **1013**. Only agents that listed `terminal` in `register.caps` get a request;
+  for others the viewer is closed with **4011**.
+- Messages up to 1 MiB each way.
+- A channel closing never ends its shell: the agent keeps it for a reattach.
+
+The audit log has a `terminal_open` and a `terminal_close` line with the same fields as the file
+channel's. What is typed or printed is not visible in the logs.
+
 ## Relay and keepalive
 
 - Each direction is a loop that reads one message, then awaits its send to the other leg before
@@ -250,9 +268,9 @@ agent logs it.
   message plus the kernel socket buffers. The backpressure test measured about 3 MiB in flight
   over loopback.
 - Message limits: 16 MiB agent→viewer, 64 KiB viewer→agent, 64 KiB on the control socket,
-  8 MiB both ways on file channels, 1 MiB on the probe socket.
-- The gateway sends a WebSocket Ping every 15 s on every leg: control, data, file, viewer and
-  probe.
+  8 MiB both ways on file channels, 1 MiB on terminal channels and on the probe socket.
+- The gateway sends a WebSocket Ping every 15 s on every leg: control, data, file, terminal,
+  viewer and probe.
   A leg with no Pong for 45 s is closed. Ping and pong frames are never forwarded between
   legs. A leg that stays blocked on backpressure for 45 s also counts as unresponsive.
 
@@ -267,14 +285,15 @@ messages are never dropped or reordered. Viewer→agent traffic is not affected.
 
 Without `--dev`, logs are JSON lines on stdout, with fields flattened. Useful messages:
 `rd-gateway listening`, `agent registered`, `agent control disconnected`, `session_start`,
-`session_end`, `files_open`, `files_close`, `file channel refused`, `viewer forbidden`, `agent auth failed`, `device_add`, `device_token`,
+`session_end`, `files_open`, `files_close`, `terminal_open`, `terminal_close`, `channel refused`, `viewer forbidden`, `agent auth failed`, `device_add`, `device_token`,
 `device_remove`, `device store not saved`, `agent_update`, `agent update refused`,
 `agent update phase`, `agent update outcome`, `probe run`, `probe_report {…}`.
 
 `/metrics` exposes `rd_agents_online`, `rd_sessions_active`, `rd_sessions_started_total`,
 `rd_relay_bytes_{down,up}_total`, `rd_files_channels_active`,
 `rd_files_channels_started_total`, `rd_files_bytes_{down,up}_total` (file channels; not in
-the relay totals), `rd_agent_auth_failures_total`,
+the relay totals), `rd_terminal_channels_active`, `rd_terminal_channels_started_total`,
+`rd_terminal_bytes_{down,up}_total` (terminal channels, likewise), `rd_agent_auth_failures_total`,
 `rd_viewer_auth_failures_total`, `rd_agent_registrations_total`,
 `rd_agent_updates_requested_total` and `rd_probe_runs_total`.
 
@@ -296,6 +315,19 @@ The result ships on `gcr.io/distroless/static-debian12:nonroot`. The image runs 
 (uid/gid 65532) and exposes 8080/8081/9090. Its only writable path is `RD_STATE_DIR`: mount a
 persistent volume there (writable by gid 65532, e.g. `fsGroup: 65532`) and keep the root
 filesystem read-only. Mount provisioned token hashes, if any, at `/etc/rd/agents`.
+
+`.github/workflows/gateway-image.yml` builds and pushes `ghcr.io/thijmen/rd-gateway` on every
+push to `main` that touches the gateway, protocol, flow control or viewer (`X.Y.Z` and
+`latest`, git tag `gateway-vX.Y.Z`), and opens a PR on the GitOps repo that bumps the
+deployed tag. To try a branch before it is merged, run the workflow by hand with **preview**:
+
+```sh
+gh workflow run gateway-image.yml --ref my-branch -f preview=true
+```
+
+That builds `X.Y.Z-preview.<sha>` from the branch, leaves `latest` and the release tags alone,
+and opens the same bump PR, marked as a preview. Merging it deploys the preview. The next
+build from `main` (or merging the previous tag back) replaces it.
 
 ## Tests
 

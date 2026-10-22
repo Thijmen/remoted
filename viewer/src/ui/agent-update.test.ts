@@ -38,6 +38,7 @@ function machine(over: Partial<MachineInfo> = {}): MachineInfo {
     recovery: [],
     update: status(),
     files: false,
+    terminal: false,
     ...over,
   };
 }

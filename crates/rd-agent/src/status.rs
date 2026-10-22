@@ -39,6 +39,7 @@ pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
         token: None,
         defaults: Default::default(),
         update: Default::default(),
+        terminal: Default::default(),
     });
     let token = config::resolve_token(None, &lookup);
     match &token {

@@ -62,6 +62,7 @@ You may see fewer frames for a moment, but what you see is current.
 - ➕ **Add device** in the portal: it gives you a one-time setup code to paste into the agent's setup.
 - 📶 **Network probe.** A built-in test (`/probe`) checks whether your connection can carry a session, before you rely on it.
 - 📁 **File transfer.** Browse the remote machine, download files and folders, upload by dropping them onto the file list or the remote screen. Transfers resume after a dropped connection and back off so the screen stays smooth. See [file transfer](docs/files.md).
+- ⌨️ **Terminal.** A shell on the remote machine in the browser (xterm.js), over the same port 443: no SSH server needed. It survives a dropped connection and picks up where you left off. See [terminal](docs/terminal.md).
 - 🖥️ **Mac and Windows hosts. Reach a Windows PC from a Mac (Cmd acts as Ctrl) or a Mac from Windows.
 - 🔄 **Updates itself.** rd Desktop and the agents find new versions, show what's new and install them when you say so; an agent update from the portal rolls back if the new version doesn't come back. See [updates](docs/updates.md).
 - 🛟 **Recovery path.** Lock screen, login window or a reboot on the Mac? Apple Screen Sharing over Guacamole takes over. See [recovery](docs/recovery.md).

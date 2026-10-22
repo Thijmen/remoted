@@ -135,6 +135,32 @@
   },
   {
     "fields": {
+      "offset": "7000000000",
+      "payload_hex": "6c730d0a",
+      "seq": 4000000002,
+      "type": "term_out"
+    },
+    "hex": "5000000002286bee00863ba1010000006c730d0a",
+    "name": "term_out"
+  },
+  {
+    "fields": {
+      "seq": 70001,
+      "type": "term_ack"
+    },
+    "hex": "5100000071110100",
+    "name": "term_ack"
+  },
+  {
+    "fields": {
+      "payload_hex": "1b5b41",
+      "type": "term_in"
+    },
+    "hex": "52001b5b41",
+    "name": "term_in"
+  },
+  {
+    "fields": {
       "payload_hex": "010203",
       "type": "probe_up"
     },

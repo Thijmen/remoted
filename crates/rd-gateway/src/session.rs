@@ -1,7 +1,7 @@
 //! Viewer sessions: `/ws/view/{machine}` on the viewer port and the agent's per-session data
 //! socket `/ws/agent/session/{session}` on the agent port, joined by a relay.
 //!
-//! The relay ([`relay`], also used for file channels: `crate::files`) is two pumps
+//! The relay ([`relay`], also used for file and terminal channels: `crate::channels`) is two pumps
 //! (agent→viewer, viewer→agent) running concurrently in the viewer's task. Each pump reads one message and awaits its send before reading the next, so a slow
 //! reader on either side pushes back through TCP to the sender; nothing is queued, dropped or
 //! reordered in between. WebSocket Ping/Pong is per leg and never forwarded.
@@ -26,7 +26,7 @@ use tracing::{debug, info, warn};
 use crate::auth::{AuthRejection, ViewerIdentity};
 use crate::chaos::ChaosStream;
 use crate::config::{Timeouts, valid_machine_name};
-use crate::registry::{EndReason, SessionHandle};
+use crate::registry::{ChannelKind, EndReason, SessionHandle};
 use crate::state::AppState;
 use crate::util::{client_ip, close_split, close_ws};
 
@@ -140,39 +140,40 @@ async fn run_viewer(st: Arc<AppState>, viewer: ViewerIdentity, machine: String, 
     );
 }
 
-/// What a relay joins: a screen session or a file channel. They differ in their registry
-/// slot, their gauge and what counts as activity for the idle timeout.
+/// What a relay joins: a screen session or a side channel (files, terminal). They differ in
+/// their registry slot, their gauge and what counts as activity for the idle timeout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Session,
-    Files,
+    Channel(ChannelKind),
 }
 
 impl Kind {
     fn activate(self, st: &AppState, machine: &str, id: &str) -> rd_proto::control::AgentState {
         match self {
             Kind::Session => st.registry.activate(machine, id),
-            Kind::Files => st.registry.activate_files(machine, id),
+            Kind::Channel(_) => st.registry.activate_channel(machine, id),
         }
     }
 
     fn finish(self, st: &AppState, machine: &str, id: &str, reason: &EndReason) {
         match self {
             Kind::Session => st.registry.finish_session(machine, id, reason),
-            Kind::Files => st.registry.finish_files(machine, id),
+            Kind::Channel(_) => st.registry.finish_channel(machine, id),
         }
     }
 
     fn active(self, st: &AppState) -> &crate::metrics::Gauge {
         match self {
             Kind::Session => &st.metrics.sessions_active,
-            Kind::Files => &st.metrics.files_active,
+            Kind::Channel(ChannelKind::Files) => &st.metrics.files_active,
+            Kind::Channel(ChannelKind::Terminal) => &st.metrics.terminal_active,
         }
     }
 
-    /// Screen sessions stay alive on viewer input; file channels on any message either way
-    /// except the viewer's keep-alive PING and its PONG (an open file browser alone is not
-    /// activity).
+    /// Screen sessions stay alive on viewer input; side channels on any message either way
+    /// except the viewer's keep-alive PING and its PONG (an open file browser or an idle
+    /// terminal alone is not activity).
     fn activity(self, dir: Dir, msg: &Message) -> bool {
         match self {
             Kind::Session => {
@@ -180,7 +181,7 @@ impl Kind {
                     && matches!(msg, Message::Binary(b)
                         if b.first().is_some_and(|&ty| rd_proto::bin::ty::is_input(ty)))
             }
-            Kind::Files => match msg {
+            Kind::Channel(_) => match msg {
                 Message::Text(_) => true,
                 Message::Binary(b) => !b.first().is_some_and(|&ty| {
                     ty == rd_proto::bin::ty::PING || ty == rd_proto::bin::ty::PONG

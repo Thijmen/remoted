@@ -79,7 +79,7 @@ with a fresh keyframe.
 
 ### Shortcuts
 
-All shortcuts are <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd> plus a letter, so they never
+All shortcuts are <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd> plus a key, so they never
 collide with what you type on the remote machine:
 
 | Keys | Does |
@@ -87,6 +87,7 @@ collide with what you type on the remote machine:
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> | Fullscreen, with Keyboard Lock where the browser supports it |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> | Next display. The choice is remembered for the next session. |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> | Files: browse the remote machine, download and upload ([File transfer](/guides/files/)) |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd> | Terminal: a shell on the remote machine ([Terminal](/guides/terminal/)) |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> | Pointer lock (<kbd>Esc</kbd> releases it) |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> | Stats overlay |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> | Latency test |
@@ -104,6 +105,16 @@ things to the Trash or Recycle Bin. **Browse files** on a machine's page (and **
 card in the portal) opens it without starting a session. Transfers keep the remote screen
 responsive, keep going while the browser is closed, and continue after a dropped connection. See
 [File transfer](/guides/files/).
+
+## Terminal
+
+**Terminal** in the session menu (or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd>)
+opens a shell on the remote machine in a panel next to the screen: zsh (your login shell) on a
+Mac, PowerShell on Windows. **Terminal** on a machine's card in the portal (and **Open
+terminal** on its page) opens one in its own tab, without starting a session. It needs no SSH
+server: it runs through the agent over the same connection as the screen. When the connection
+drops, the shell keeps running, and the terminal reconnects and shows what happened meanwhile.
+See [Terminal](/guides/terminal/).
 
 ## The keyboard
 
