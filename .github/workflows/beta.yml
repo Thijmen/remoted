@@ -1,14 +1,20 @@
 name: Beta
 
-# A maintainer comments `/beta` on a pull request: build the Windows rd agent from that PR's
-# head and publish it as a prerelease, `agent-vX.Y.Z-beta.<run>`. The stable update manifest
-# (`agent.json`) is not touched, so installed agents never offer a beta; download the setup
-# from the prerelease and run it by hand.
+# A maintainer comments `/beta` on a pull request: build the rd agent from that PR's head for
+# Windows and macOS and publish it as a prerelease, `agent-vX.Y.Z-beta.<run>`. `/beta windows`
+# or `/beta macos` builds one of them. The stable update manifest (`agent.json`) is not touched,
+# so installed agents never offer a beta; download it from the prerelease and install it by hand.
 #
 # Maintainers only (`OWNER`/`MEMBER`/`COLLABORATOR`) and same-repository pull requests only.
-# The build job has no write token and no signing secrets, so the PR's code cannot publish or
-# exfiltrate them; the publish job only handles the build artifact. Beta builds are therefore
-# unsigned. Keep the Windows steps in sync with agent.yml.
+# The build jobs have no write token and no signing secrets, so the PR's code cannot publish or
+# exfiltrate them; the jobs after them only handle the build artifacts. The Windows build is
+# therefore unsigned. The macOS app is built ad hoc and then signed with the project's
+# certificate by `sign-macos`, which runs nothing from the PR: it checks out the default branch
+# (for the signing action) and only calls codesign on the artifact, so Screen Recording and
+# Accessibility survive the beta like any update. Keep the build steps in sync with agent.yml.
+#
+# Issue comments always run this file from the default branch: changes here take effect once
+# merged.
 on:
   issue_comment:
     types: [created]
@@ -21,14 +27,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Windows agent
+  pr:
+    name: Pull request
     if: >-
       github.event.issue.pull_request != null &&
       startsWith(github.event.comment.body, '/beta') &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
-    runs-on: windows-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
@@ -37,10 +43,35 @@ jobs:
       sha: ${{ steps.pr.outputs.sha }}
       number: ${{ steps.pr.outputs.number }}
       url: ${{ steps.pr.outputs.url }}
-    defaults:
-      run:
-        shell: bash
+      windows: ${{ steps.targets.outputs.windows }}
+      macos: ${{ steps.targets.outputs.macos }}
     steps:
+      # `/beta` or `/beta both` builds both; `/beta windows` or `/beta macos` one of them.
+      - name: Targets
+        id: targets
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          line="$(printf '%s\n' "$BODY" | head -n 1 | tr -d '\r')"
+          command="$(printf '%s\n' "$line" | awk '{ print tolower($1) }')"
+          target="$(printf '%s\n' "$line" | awk '{ print tolower($2) }')"
+          if [[ "$command" != "/beta" ]]; then
+            echo "::error::not a /beta command: $command"
+            exit 1
+          fi
+          case "$target" in
+            "" | both) windows=true macos=true ;;
+            windows | win) windows=true macos=false ;;
+            macos | mac) windows=false macos=true ;;
+            *)
+              echo "::error::unknown /beta target: $target (use windows, macos or both)"
+              exit 1
+              ;;
+          esac
+          echo "windows=$windows" >> "$GITHUB_OUTPUT"
+          echo "macos=$macos" >> "$GITHUB_OUTPUT"
+          echo "windows=$windows macos=$macos"
+
       - name: Pull request
         id: pr
         env:
@@ -70,6 +101,31 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.sha }}
           fetch-depth: 1
+      - uses: oven-sh/setup-bun@v2
+      - name: Beta version
+        id: version
+        run: |
+          base="$(bun tools/release/sync-versions.ts --print rd-agent)"
+          echo "version=$base-beta.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Windows agent
+    needs: pr
+    if: needs.pr.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      V: ${{ needs.pr.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.pr.outputs.sha }}
+          fetch-depth: 1
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -79,12 +135,7 @@ jobs:
 
       # Stamp the beta version into this checkout only; nothing is committed or pushed.
       - name: Beta version
-        id: version
-        run: |
-          base="$(bun tools/release/sync-versions.ts --print rd-agent)"
-          v="$base-beta.${{ github.run_number }}"
-          bun tools/release/sync-versions.ts --set rd-agent "$v"
-          echo "version=$v" >> "$GITHUB_OUTPUT"
+        run: bun tools/release/sync-versions.ts --set rd-agent "$V"
 
       - name: Build
         run: cargo build --locked --release -p rd-agent
@@ -106,7 +157,7 @@ jobs:
       - name: Collect
         shell: pwsh
         run: |
-          $v = '${{ steps.version.outputs.version }}'
+          $v = $env:V
           New-Item -ItemType Directory -Force out, pkg | Out-Null
           # The secure-desktop service is optional: include its binaries when the branch has
           # them, so this workflow also works on older pull requests.
@@ -140,7 +191,7 @@ jobs:
       - name: Installer
         shell: pwsh
         run: |
-          $v = '${{ steps.version.outputs.version }}'
+          $v = $env:V
           makensis -V2 "-DVERSION=$v" "-DSRC=$PWD\pkg" "-DOUTFILE=$PWD\out\rd-agent-$v-windows-x64-setup.exe" packaging/windows/rd-agent.nsi
           if ($LASTEXITCODE) { throw "makensis failed: $LASTEXITCODE" }
           Get-ChildItem out
@@ -149,7 +200,7 @@ jobs:
       - name: Installer smoke test
         shell: pwsh
         run: |
-          $v = '${{ steps.version.outputs.version }}'
+          $v = $env:V
           $dir = Join-Path $env:RUNNER_TEMP 'rd-agent'
           $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\rd-agent'
           $p = Start-Process "out\rd-agent-$v-windows-x64-setup.exe" -ArgumentList '/S', "/D=$dir" -PassThru
@@ -168,13 +219,116 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: rd-agent-beta
+          name: rd-agent-beta-windows
+          path: out/*
+          if-no-files-found: error
+
+  build-macos:
+    name: macOS agent (unsigned)
+    needs: pr
+    if: needs.pr.outputs.macos == 'true'
+    runs-on: macos-26 # screencapturekit's Swift bridge (apple-metal) needs the macOS 26 SDK
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      V: ${{ needs.pr.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.pr.outputs.sha }}
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Beta version
+        run: bun tools/release/sync-versions.ts --set rd-agent "$V"
+
+      # No signing identity here: build-app.sh signs ad hoc; sign-macos signs it properly.
+      - name: Build RD Agent.app
+        run: packaging/macos/build-app.sh --universal
+
+      - name: Check
+        run: |
+          app="packaging/macos/build/RD Agent.app"
+          lipo -archs "$app/Contents/MacOS/rd-agent" | grep -q 'x86_64 arm64' \
+            || { echo "::error::not a universal binary"; exit 1; }
+          "$app/Contents/MacOS/rd-agent" --version | grep -qF "$V" \
+            || { echo "::error::the app does not report $V"; exit 1; }
+
+      - name: Collect
+        run: |
+          mkdir -p out
+          ditto -c -k --keepParent "packaging/macos/build/RD Agent.app" out/unsigned.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rd-agent-beta-macos-unsigned
+          path: out/unsigned.zip
+          if-no-files-found: error
+
+  sign-macos:
+    name: macOS agent (sign)
+    needs: [pr, build-macos]
+    runs-on: macos-26
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      V: ${{ needs.pr.outputs.version }}
+    steps:
+      # The default branch, not the PR: only the signing action is used from it.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/actions
+      - uses: actions/download-artifact@v8
+        with:
+          name: rd-agent-beta-macos-unsigned
+          path: in
+
+      - name: Signing keychain
+        id: signing
+        uses: ./.github/actions/macos-signing
+        with:
+          certificate: ${{ secrets.MACOS_CERTIFICATE }}
+          password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+
+      # The same signature build-app.sh makes with the certificate (agent.yml).
+      - name: Sign
+        env:
+          SIGNED: ${{ steps.signing.outputs.available }}
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+          KEYCHAIN: ${{ steps.signing.outputs.keychain }}
+        run: |
+          [[ "$SIGNED" == true ]] || { echo "::error::no MACOS_CERTIFICATE: cannot sign the beta"; exit 1; }
+          mkdir -p app out
+          ditto -x -k in/unsigned.zip app
+          a="app/RD Agent.app"
+          id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$a/Contents/Info.plist")"
+          codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --identifier "$id" --timestamp=none "$a"
+          codesign --verify --strict --verbose=2 "$a"
+          codesign -d -r- "$a" 2>&1 | grep -q 'certificate leaf = H"' \
+            || { echo "::error::RD Agent.app is not signed with the certificate"; exit 1; }
+          ditto -c -k --keepParent "$a" "out/rd-agent-$V-macos-universal.zip"
+          ls -l out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rd-agent-beta-macos
           path: out/*
           if-no-files-found: error
 
   publish:
     name: Prerelease
-    needs: build
+    needs: [pr, build, sign-macos]
+    # One of the builds may be skipped (`/beta windows`, `/beta macos`), none may fail.
+    if: >-
+      always() && needs.pr.result == 'success' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -183,11 +337,12 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      V: ${{ needs.build.outputs.version }}
+      V: ${{ needs.pr.outputs.version }}
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: rd-agent-beta
+          pattern: rd-agent-beta-{windows,macos}
+          merge-multiple: true
           path: out
 
       - name: Checksums
@@ -198,16 +353,24 @@ jobs:
           tag="agent-v$V"
           notes="$(mktemp)"
           cat > "$notes" <<NOTES
-          Beta build of #${{ needs.build.outputs.number }} (${{ needs.build.outputs.url }}) from ${{ needs.build.outputs.sha }}.
+          Beta build of #${{ needs.pr.outputs.number }} (${{ needs.pr.outputs.url }}) from ${{ needs.pr.outputs.sha }}.
 
-          Windows 10 1703+/11 (x64). Unsigned: SmartScreen asks once (More info -> Run anyway).
-          This build is not in the update manifest, so installed agents do not offer it; download
-          the setup below and run it by hand. To go back, run the previous installer.
+          This build is not in the update manifest, so installed agents do not offer it; install
+          it by hand.
+
+          - Windows 10 1703+/11 (x64), if built: unsigned, SmartScreen asks once (More info ->
+            Run anyway). Run the setup; to go back, run the previous installer.
+          - macOS 15+ (universal), if built: signed with the project's certificate, so Screen
+            Recording and Accessibility stay granted; not notarized. Unzip it, replace
+            /Applications/RD Agent.app with it, clear the download mark
+            (xattr -dr com.apple.quarantine "/Applications/RD Agent.app") and run
+            "/Applications/RD Agent.app/Contents/MacOS/rd-agent" setup (Enter keeps the saved
+            configuration). To go back, do the same with the previous release's zip.
           NOTES
           gh release create "$tag" out/* \
-            --target "${{ needs.build.outputs.sha }}" \
+            --target "${{ needs.pr.outputs.sha }}" \
             --prerelease \
             --title "rd agent $V (beta)" \
             --notes-file "$notes"
-          gh pr comment "${{ needs.build.outputs.number }}" \
+          gh pr comment "${{ needs.pr.outputs.number }}" \
             --body "Beta build: https://github.com/${{ github.repository }}/releases/tag/$tag"
