@@ -389,6 +389,46 @@ pub mod service {
         Ok(())
     }
 
+    /// Whether the Run value starts the agent at login. `None` when this agent was not started
+    /// by the launcher (one run by hand must not switch the installed one).
+    pub fn start_at_login() -> anyhow::Result<Option<bool>> {
+        if std::env::var_os(names::LAUNCHER_ENV).is_none() || launcher().is_err() {
+            return Ok(None);
+        }
+        Ok(Some(run_value().is_some()))
+    }
+
+    /// Adds or removes the Run value; the running agent keeps running.
+    pub fn set_start_at_login(on: bool) -> anyhow::Result<()> {
+        if on {
+            return set_run_value(&command_for(&launcher()?));
+        }
+        // SAFETY: plain registry call.
+        let rc = unsafe {
+            RegDeleteKeyValueW(
+                HKEY_CURRENT_USER,
+                &HSTRING::from(RUN_KEY),
+                &HSTRING::from(RUN_VALUE),
+            )
+        };
+        if rc == ERROR_FILE_NOT_FOUND {
+            return Ok(());
+        }
+        rc.ok().context("removing the Run registry value")
+    }
+
+    /// Quit from the tray menu: nothing to tell; the launcher does not restart an agent that
+    /// exits cleanly.
+    pub fn stop_from_within() -> bool {
+        false
+    }
+
+    /// Only macOS opens the agent without arguments (RD Agent.app); the Start menu starts the
+    /// launcher.
+    pub fn start() -> anyhow::Result<()> {
+        bail!("run `rd-agent run`, or start rd-agentw.exe")
+    }
+
     pub fn status() -> anyhow::Result<ServiceStatus> {
         let value = run_value();
         let running = agent_running();

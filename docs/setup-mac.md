@@ -106,6 +106,26 @@ accepts the token. It never prints the token. The agent logs the same source at 
 `~/Library/Logs/rd-agent/` (daily files), plus the unified log:
 `log stream --predicate 'subsystem == "dev.thijmen.rd.agent"'`.
 
+## Menu bar icon
+
+While it runs, the agent shows the rd icon in the menu bar. Its menu shows:
+- the version and whether the Mac is online (or why not);
+- who is connected: someone viewing the screen or transferring files;
+- **Pause remote access**: ends open sessions and disconnects from the gateway, so the portal
+  shows the Mac offline and nobody can connect, until you click **Resume remote access**. The
+  pause lasts until the agent restarts (at the next login at the latest), so a forgotten pause
+  never locks you out for good;
+- **Check for updates**, or **Install update X.Y.Z** once one is found (as the portal's Update
+  button);
+- **Start at login**: switches the LaunchAgent on or off for later logins
+  (`launchctl disable`/`enable`); the running agent keeps running;
+- **Quit RD Agent**: stops the agent until the next login, or until you open RD Agent (Finder,
+  Spotlight), which starts it through its LaunchAgent again.
+
+The icon is dimmed while the Mac is not reachable (paused, offline, connecting) and gets a dot
+while someone is connected. `[tray]` `enabled = false` in `config.toml` (or `rd-agent run
+--no-tray`) turns it off. An agent started over ssh, outside the desktop session, shows none.
+
 ## File transfer
 
 The agent serves the file browser ([files.md](files.md)) as your user: it sees what you can

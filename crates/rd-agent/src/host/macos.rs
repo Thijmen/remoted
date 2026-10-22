@@ -251,6 +251,101 @@ pub mod service {
         Ok(())
     }
 
+    /// Whether launchd starts the agent at login: the LaunchAgent is installed and not
+    /// disabled. `None` when it is not installed, or this agent is not the LaunchAgent's (one
+    /// run by hand must not switch the installed one).
+    pub fn start_at_login() -> anyhow::Result<Option<bool>> {
+        if !started_by_launchd() || !plist_path()?.is_file() {
+            return Ok(None);
+        }
+        let output = Command::new(LAUNCHCTL)
+            .args(["print-disabled", &gui_domain()])
+            .output()
+            .context("running launchctl")?;
+        ensure!(
+            output.status.success(),
+            "launchctl print-disabled failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        Ok(Some(!disabled_in(&String::from_utf8_lossy(&output.stdout))))
+    }
+
+    /// Enables or disables the LaunchAgent for later logins; the running agent keeps running.
+    /// (`install` enables it again.)
+    pub fn set_start_at_login(on: bool) -> anyhow::Result<()> {
+        let target = format!("{}/{LABEL}", gui_domain());
+        launchctl(&[if on { "enable" } else { "disable" }, &target])
+    }
+
+    /// Quit from the tray menu: when this process is the LaunchAgent's, unloads it (launchd
+    /// then stops this process with SIGTERM) so that KeepAlive does not start it again. It is
+    /// loaded again at the next login, or when RD Agent is opened ([`start`]). False when the
+    /// agent was not started by the LaunchAgent: then it simply exits.
+    pub fn stop_from_within() -> bool {
+        use std::os::unix::process::CommandExt as _;
+        if !started_by_launchd() {
+            return false;
+        }
+        // Its own process group: launchd stops the job's group with it, and launchctl must
+        // not go down before it has asked.
+        let spawned = Command::new(LAUNCHCTL)
+            .args(["bootout", &format!("{}/{LABEL}", gui_domain())])
+            .process_group(0)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match spawned {
+            Ok(_) => true,
+            Err(e) => {
+                warn!("unloading the LaunchAgent: {e}");
+                false
+            }
+        }
+    }
+
+    /// Opening RD Agent.app (Finder, Spotlight): starts the agent through its LaunchAgent,
+    /// also after Quit or when start at login is off.
+    pub fn start() -> anyhow::Result<()> {
+        let domain = gui_domain();
+        let target = format!("{domain}/{LABEL}");
+        if is_loaded(&target)? {
+            return launchctl(&["kickstart", &target]);
+        }
+        let path = plist_path()?;
+        ensure!(
+            path.is_file(),
+            "the agent is not set up yet: run `rd-agent setup` in Terminal"
+        );
+        let path = path.to_str().context("the LaunchAgent path is not UTF-8")?;
+        // A disabled job cannot be loaded: enable it for the load only.
+        let disabled = start_at_login()? == Some(false);
+        if disabled {
+            launchctl(&["enable", &target])?;
+        }
+        let loaded = launchctl(&["bootstrap", &domain, path]);
+        if disabled {
+            launchctl(&["disable", &target])?;
+        }
+        loaded
+    }
+
+    /// This process is the LaunchAgent's (launchd names the job in the environment).
+    fn started_by_launchd() -> bool {
+        std::env::var("XPC_SERVICE_NAME").ok().as_deref() == Some(LABEL)
+    }
+
+    /// Whether `launchctl print-disabled` lists the label as disabled.
+    fn disabled_in(out: &str) -> bool {
+        let quoted = format!("\"{LABEL}\"");
+        out.lines().any(|line| {
+            line.trim()
+                .strip_prefix(&quoted)
+                .and_then(|rest| rest.trim().strip_prefix("=>"))
+                .is_some_and(|v| matches!(v.trim(), "disabled" | "true"))
+        })
+    }
+
     pub fn status() -> anyhow::Result<ServiceStatus> {
         let path = plist_path()?;
         let output = Command::new(LAUNCHCTL)
@@ -371,6 +466,16 @@ pub mod service {
         fn finds_placeholders() {
             assert_eq!(placeholder("a @HOME_DIR@ b"), Some("@HOME_DIR@"));
             assert_eq!(placeholder("me@example.com @@ @x@"), None);
+        }
+
+        #[test]
+        fn parses_launchctl_print_disabled() {
+            let out = "disabled services = {\n\t\"com.x\" => enabled\n\t\"dev.thijmen.rd.agent\" => disabled\n}\n";
+            assert!(disabled_in(out));
+            assert!(disabled_in("\t\"dev.thijmen.rd.agent\" => true"));
+            assert!(!disabled_in("\t\"dev.thijmen.rd.agent\" => enabled"));
+            assert!(!disabled_in("\t\"dev.thijmen.rd.agent.other\" => disabled"));
+            assert!(!disabled_in(""));
         }
 
         #[test]

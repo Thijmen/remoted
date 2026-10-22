@@ -70,8 +70,8 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         None => ask_connection(args, existing.as_ref())?,
     };
 
-    let (defaults, update, terminal) = existing
-        .map(|c| (c.defaults, c.update, c.terminal))
+    let (defaults, update, terminal, tray) = existing
+        .map(|c| (c.defaults, c.update, c.terminal, c.tray))
         .unwrap_or_default();
     let cfg = AgentConfig {
         gateway_url,
@@ -80,6 +80,7 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         defaults,
         update,
         terminal,
+        tray,
     };
     cfg.save(&path)
         .with_context(|| format!("writing {}", path.display()))?;

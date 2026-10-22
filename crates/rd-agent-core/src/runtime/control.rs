@@ -1,7 +1,7 @@
 //! The control connection (`/ws/agent`): register, report state changes (and with an update
 //! hookup `update_status`), receive `session_request` / `session_end` / `update`, reconnect with
 //! backoff. Sessions are managed here but run on their own sockets, so they survive control
-//! reconnects.
+//! reconnects. While remote access is paused on the machine, it stays disconnected.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -20,6 +20,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tracing::{debug, error, info, warn};
 
+use super::activity::{self, Connection};
 use super::backoff::Backoff;
 use super::files::Channels as FileChannels;
 use super::net::{DialError, WsStream, valid_session_id};
@@ -42,8 +43,13 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(600);
 
 /// Runs the control connection until `shutdown` resolves. Shutting down ends the current
 /// session first (reported with `session_end` while still connected), then closes the control
-/// socket.
-pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
+/// socket. Pausing (`paused` turning true) does the same, then waits until `paused` is false
+/// again.
+pub(crate) async fn run(
+    ctx: Arc<Ctx>,
+    shutdown: impl Future<Output = ()>,
+    mut paused: Option<watch::Receiver<bool>>,
+) {
     let mut sessions = Sessions::new(ctx.clone());
     let mut files = FileChannels::new(ctx.clone());
     let mut terminals = TerminalChannels::new(ctx.clone());
@@ -51,18 +57,42 @@ pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
     let mut unavailable_since: Option<Instant> = None;
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
+        if paused.as_ref().is_some_and(|p| *p.borrow()) {
+            sessions.shutdown().await;
+            files.shutdown().await;
+            terminals.shutdown().await;
+            activity::set_connection(&ctx.activity, Connection::Paused);
+            info!("remote access paused on this machine");
+            tokio::select! {
+                biased;
+                () = &mut shutdown => break,
+                () = resumed(&mut paused) => {}
+            }
+            info!("remote access resumed");
+            backoff.reset();
+            unavailable_since = None;
+        }
+        // While retrying, the display keeps the reason of the last failure.
+        ctx.activity.send_if_modified(|a| {
+            let connecting = !matches!(a.connection, Connection::Offline { .. });
+            if connecting {
+                a.connection = Connection::Connecting;
+            }
+            connecting
+        });
         // `shutdown` is never polled again once it resolved: every path that sees it breaks.
         let mut channels = ChannelSets {
             files: &mut files,
             terminals: &mut terminals,
         };
-        let outcome =
-            connect_and_serve(&ctx, &mut sessions, &mut channels, shutdown.as_mut()).await;
+        let mut stop = std::pin::pin!(stop_signal(shutdown.as_mut(), paused.as_mut()));
+        let outcome = connect_and_serve(&ctx, &mut sessions, &mut channels, stop.as_mut()).await;
         if !matches!(outcome, Outcome::Unavailable) {
             unavailable_since = None;
         }
         let delay = match outcome {
-            Outcome::Shutdown => break,
+            Outcome::Stopped(Stop::Shutdown) => break,
+            Outcome::Stopped(Stop::Pause) => continue,
             Outcome::Lost { registered: true } => {
                 backoff.reset();
                 backoff.next_delay()
@@ -82,12 +112,21 @@ pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
             },
             Outcome::Refused => backoff.max_delay(),
         };
+        activity::set_connection(
+            &ctx.activity,
+            Connection::Offline {
+                reason: outcome.reason().into(),
+            },
+        );
         info!(
             delay_ms = delay.as_millis(),
             "reconnecting to the gateway after a delay"
         );
         tokio::select! {
-            () = &mut shutdown => break,
+            stop = &mut stop => match stop {
+                Stop::Shutdown => break,
+                Stop::Pause => continue,
+            },
             () = tokio::time::sleep(delay) => {}
         }
     }
@@ -102,6 +141,46 @@ pub(crate) async fn run(ctx: Arc<Ctx>, shutdown: impl Future<Output = ()>) {
 struct ChannelSets<'a> {
     files: &'a mut FileChannels,
     terminals: &'a mut TerminalChannels,
+}
+
+/// Why the control connection is being closed on purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// The runtime is shutting down.
+    Shutdown,
+    /// Remote access was paused on the machine.
+    Pause,
+}
+
+/// Resolves when the runtime shuts down or remote access is paused.
+async fn stop_signal<F: Future<Output = ()>>(
+    shutdown: Pin<&mut F>,
+    paused: Option<&mut watch::Receiver<bool>>,
+) -> Stop {
+    tokio::select! {
+        biased;
+        () = shutdown => Stop::Shutdown,
+        () = pause_requested(paused) => Stop::Pause,
+    }
+}
+
+async fn pause_requested(paused: Option<&mut watch::Receiver<bool>>) {
+    if let Some(paused) = paused
+        && paused.wait_for(|p| *p).await.is_ok()
+    {
+        return;
+    }
+    std::future::pending().await
+}
+
+/// Resolves when remote access is no longer paused. When whoever paused it is gone, it is
+/// resumed for good.
+async fn resumed(paused: &mut Option<watch::Receiver<bool>>) {
+    if let Some(rx) = paused
+        && rx.wait_for(|p| !*p).await.is_err()
+    {
+        *paused = None;
+    }
 }
 
 /// How a control connection attempt ended.
@@ -119,8 +198,22 @@ enum Outcome {
     /// The gateway does not want us (401/403 bad token, wrong machine, replaced by another
     /// agent): retrying fast won't help.
     Refused,
-    /// The runtime is shutting down.
-    Shutdown,
+    /// Closed on purpose: the runtime is shutting down, or remote access was paused.
+    Stopped(Stop),
+}
+
+impl Outcome {
+    /// Why the agent is offline, for the status display.
+    fn reason(self) -> &'static str {
+        match self {
+            Outcome::Failed => "cannot reach the gateway",
+            Outcome::Lost { .. } => "lost the connection to the gateway",
+            Outcome::Unavailable => "the gateway is unavailable",
+            Outcome::RateLimited { .. } => "the gateway is rate limiting this network",
+            Outcome::Refused => "the gateway refused this agent",
+            Outcome::Stopped(_) => "stopped",
+        }
+    }
 }
 
 /// What an HTTP answer to the control upgrade means. Only 401/403 are about the agent itself;
@@ -134,11 +227,11 @@ fn classify_http(status: StatusCode, retry_after: Option<Duration>) -> Outcome {
     }
 }
 
-async fn connect_and_serve<F: Future<Output = ()>>(
+async fn connect_and_serve<F: Future<Output = Stop>>(
     ctx: &Arc<Ctx>,
     sessions: &mut Sessions,
     channels: &mut ChannelSets<'_>,
-    mut shutdown: Pin<&mut F>,
+    mut stop: Pin<&mut F>,
 ) -> Outcome {
     let url = ctx.gateway.control_url();
     let dial = timeout(
@@ -146,7 +239,7 @@ async fn connect_and_serve<F: Future<Output = ()>>(
         ctx.gateway.dial(&url, MAX_MESSAGE),
     );
     let dialed = tokio::select! {
-        () = &mut shutdown => return Outcome::Shutdown,
+        stop = &mut stop => return Outcome::Stopped(stop),
         dialed = dial => dialed,
     };
     let ws = match dialed {
@@ -188,7 +281,7 @@ async fn connect_and_serve<F: Future<Output = ()>>(
         ws,
         registered: false,
     }
-    .serve(shutdown)
+    .serve(stop)
     .await
 }
 
@@ -202,7 +295,7 @@ struct Control<'a> {
 }
 
 impl Control<'_> {
-    async fn serve<F: Future<Output = ()>>(mut self, mut shutdown: Pin<&mut F>) -> Outcome {
+    async fn serve<F: Future<Output = Stop>>(mut self, mut stop: Pin<&mut F>) -> Outcome {
         let mut state = self.ctx.state.subscribe();
         // Sent once registered (marked changed then), and after that on every change.
         let mut update_status = self.ctx.updates.as_ref().map(|(status, _)| status.clone());
@@ -224,7 +317,7 @@ impl Control<'_> {
             // Biased: a session's `session_end` goes out before the state change it causes.
             tokio::select! {
                 biased;
-                () = &mut shutdown => return self.shut_down().await,
+                stop = &mut stop => return self.shut_down(stop).await,
                 msg = self.ws.next() => {
                     last_rx = Instant::now();
                     match msg {
@@ -287,7 +380,7 @@ impl Control<'_> {
     }
 
     /// Ends the session, reports it and hangs up politely.
-    async fn shut_down(mut self) -> Outcome {
+    async fn shut_down(mut self, stop: Stop) -> Outcome {
         self.sessions.shutdown().await;
         self.files.shutdown().await;
         self.terminals.shutdown().await;
@@ -297,12 +390,16 @@ impl Control<'_> {
                 reason: ended.reason.into(),
             };
             if !self.send(&msg).await {
-                return Outcome::Shutdown;
+                return Outcome::Stopped(stop);
             }
         }
         let frame = CloseFrame {
             code: CloseCode::Away,
-            reason: "agent shutting down".into(),
+            reason: match stop {
+                Stop::Shutdown => "agent shutting down",
+                Stop::Pause => "remote access paused on the machine",
+            }
+            .into(),
         };
         if timeout(SEND_TIMEOUT, self.ws.close(Some(frame)))
             .await
@@ -310,7 +407,7 @@ impl Control<'_> {
         {
             debug!("closing the control connection timed out");
         }
-        Outcome::Shutdown
+        Outcome::Stopped(stop)
     }
 
     /// Handles a gateway message; true when it was `registered`.
@@ -323,6 +420,7 @@ impl Control<'_> {
                     "registered with the gateway"
                 );
                 self.registered = true;
+                activity::set_connection(&self.ctx.activity, Connection::Online);
                 self.update_event(UpdateEvent::Registered {
                     state: *self.ctx.state.borrow(),
                 });

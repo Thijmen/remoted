@@ -36,9 +36,9 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tracing::{Instrument as _, debug, info, warn};
 
-use super::Ctx;
 use super::net::WsStream;
 use super::task::TaskGuard;
+use super::{Ctx, PresenceKind};
 use crate::clock::now_us;
 use fsops::{Failure, path_str};
 use read::{DlCmd, ReadReq, Window};
@@ -177,6 +177,7 @@ async fn run(ctx: Arc<Ctx>, id: String, user: String, mut stop: oneshot::Receive
         },
     };
     info!(user, "files: channel open");
+    let _present = ctx.present(PresenceKind::Files, &user);
     let end = Channel::start(ctx, ws).run(&mut stop).await;
     info!(user, end = ?end, "files: channel closed");
 }

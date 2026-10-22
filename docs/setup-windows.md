@@ -28,8 +28,9 @@ Download `rd-agent-<version>-windows-x64-setup.exe` from the agent releases (`ag
 to 1.4.2 the agent came with the rd Desktop releases) on
 [GitHub Releases](https://github.com/Thijmen/remoted/releases) and run it. It installs for your
 account only (no administrator rights) into `%LOCALAPPDATA%\Programs\rd-agent`, adds Start menu
-shortcuts (*rd agent setup*, *rd agent status*, *rd agent logs*) and an entry in Settings → Apps,
-and offers the setup (step 3) at the end, so add the PC in the portal (step 2) first. The installer is not signed, so SmartScreen asks once:
+shortcuts (*rd agent*, which starts the agent; *rd agent setup*, *rd agent status*, *rd agent
+logs*) and an entry in Settings → Apps, and offers the setup (step 3) at the end, so add the PC
+in the portal (step 2) first. The installer is not signed, so SmartScreen asks once:
 *More info* → *Run anyway*.
 
 From 1.5.0 on, an agent installed this way updates itself: the portal shows **Update to
@@ -110,6 +111,26 @@ refuses to start.
 - `rd-agent uninstall` removes the autostart and stops the agent.
 - Updating by hand (the zip, or a build of your own): `uninstall`, replace both programs,
   `install`. The installer does the same.
+
+## Notification area icon
+
+While it runs, the agent shows the rd icon in the notification area (next to the clock; Windows
+may put it under the **^** overflow first: drag it out to keep it visible). Its menu shows:
+- the version and whether the PC is online (or why not);
+- who is connected: someone viewing the screen or transferring files;
+- **Pause remote access**: ends open sessions and disconnects from the gateway, so the portal
+  shows the PC offline and nobody can connect, until you click **Resume remote access**. The
+  pause lasts until the agent restarts (at the next login at the latest);
+- **Check for updates**, or **Install update X.Y.Z** once one is found (as the portal's Update
+  button);
+- **Start at login**: adds or removes the autostart's Run value; the running agent keeps
+  running;
+- **Quit RD Agent**: stops the agent (the launcher does not restart it) until the next login,
+  or until you start **rd agent** from the Start menu.
+
+The icon is dimmed while the PC is not reachable (paused, offline, connecting) and gets a red
+dot while someone is connected. `[tray]` `enabled = false` in `config.toml` (or `rd-agent run
+--no-tray`) turns it off.
 
 ## Updates
 

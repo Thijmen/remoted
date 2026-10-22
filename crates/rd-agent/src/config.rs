@@ -45,6 +45,7 @@ pub fn load_for_run(
             defaults: Default::default(),
             update: Default::default(),
             terminal: Default::default(),
+            tray: Default::default(),
         }
     };
     if let Some(gateway) = gateway {
@@ -167,6 +168,7 @@ mod tests {
             defaults: Default::default(),
             update: Default::default(),
             terminal: Default::default(),
+            tray: Default::default(),
         };
         // Found before the Keychain is consulted (the test never touches the Keychain).
         let (token, source) = resolve_token(None, &cfg).unwrap();
@@ -190,6 +192,7 @@ mod tests {
             defaults: Default::default(),
             update: Default::default(),
             terminal: Default::default(),
+            tray: Default::default(),
         };
         cfg.save(&file).unwrap();
         assert_eq!(too_open(&file), None);
