@@ -1,5 +1,12 @@
 # rd-agent
 
+## 1.8.0
+
+### Minor Changes
+
+- b5f2e0f: Terminal: open a shell on this machine from the portal or the session menu (zsh on a Mac, PowerShell on Windows), over the same connection as the screen. The shell keeps running when the connection drops, and the terminal picks up where it left off. Turn it off with `[terminal] enabled = false` in the agent's config.
+- bf576eb: The agent now has an icon in the macOS menu bar and the Windows notification area. Its menu shows whether the machine is online and who is connected, and lets you pause remote access, check for and install updates, turn start at login on or off, and quit the agent. RD Agent.app also has an icon now, and opening it starts the agent again after a quit.
+
 ## 1.7.0
 
 ### Minor Changes
