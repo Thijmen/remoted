@@ -350,6 +350,10 @@ impl Control<'_> {
                     );
                 }
             }
+            Ok(GatewayToAgent::TerminalRequest { channel, .. }) => {
+                // TODO(terminal): start the channel.
+                warn!(channel, "terminal channels are not implemented yet");
+            }
             Ok(GatewayToAgent::Unknown) => debug!("unknown gateway message ignored"),
             Err(e) => warn!("unparseable gateway message ignored: {e}"),
         }

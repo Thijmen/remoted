@@ -109,6 +109,15 @@ fn vectors() -> Vec<Value> {
         "type":"file_data","flags":1,"id":9,"seq":70000,"offset":"6000000000","payload_hex":"dead"}}));
     let fa = FileAck { seq: 4_000_000_001 };
     v.push(json!({"name":"file_ack","hex":hex(&fa.to_message()),"fields":{"type":"file_ack","seq":4000000001u32}}));
+    let to = TermOutHeader {
+        seq: 4_000_000_002,
+        offset: 7_000_000_000,
+    };
+    v.push(json!({"name":"term_out","hex":hex(&to.to_message(b"ls\r\n")),"fields":{
+        "type":"term_out","seq":4000000002u32,"offset":"7000000000","payload_hex":"6c730d0a"}}));
+    let ta = TermAck { seq: 70_001 };
+    v.push(json!({"name":"term_ack","hex":hex(&ta.to_message()),"fields":{"type":"term_ack","seq":70001}}));
+    v.push(json!({"name":"term_in","hex":hex(&term_in_message(&[0x1b,0x5b,0x41])),"fields":{"type":"term_in","payload_hex":"1b5b41"}}));
     v.push(json!({"name":"probe_up","hex":hex(&probe_up_message(&[1,2,3])),"fields":{"type":"probe_up","payload_hex":"010203"}}));
     v
 }

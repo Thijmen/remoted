@@ -1273,6 +1273,9 @@ impl Reader {
                 | BinMsg::Audio(..)
                 | BinMsg::FileData(..)
                 | BinMsg::FileAck(_)
+                | BinMsg::TermOut(..)
+                | BinMsg::TermAck(_)
+                | BinMsg::TermIn(_)
                 | BinMsg::ProbeUp(_)
                 | BinMsg::Unknown(_),
             ) => {}

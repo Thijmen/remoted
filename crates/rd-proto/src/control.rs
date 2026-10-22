@@ -359,6 +359,9 @@ pub enum GatewayToViewer {
 pub mod agent_caps {
     /// File channels (`files_request`, docs/files.md).
     pub const FILES: &str = "files";
+    /// Terminal channels (`terminal_request`, docs/terminal.md). Not listed when the terminal
+    /// is turned off in the agent's config or the OS has no pseudo console.
+    pub const TERMINAL: &str = "terminal";
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -410,6 +413,16 @@ pub enum GatewayToAgent {
     /// A viewer opened a file channel (docs/files.md): dial `/ws/agent/files/<channel>` within
     /// 10 s. Sent only to agents with the `files` capability.
     FilesRequest {
+        channel: String,
+        #[serde(default)]
+        user: String,
+        #[serde(default)]
+        client_ip: String,
+    },
+    /// A viewer opened a terminal channel (docs/terminal.md): dial
+    /// `/ws/agent/terminal/<channel>` within 10 s. Sent only to agents with the `terminal`
+    /// capability.
+    TerminalRequest {
         channel: String,
         #[serde(default)]
         user: String,
@@ -642,6 +655,16 @@ mod tests {
         assert_eq!(
             files,
             r#"{"t":"files_request","channel":"c1","user":"me@x","client_ip":"1.2.3.4"}"#
+        );
+        let term = serde_json::to_string(&GatewayToAgent::TerminalRequest {
+            channel: "c2".into(),
+            user: "me@x".into(),
+            client_ip: "1.2.3.4".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            term,
+            r#"{"t":"terminal_request","channel":"c2","user":"me@x","client_ip":"1.2.3.4"}"#
         );
     }
 
