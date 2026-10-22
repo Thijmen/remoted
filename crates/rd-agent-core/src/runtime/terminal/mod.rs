@@ -454,7 +454,7 @@ impl Channel {
             return Err(End::Protocol);
         }
         let shells = self.ctx.shells.clone();
-        let (shell, offset, reset) = match attach {
+        let (shell, offset, reset, end) = match attach {
             Some(id) => {
                 let found = valid_session_id(&id).then(|| shells.get(&id)).flatten();
                 let Some(shell) = found else {
@@ -462,11 +462,11 @@ impl Channel {
                     return Err(End::Refused);
                 };
                 shell.resize(size);
-                let (offset, reset) = shell.resume(offset);
-                (shell, offset, reset)
+                let (offset, reset, end) = shell.resume(offset);
+                (shell, offset, reset, end)
             }
             None => match shells.start(&self.user, size).await {
-                Ok(shell) => (shell, 0, true),
+                Ok(shell) => (shell, 0, true, 0),
                 Err(StartError::Busy) => {
                     self.err(
                         err::BUSY,
@@ -492,6 +492,7 @@ impl Channel {
             shell: shell.name.clone(),
             offset,
             reset,
+            end,
             state: *self.ctx.state.borrow(),
         });
         self.kicked = Some(kicked);

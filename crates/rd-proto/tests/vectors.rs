@@ -113,8 +113,10 @@ fn vectors() -> Vec<Value> {
         seq: 4_000_000_002,
         offset: 7_000_000_000,
     };
-    v.push(json!({"name":"term_out","hex":hex(&to.to_message(b"ls\r\n")),"fields":{
-        "type":"term_out","seq":4000000002u32,"offset":"7000000000","payload_hex":"6c730d0a"}}));
+    v.push(
+        json!({"name":"term_out","hex":hex(&to.to_message(b"ls\r\n")),"fields":{
+        "type":"term_out","seq":4000000002u32,"offset":"7000000000","payload_hex":"6c730d0a"}}),
+    );
     let ta = TermAck { seq: 70_001 };
     v.push(json!({"name":"term_ack","hex":hex(&ta.to_message()),"fields":{"type":"term_ack","seq":70001}}));
     v.push(json!({"name":"term_in","hex":hex(&term_in_message(&[0x1b,0x5b,0x41])),"fields":{"type":"term_in","payload_hex":"1b5b41"}}));

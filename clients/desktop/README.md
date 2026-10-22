@@ -260,7 +260,7 @@ src-tauri/icons/tray-template.png`.
   updater plugin reads the manifest (`plugins.updater` in `tauri.conf.json`, or
   `RD_UPDATE_URL`) and verifies the download against `plugins.updater.pubkey`; the signature
   must name the announced version (`requireSignedVersion`). The window waits while the main
-  window shows a `/m/…` page of the gateway.
+  window shows a `/m/…` or `/t/…` page of the gateway.
 - `src/notes.rs`: the manifest's `releases`, the versions between two versions, and their
   Markdown as HTML without raw HTML, images or non-http(s) links (the manifest is not signed).
 - `src/installable.rs`: can this copy replace itself (Windows: `uninstall.exe` next to the exe;

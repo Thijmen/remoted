@@ -14,6 +14,7 @@ import { type PendingUpdate, advancePending, pendingUpdate, updateCardView } fro
 import { type Child, byId, h, setChildren, timeAgo } from '../ui/dom';
 import { icon } from '../ui/icons';
 import { renderMarkdown } from '../ui/markdown';
+import { terminalUrl } from '../ui/terminal-links';
 
 const REFRESH_MS = 5000;
 /** A refused update request is shown on its card this long. */
@@ -305,6 +306,17 @@ function machineCard(m: MachineInfo): HTMLElement {
                 title: 'Browse, download and upload files without taking over the screen',
               },
               'Files',
+            )
+          : null,
+        m.terminal && m.online
+          ? h(
+              'a',
+              {
+                className: 'button',
+                href: terminalUrl(m.machine),
+                title: 'A shell on this machine, in its own page, without taking over the screen',
+              },
+              'Terminal',
             )
           : null,
         h('a', { className: 'button primary', href: `/m/${encodeURIComponent(m.machine)}` }, 'Connect'),

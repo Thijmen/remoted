@@ -92,6 +92,10 @@ pub enum TermAgentMsg {
         /// The viewer must clear its screen before showing the replay (a new shell, or output
         /// between the viewer's `offset` and this one is lost).
         reset: bool,
+        /// Where the replay ends: output the shell printed before this attach. Output from
+        /// here on is live. 0 for a new shell.
+        #[serde(default)]
+        end: u64,
         state: AgentState,
     },
     State(AgentState),
@@ -105,7 +109,9 @@ pub enum TermAgentMsg {
         signal: Option<i32>,
     },
     /// Another channel attached this shell; the agent closes this one (4001).
-    Detached { reason: String },
+    Detached {
+        reason: String,
+    },
     Err {
         code: String,
         #[serde(default)]
@@ -157,6 +163,9 @@ mod tests {
             r#"{"t":"exit","code":0}"#
         );
         let state = serde_json::to_string(&TermAgentMsg::State(AgentState::default())).unwrap();
-        assert!(state.starts_with(r#"{"t":"state","locked":false"#), "{state}");
+        assert!(
+            state.starts_with(r#"{"t":"state","locked":false"#),
+            "{state}"
+        );
     }
 }

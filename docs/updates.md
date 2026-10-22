@@ -99,8 +99,8 @@ automatically**, or `"update_check": false` in `settings.json`. The environment 
 always works. The timer follows the wall clock, so a laptop that slept checks when it wakes.
 
 **What happens.** A newer version is downloaded in the background and its signature checked.
-Then the update window opens, unless a session is open in the main window (a `/m/…` page of the
-gateway): then it waits until the session page is left, or for the next check. It opens without
+Then the update window opens, unless a session or a terminal is open in the main window (a `/m/…` or
+`/t/…` page of the gateway): then it waits until the session page is left, or for the next check. It opens without
 taking the keyboard focus, and its button is not focused, so typing elsewhere cannot press it.
 Closing the window means "later": it opens again at the next check or launch, and the tray menu
 offers **Restart to Update to X.Y.Z…** in the meantime.

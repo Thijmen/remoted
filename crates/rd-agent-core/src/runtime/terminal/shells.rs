@@ -436,9 +436,12 @@ impl Shell {
         );
     }
 
-    /// Where an attach from the viewer's `offset` starts and whether it is a reset.
-    pub(crate) fn resume(&self, offset: u64) -> (u64, bool) {
-        self.state.lock().history.resume(offset)
+    /// Where an attach from the viewer's `offset` starts, whether it is a reset, and where the
+    /// output kept so far ends (the replay is everything up to there).
+    pub(crate) fn resume(&self, offset: u64) -> (u64, bool, u64) {
+        let st = self.state.lock();
+        let (offset, reset) = st.history.resume(offset);
+        (offset, reset, st.history.end())
     }
 
     /// What a channel at `cursor` may send next, at most `max` bytes of it.
@@ -906,7 +909,8 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(40)).await;
         // Reattached in time: the timer is off, the replay continues at the viewer's offset.
         let att = shell.attach("me");
-        assert_eq!(shell.resume(3), (3, false));
+        let (offset, reset, _) = shell.resume(3);
+        assert_eq!((offset, reset), (3, false));
         assert_eq!(output(&shell, 3), (3, b"def".to_vec()));
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(shells.get(&shell.id).is_some());
@@ -926,7 +930,8 @@ mod tests {
         // Still there: a reattach replays the output, then gets the exit.
         let again = shells.get(&shell.id).expect("kept");
         let _att = again.attach("me");
-        assert_eq!(again.resume(0), (0, false));
+        let (offset, reset, _) = again.resume(0);
+        assert_eq!((offset, reset), (0, false));
         assert_eq!(output(&again, 0), (0, b"exit\r".to_vec()));
         assert_eq!(again.pending(5, 10).exit.unwrap().code, Some(0));
         // Detached again, it is dropped when the keep time ran out.
@@ -949,7 +954,8 @@ mod tests {
         let p = shell.pending(0, 1000);
         assert_eq!(p.offset, total - HISTORY_BYTES as u64);
         assert_eq!(p.len, 1000);
-        assert_eq!(shell.resume(10), (total - HISTORY_BYTES as u64, true));
+        let (offset, reset, _) = shell.resume(10);
+        assert_eq!((offset, reset), (total - HISTORY_BYTES as u64, true));
         shell.hang_up();
         until("the hangup", || shell.has_exited()).await;
     }

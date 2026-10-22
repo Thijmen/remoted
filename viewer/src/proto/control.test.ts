@@ -138,6 +138,11 @@ describe('parseMachines', () => {
     expect(ms[0]!.managed).toBe(false);
     expect(parseMachines([{ machine: 'pc', managed: true }])[0]!.managed).toBe(true);
   });
+  it('decodes the files and terminal capabilities (false when missing)', () => {
+    const [a, b] = parseMachines([{ machine: 'mbp', files: true, terminal: true }, { machine: 'pc' }]);
+    expect([a!.files, a!.terminal]).toEqual([true, true]);
+    expect([b!.files, b!.terminal]).toEqual([false, false]);
+  });
   it('returns [] for non-arrays', () => {
     expect(parseMachines({})).toEqual([]);
   });

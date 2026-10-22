@@ -38,6 +38,8 @@ import {
   streamParams,
 } from './settings';
 import { settingsPanel, shortcutsHint } from './settings-panel';
+import { terminalUrl } from './terminal-links';
+import type { TerminalPanel } from './terminal-panel';
 import {
   type CheckAction,
   type StatusState,
@@ -130,6 +132,9 @@ export class ViewerApp {
   private readonly stageDrop = h('div', { className: 'stage-drop', hidden: true });
   private filesLayout: FilesLayout | null = null;
   private stageDragDepth = 0;
+  /** The terminal panel (docs/terminal.md), loaded with xterm.js the first time it is opened. */
+  private terminal: TerminalPanel | null = null;
+  private terminalLoading: Promise<TerminalPanel> | null = null;
   private readonly statsLog: Array<HudSnapshot & { agent: AgentStats | null }> = [];
 
   constructor(
@@ -308,6 +313,7 @@ export class ViewerApp {
               'Browse files',
             )
           : null,
+        info?.terminal ? this.openTerminalButton(info.online) : null,
         recovery.length
           ? h(
               'div',
@@ -390,6 +396,7 @@ export class ViewerApp {
 
   private showConnectScreen(): void {
     if (this.filesLayout === 'drawer') this.closeFiles();
+    this.closeTerminal(false);
     this.active = false;
     this.goIdle();
     this.stopLatencyTest();
@@ -734,7 +741,86 @@ export class ViewerApp {
       case 'files':
         if (this.browser.isOpen) this.closeFiles();
         else if (this.info?.files) this.openFiles('drawer');
+        return;
+      case 'terminal':
+        // Open it, give it the keyboard, or (when it has the keyboard already) hide it.
+        if (this.terminal?.isOpen) {
+          if (this.terminal.hasFocus) this.closeTerminal();
+          else this.terminal.focus();
+        } else if (this.info?.terminal) void this.openTerminal();
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // terminal
+
+  /** "Open terminal" on the connect screen: the terminal page, which leaves the screen alone. */
+  private openTerminalButton(online: boolean): HTMLElement {
+    const title = 'A shell on this machine, in its own page, without taking over the screen';
+    const content = [icon('terminal', 16), 'Open terminal'];
+    if (!online) return h('button', { type: 'button', className: 'block', disabled: true, title }, ...content);
+    return h('a', { className: 'button block', href: terminalUrl(this.machine), title }, ...content);
+  }
+
+  private terminalPanel(): Promise<TerminalPanel> {
+    this.terminalLoading ??= import('./terminal-panel').then(({ TerminalPanel }) => {
+      this.terminal = new TerminalPanel({
+        machine: this.machine,
+        machineName: () => this.info?.name ?? this.machine,
+        chord: (a) => this.onChord(a),
+        hide: () => this.closeTerminal(),
+      });
+      return this.terminal;
+    });
+    return this.terminalLoading;
+  }
+
+  /** Show the terminal panel below the remote screen and give it the keyboard. */
+  private async openTerminal(): Promise<void> {
+    let panel: TerminalPanel;
+    try {
+      panel = await this.terminalPanel();
+    } catch (e) {
+      this.terminalLoading = null;
+      this.banners.set('terminal', {
+        level: 'error',
+        text: `The terminal could not be loaded (${e instanceof Error ? e.message : String(e)}). Reload the page.`,
+        actions: [{ label: 'Dismiss', run: () => this.banners.set('terminal', null) }],
+      });
+      return;
+    }
+    if (!this.active) return;
+    if (panel.isOpen) {
+      panel.focus();
+      return;
+    }
+    this.toggleToolbar(false);
+    document.body.append(panel.el);
+    this.stage.classList.add('with-terminal');
+    document.body.classList.add('with-terminal');
+    this.layoutTerminal();
+    panel.show();
+    this.refreshToolbar();
+  }
+
+  /** Hide the terminal panel; the shell keeps running and opening the panel again reattaches it. */
+  private closeTerminal(focusStage = true): void {
+    const panel = this.terminal;
+    if (!panel?.isOpen) return;
+    panel.hidden();
+    panel.el.remove();
+    this.stage.classList.remove('with-terminal');
+    document.body.classList.remove('with-terminal');
+    this.refreshToolbar();
+    if (focusStage && this.active) this.canvas.focus();
+  }
+
+  /** The panel stays left of the files drawer. */
+  private layoutTerminal(): void {
+    const panel = this.terminal;
+    if (!panel?.isOpen) return;
+    panel.el.classList.toggle('beside-files', this.filesLayout === 'drawer');
+    panel.relayout();
   }
 
   // -------------------------------------------------------------------------
@@ -763,6 +849,7 @@ export class ViewerApp {
     }
     this.browser.open();
     this.indicator.render(false);
+    this.layoutTerminal();
     this.refreshToolbar();
   }
 
@@ -779,6 +866,7 @@ export class ViewerApp {
       if (location.hash === '#files') history.replaceState(null, '', location.pathname + location.search);
     }
     this.indicator.render(true);
+    this.layoutTerminal();
     this.refreshToolbar();
     if (focusStage && this.active) this.canvas.focus();
   }
@@ -957,6 +1045,14 @@ export class ViewerApp {
       tool('stats', 'Stats', () => this.onChord('hud'), this.hud.visible),
       this.info?.files
         ? tool('folder', 'Files (Ctrl+Alt+Shift+E)', () => this.onChord('files'), this.browser.isOpen)
+        : null,
+      this.info?.terminal
+        ? tool(
+            'terminal',
+            'Terminal (Ctrl+Alt+Shift+`)',
+            () => (this.terminal?.isOpen ? this.closeTerminal() : void this.openTerminal()),
+            this.terminal?.isOpen === true,
+          )
         : null,
       tool(
         'settings',

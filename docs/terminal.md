@@ -13,12 +13,16 @@ and none has to be reachable.
 - **During a session:** open the session menu (the ▾ tab at the top) and click **Terminal**,
   or press Ctrl+Alt+Shift+`` ` `` (the key left of 1). The terminal opens in a panel next to the remote screen. While
   it has the focus, your keys go to the shell, not to the remote screen.
-- **Several shells:** every terminal page or panel runs its own shell. Open another one in a
-  new browser tab.
+- **Several shells:** every terminal page or panel runs its own shell. **New terminal** in the
+  page's header opens another one in a new browser tab (in rd Desktop: in your browser).
 - **Copy and paste:** select text to copy it with Ctrl+Shift+C (Cmd+C on a Mac); paste with
-  Ctrl+Shift+V (Cmd+V). Links in the output open in a new tab with Ctrl/Cmd+click.
-- **Closing:** close the terminal with its **×** button or by typing `exit`. Closing the tab
-  or losing the connection does *not* end the shell (see below).
+  Ctrl+Shift+V (Cmd+V). Plain Ctrl+V and Ctrl+C go to the shell, as in any terminal. Links in
+  the output open in a new tab with Ctrl/Cmd+click.
+- **Find:** Ctrl+Shift+F (Cmd+F on a Mac) searches the output.
+- **Text size:** − and + in the header; remembered in this browser.
+- **Closing:** the **×** button asks, then ends the shell; so does typing `exit`. Closing the
+  tab, hiding the panel (the chord again, or its ▾ button) or losing the connection does *not*
+  end the shell (see below).
 
 ### A dropped connection keeps the shell
 
@@ -33,9 +37,9 @@ more was printed while you were away, the terminal shows the most recent 1 MiB. 
 ended when the agent restarts (for example to install an update), and then the terminal offers
 a new one.
 
-One shell shows in one terminal at a time: opening it somewhere else (only possible by
-reattaching, e.g. a reload in a second tab) moves it there, and the first terminal says so and
-offers to take it back.
+Each browser tab remembers its shells (in `sessionStorage`), so a reload reattaches but a new
+tab starts a new shell. One shell shows in one terminal at a time: opening it somewhere else
+(a duplicated tab) moves it there, and the first terminal says so and offers to take it back.
 
 ### Who can open one
 
@@ -137,7 +141,7 @@ Without `attach` the agent starts a new shell of `cols` × `rows` (each clamped 
 agent answers
 
 ```json
-{"t":"hello","proto":1,"id":"<32 hex>","os":"macos","shell":"zsh","offset":48213,"reset":false,"state":{AgentState}}
+{"t":"hello","proto":1,"id":"<32 hex>","os":"macos","shell":"zsh","offset":48213,"reset":false,"end":50310,"state":{AgentState}}
 ```
 
 and then sends output as TERM_OUT frames starting at `offset`.
@@ -147,6 +151,10 @@ and then sends output as TERM_OUT frames starting at `offset`.
   the agent still has all output after it; otherwise the oldest output it kept.
 - `reset`: the viewer clears its screen and scrollback before showing what follows (a new
   shell, or an attach whose `offset` the agent could not continue from).
+- `end`: where the replay ends (the output the shell had printed before this attach; 0 for a
+  new shell). The viewer does not answer terminal queries (cursor position, device attributes)
+  found in the replay, only in the live output after it: they were answered when they were
+  first printed.
 - Errors (`{"t":"err","code":…,"msg":…}`, then close 1000):
   `not_found` (an `attach` to a shell the agent does not have: it ended, was closed, its keep
   time ran out or the agent restarted), `busy` (the agent already runs 8 shells), `spawn` (the

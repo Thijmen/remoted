@@ -8,6 +8,7 @@ const GATEWAY = 'http://127.0.0.1:8080';
 function rewritePath(url: string): string | undefined {
   const path = url.split('?')[0] ?? url;
   if (/^\/m\/[^/]+\/?$/.test(path)) return '/viewer.html';
+  if (/^\/t\/[^/]+\/?$/.test(path)) return '/terminal.html';
   switch (path) {
     case '/probe':
       return '/probe.html';
@@ -60,6 +61,7 @@ export default defineConfig({
       input: {
         index: page('index'),
         viewer: page('viewer'),
+        terminal: page('terminal'),
         probe: page('probe'),
         latency: page('latency'),
         keytest: page('keytest'),

@@ -884,14 +884,20 @@ mod tests {
         assert_eq!(parse(&m).unwrap(), BinMsg::TermOut(h, b"hi"));
         let a = TermAck { seq: 9 };
         assert_eq!(parse(&a.to_message()).unwrap(), BinMsg::TermAck(a));
-        assert_eq!(parse(&term_in_message(b"\x03")).unwrap(), BinMsg::TermIn(b"\x03"));
+        assert_eq!(
+            parse(&term_in_message(b"\x03")).unwrap(),
+            BinMsg::TermIn(b"\x03")
+        );
         assert_eq!(parse(&term_in_message(b"")).unwrap(), BinMsg::TermIn(b""));
         assert!(!ty::is_input(ty::TERM_IN));
         assert!(matches!(
             parse(&[ty::TERM_OUT, 0, 0, 0, 1]),
             Err(ProtoError::TooShort { .. })
         ));
-        assert!(matches!(parse(&[ty::TERM_IN]), Err(ProtoError::TooShort { .. })));
+        assert!(matches!(
+            parse(&[ty::TERM_IN]),
+            Err(ProtoError::TooShort { .. })
+        ));
     }
 
     #[test]
