@@ -11,11 +11,13 @@
 //!        └─ input.rs      dedicated thread owning the InputInjector
 //! net.rs       TCP (TCP_NODELAY, TCP_NOTSENT_LOWAT) + rustls + WebSocket handshake
 //! updates.rs   the hookup for the binary's self-updater (update_status, update, session holds)
+//! activity.rs  connection state and who is connected, for a status display on the machine
 //! ```
 //!
 //! Sessions outlive control reconnects: a joined session keeps streaming on its data socket
 //! while the control socket is re-established.
 
+mod activity;
 mod backoff;
 mod control;
 mod files;
@@ -38,6 +40,7 @@ use tracing::info;
 
 use crate::config::AgentConfig;
 use crate::platform::{LockState, Platform};
+pub use activity::{Activity, Connection, Presence, PresenceKind};
 use net::{DialError, Gateway};
 use task::TaskGuard;
 use updates::SessionGate;
@@ -97,6 +100,8 @@ pub struct Runtime {
     timings: Timings,
     version: String,
     updates: Option<UpdateLink>,
+    activity: watch::Sender<Activity>,
+    paused: Option<watch::Receiver<bool>>,
 }
 
 impl Runtime {
@@ -107,6 +112,8 @@ impl Runtime {
             timings: Timings::default(),
             version: AGENT_VERSION.to_owned(),
             updates: None,
+            activity: watch::Sender::new(Activity::default()),
+            paused: None,
         }
     }
 
@@ -130,6 +137,20 @@ impl Runtime {
         self
     }
 
+    /// Publishes the connection state and who is connected on `activity` (for a status icon).
+    pub fn activity(mut self, activity: watch::Sender<Activity>) -> Self {
+        self.activity = activity;
+        self
+    }
+
+    /// Remote access can be paused on the machine: while `paused` is true the runtime ends
+    /// its sessions and stays disconnected from the gateway (the portal shows the machine
+    /// offline); it reconnects when `paused` turns false again.
+    pub fn pause(mut self, paused: watch::Receiver<bool>) -> Self {
+        self.paused = Some(paused);
+        self
+    }
+
     /// Runs until `shutdown` resolves, then ends the current session cleanly (pipeline stopped,
     /// input released, sockets closed) and returns `Ok(())`. Returns an error only for an
     /// unusable configuration; network failures are retried forever.
@@ -143,6 +164,7 @@ impl Runtime {
             self.timings,
             self.version,
             self.updates,
+            self.activity,
         )?);
         info!(
             gateway = ctx.cfg.gateway_url,
@@ -151,7 +173,8 @@ impl Runtime {
             "rd agent starting"
         );
         let _monitor = TaskGuard::spawn(monitor_state(ctx.clone()));
-        control::run(ctx, shutdown).await;
+        control::run(ctx.clone(), shutdown, self.paused).await;
+        activity::set_connection(&ctx.activity, Connection::Stopped);
         info!("rd agent stopped");
         Ok(())
     }
@@ -212,6 +235,8 @@ struct Ctx {
     gate: Arc<SessionGate>,
     /// Uploads of lost file channels, kept for resuming.
     interrupted: Arc<files::Interrupted>,
+    /// The connection state and who is connected.
+    activity: watch::Sender<Activity>,
     /// The binary's update status and where `update` / `registered` go; `None` without an
     /// update hookup.
     updates: Option<(
@@ -227,6 +252,7 @@ impl Ctx {
         timings: Timings,
         version: String,
         updates: Option<UpdateLink>,
+        activity: watch::Sender<Activity>,
     ) -> anyhow::Result<Self> {
         ensure!(
             valid_machine(&cfg.machine),
@@ -254,6 +280,7 @@ impl Ctx {
             state,
             gate,
             updates,
+            activity,
         };
         ctx.refresh_state();
         Ok(ctx)
@@ -279,11 +306,19 @@ impl Ctx {
         })
     }
 
-    /// Marks a session as connected until the returned guard is dropped.
-    fn session_active(self: &Arc<Self>) -> ActiveSession {
+    /// Marks a session (of `user`) as connected until the returned guard is dropped.
+    fn session_active(self: &Arc<Self>, user: &str) -> ActiveSession {
         self.gate.sessions.send_modify(|n| *n += 1);
         self.publish_in_session();
-        ActiveSession(self.clone())
+        ActiveSession {
+            ctx: self.clone(),
+            _present: self.present(PresenceKind::Screen, user),
+        }
+    }
+
+    /// Lists `user` in [`Activity::present`] until the returned guard is dropped.
+    fn present(&self, kind: PresenceKind, user: &str) -> activity::PresenceGuard {
+        activity::present(&self.activity, kind, user)
     }
 
     fn publish_in_session(&self) {
@@ -297,15 +332,18 @@ impl Ctx {
 }
 
 /// `AgentState::in_session` is true while at least one of these lives.
-struct ActiveSession(Arc<Ctx>);
+struct ActiveSession {
+    ctx: Arc<Ctx>,
+    _present: activity::PresenceGuard,
+}
 
 impl Drop for ActiveSession {
     fn drop(&mut self) {
-        self.0
+        self.ctx
             .gate
             .sessions
             .send_modify(|n| *n = n.saturating_sub(1));
-        self.0.publish_in_session();
+        self.ctx.publish_in_session();
     }
 }
 
@@ -339,6 +377,7 @@ mod tests {
             token: None,
             defaults: Default::default(),
             update: Default::default(),
+            tray: Default::default(),
         };
         assert!(token(&cfg).is_err());
         cfg.token = Some("  ".into());

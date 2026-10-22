@@ -405,6 +405,7 @@ impl Agent {
             token: Some(TOKEN.into()),
             defaults: Default::default(),
             update: Default::default(),
+            tray: Default::default(),
         };
         let (tx, rx) = oneshot::channel();
         let runtime = configure(Runtime::new(cfg, platform).timings(timings));
