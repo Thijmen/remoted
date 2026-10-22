@@ -68,7 +68,7 @@ export default defineConfig({
 				},
 				{
 					label: 'Use',
-					items: ['using-rd', 'guides/files', 'guides/updates', 'guides/recovery'],
+					items: ['using-rd', 'guides/files', 'guides/terminal', 'guides/updates', 'guides/recovery'],
 				},
 				{
 					label: 'Reference',

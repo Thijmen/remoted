@@ -304,6 +304,20 @@ impl FakeAgent {
         }
     }
 
+    /// Wait for a `terminal_request` and return its channel id.
+    pub async fn expect_terminal_request(&mut self) -> String {
+        match self.next_ctl().await {
+            GatewayToAgent::TerminalRequest { channel, .. } => channel,
+            other => panic!("expected terminal_request, got {other:?}"),
+        }
+    }
+
+    pub async fn dial_terminal(&self, channel: &str) -> Result<Ws, tungstenite::Error> {
+        let auth = format!("Bearer {}", self.token);
+        let url = format!("ws://{}/ws/agent/terminal/{channel}", self.agent_addr);
+        connect_with(&url, &[("authorization", &auth)], None).await
+    }
+
     pub async fn dial_files(&self, channel: &str) -> Result<Ws, tungstenite::Error> {
         let auth = format!("Bearer {}", self.token);
         let url = format!("ws://{}/ws/agent/files/{channel}", self.agent_addr);
@@ -369,6 +383,39 @@ pub async fn open_files(
     .expect("viewer connects");
     let channel = agent.expect_files_request().await;
     let data = agent.dial_files(&channel).await.expect("agent dials files");
+    match recv_json::<GatewayToViewer>(&mut viewer).await {
+        GatewayToViewer::Session {
+            machine: m,
+            session: s,
+            ..
+        } => {
+            assert_eq!(m, machine);
+            assert_eq!(s, channel);
+        }
+        other => panic!("expected session, got {other:?}"),
+    }
+    (viewer, data, channel)
+}
+
+/// A viewer opens `/ws/terminal/{machine}`, the agent dials its terminal channel, the viewer
+/// gets `session`. Returns (viewer, agent data socket, channel id).
+pub async fn open_terminal(
+    gw: &TestGateway,
+    agent: &mut FakeAgent,
+    machine: &str,
+    viewer_headers: &[(&str, &str)],
+) -> (Ws, Ws, String) {
+    let mut viewer = connect(
+        &gw.viewer_url(&format!("/ws/terminal/{machine}")),
+        viewer_headers,
+    )
+    .await
+    .expect("viewer connects");
+    let channel = agent.expect_terminal_request().await;
+    let data = agent
+        .dial_terminal(&channel)
+        .await
+        .expect("agent dials terminal");
     match recv_json::<GatewayToViewer>(&mut viewer).await {
         GatewayToViewer::Session {
             machine: m,

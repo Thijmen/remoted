@@ -1,6 +1,7 @@
 //! Who is online and who is watching: per machine, the agent's control connection, its last
-//! known state and update status, at most one viewer session (pending or joined) and up to
-//! [`MAX_FILE_CHANNELS`] file channels (docs/files.md), which are independent of the session.
+//! known state and update status, at most one viewer session (pending or joined) and its
+//! side channels: file channels (docs/files.md) and terminal channels (docs/terminal.md), up to
+//! [`ChannelKind::max`] of each, which are independent of the session and of each other.
 //!
 //! All mutation happens under one short `parking_lot` lock that is never held across an
 //! await; messages to agents go through each control socket's bounded queue with `try_send`.
@@ -28,6 +29,60 @@ pub const CONTROL_QUEUE: usize = 32;
 
 /// File channels per machine (pending and joined).
 pub const MAX_FILE_CHANNELS: usize = 4;
+
+/// Terminal channels per machine (pending and joined).
+pub const MAX_TERMINAL_CHANNELS: usize = 8;
+
+/// A side channel next to the screen session: joined like a session, but several per machine
+/// and independent of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelKind {
+    /// Browse and transfer files (docs/files.md).
+    Files,
+    /// A shell in a terminal (docs/terminal.md).
+    Terminal,
+}
+
+impl ChannelKind {
+    /// Channels of this kind a machine may have at a time.
+    pub fn max(self) -> usize {
+        match self {
+            ChannelKind::Files => MAX_FILE_CHANNELS,
+            ChannelKind::Terminal => MAX_TERMINAL_CHANNELS,
+        }
+    }
+
+    /// The `register.caps` entry that says the agent supports this kind.
+    pub fn cap(self) -> &'static str {
+        match self {
+            ChannelKind::Files => agent_caps::FILES,
+            ChannelKind::Terminal => agent_caps::TERMINAL,
+        }
+    }
+
+    /// For logs and audit lines.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChannelKind::Files => "files",
+            ChannelKind::Terminal => "terminal",
+        }
+    }
+
+    fn request(self, channel: String, user: String, client_ip: String) -> GatewayToAgent {
+        match self {
+            ChannelKind::Files => GatewayToAgent::FilesRequest {
+                channel,
+                user,
+                client_ip,
+            },
+            ChannelKind::Terminal => GatewayToAgent::TerminalRequest {
+                channel,
+                user,
+                client_ip,
+            },
+        }
+    }
+}
 
 /// `session_end` reason of an agent that ends its session to install an update.
 pub const AGENT_UPDATE_REASON: &str = "agent_update";
@@ -132,7 +187,7 @@ pub struct AgentRegistration {
     pub caps: Vec<String>,
 }
 
-/// Viewer-side handle for a new session or file channel.
+/// Viewer-side handle for a new session or side channel.
 #[derive(Debug)]
 pub struct SessionHandle {
     pub id: String,
@@ -150,35 +205,43 @@ pub enum StartError {
     Offline,
 }
 
-/// Why a file channel could not be started.
+/// Why a file or terminal channel could not be started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum FilesStartError {
+pub enum ChannelStartError {
     #[error("agent offline")]
     Offline,
-    #[error("the agent does not support file channels")]
+    #[error("the agent does not support this channel")]
     Unsupported,
-    #[error("too many file channels")]
+    #[error("too many channels")]
     Busy,
 }
 
-impl FilesStartError {
+impl ChannelStartError {
     /// Close code + reason sent to the viewer.
-    pub fn viewer_close(self) -> (u16, &'static str) {
-        match self {
-            FilesStartError::Offline => (close::AGENT_OFFLINE, "agent offline"),
-            FilesStartError::Unsupported => (
+    pub fn viewer_close(self, kind: ChannelKind) -> (u16, &'static str) {
+        match (self, kind) {
+            (ChannelStartError::Offline, _) => (close::AGENT_OFFLINE, "agent offline"),
+            (ChannelStartError::Unsupported, ChannelKind::Files) => (
                 close::UNSUPPORTED,
                 "the agent does not support file transfer",
             ),
-            FilesStartError::Busy => (close::TRY_AGAIN_LATER, "too many file channels"),
+            (ChannelStartError::Unsupported, ChannelKind::Terminal) => {
+                (close::UNSUPPORTED, "the agent does not offer a terminal")
+            }
+            (ChannelStartError::Busy, ChannelKind::Files) => {
+                (close::TRY_AGAIN_LATER, "too many file channels")
+            }
+            (ChannelStartError::Busy, ChannelKind::Terminal) => {
+                (close::TRY_AGAIN_LATER, "too many terminals")
+            }
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            FilesStartError::Offline => "agent_offline",
-            FilesStartError::Unsupported => "unsupported",
-            FilesStartError::Busy => "busy",
+            ChannelStartError::Offline => "agent_offline",
+            ChannelStartError::Unsupported => "unsupported",
+            ChannelStartError::Busy => "busy",
         }
     }
 }
@@ -268,6 +331,23 @@ struct AgentInfo {
     state: AgentState,
     /// The agent listed `files` in `register.caps`.
     files: bool,
+    /// The agent listed `terminal` in `register.caps`.
+    terminal: bool,
+}
+
+impl AgentInfo {
+    fn supports(&self, kind: ChannelKind) -> bool {
+        match kind {
+            ChannelKind::Files => self.files,
+            ChannelKind::Terminal => self.terminal,
+        }
+    }
+}
+
+/// A side channel and what kind it is.
+struct Channel {
+    kind: ChannelKind,
+    s: Session,
 }
 
 #[derive(Default)]
@@ -284,19 +364,19 @@ struct Machine {
     /// Online since / offline since, Unix ms.
     since_ms: Option<u64>,
     session: Option<Session>,
-    /// File channels, pending and joined (at most [`MAX_FILE_CHANNELS`]).
-    files: Vec<Session>,
+    /// Side channels, pending and joined (at most [`ChannelKind::max`] of each kind).
+    channels: Vec<Channel>,
 }
 
 impl Machine {
-    /// End a session and file channels that have not been joined yet: their agent connection
+    /// End a session and side channels that have not been joined yet: their agent connection
     /// is gone.
     fn fail_pending_session(&mut self) {
         if let Some(s) = self.session.as_mut().filter(|s| !s.joined) {
             s.signal_end(EndReason::AgentOffline);
         }
-        for f in self.files.iter_mut().filter(|f| !f.joined) {
-            f.signal_end(EndReason::AgentOffline);
+        for c in self.channels.iter_mut().filter(|c| !c.s.joined) {
+            c.s.signal_end(EndReason::AgentOffline);
         }
     }
 }
@@ -330,6 +410,8 @@ pub struct MachineView {
     pub update: Option<UpdateStatus>,
     /// The agent supports file channels (`files` in `register.caps`; docs/files.md).
     pub files: bool,
+    /// The agent offers a terminal (`terminal` in `register.caps`; docs/terminal.md).
+    pub terminal: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -393,7 +475,8 @@ impl Registry {
             os: reg.os,
             agent_version: reg.agent_version,
             state: reg.state,
-            files: reg.caps.iter().any(|c| c == agent_caps::FILES),
+            files: reg.caps.iter().any(|c| c == ChannelKind::Files.cap()),
+            terminal: reg.caps.iter().any(|c| c == ChannelKind::Terminal.cap()),
         });
         m.update = None;
         m.since_ms = Some(unix_ms());
@@ -417,8 +500,8 @@ impl Registry {
         if let Some(s) = m.session.as_mut() {
             s.signal_end(EndReason::AgentOffline);
         }
-        for f in &mut m.files {
-            f.signal_end(EndReason::AgentOffline);
+        for c in &mut m.channels {
+            c.s.signal_end(EndReason::AgentOffline);
         }
         if forget {
             inner.machines.remove(machine);
@@ -666,46 +749,46 @@ impl Registry {
         }
     }
 
-    /// Start a file channel for a viewer. Never touches the screen session.
-    pub fn start_files(
+    /// Start a side channel for a viewer. Never touches the screen session or other channels.
+    pub fn start_channel(
         &self,
+        kind: ChannelKind,
         machine: &str,
         user: &str,
         client_ip: &str,
         dial_timeout: std::time::Duration,
-    ) -> Result<SessionHandle, FilesStartError> {
+    ) -> Result<SessionHandle, ChannelStartError> {
         let mut inner = self.inner.lock();
         let m = inner
             .machines
             .get_mut(machine)
-            .ok_or(FilesStartError::Offline)?;
-        let agent = m.agent.as_ref().ok_or(FilesStartError::Offline)?;
-        if !m.info.as_ref().is_some_and(|i| i.files) {
-            return Err(FilesStartError::Unsupported);
+            .ok_or(ChannelStartError::Offline)?;
+        let agent = m.agent.as_ref().ok_or(ChannelStartError::Offline)?;
+        if !m.info.as_ref().is_some_and(|i| i.supports(kind)) {
+            return Err(ChannelStartError::Unsupported);
         }
-        if m.files.len() >= MAX_FILE_CHANNELS {
-            return Err(FilesStartError::Busy);
+        if m.channels.iter().filter(|c| c.kind == kind).count() >= kind.max() {
+            return Err(ChannelStartError::Busy);
         }
         let id = new_session_id();
-        let request = GatewayToAgent::FilesRequest {
-            channel: id.clone(),
-            user: user.to_owned(),
-            client_ip: client_ip.to_owned(),
-        };
+        let request = kind.request(id.clone(), user.to_owned(), client_ip.to_owned());
         if !send_control(machine, agent, request) {
-            return Err(FilesStartError::Offline);
+            return Err(ChannelStartError::Offline);
         }
         let (deliver_tx, deliver_rx) = oneshot::channel();
         let (end_tx, end_rx) = oneshot::channel();
         let deadline = Instant::now() + dial_timeout;
-        m.files.push(Session {
-            id: id.clone(),
-            user: user.to_owned(),
-            since_ms: unix_ms(),
-            end: Some(end_tx),
-            deliver: Some(deliver_tx),
-            deadline,
-            joined: false,
+        m.channels.push(Channel {
+            kind,
+            s: Session {
+                id: id.clone(),
+                user: user.to_owned(),
+                since_ms: unix_ms(),
+                end: Some(end_tx),
+                deliver: Some(deliver_tx),
+                deadline,
+                joined: false,
+            },
         });
         Ok(SessionHandle {
             id,
@@ -715,52 +798,54 @@ impl Registry {
         })
     }
 
-    /// An agent dialed `/ws/agent/files/{channel}`: hand out the delivery slot if the channel is
-    /// pending, not expired and (when known) belongs to `machine`.
-    pub fn claim_files(
+    /// An agent dialed `/ws/agent/files/{channel}` or `/ws/agent/terminal/{channel}`: hand out
+    /// the delivery slot if the channel is of that `kind`, pending, not expired and (when
+    /// known) belongs to `machine`.
+    pub fn claim_channel(
         &self,
+        kind: ChannelKind,
         channel: &str,
         machine: Option<&str>,
     ) -> Result<(String, oneshot::Sender<WebSocket>), ClaimError> {
         let mut inner = self.inner.lock();
-        let (name, f) = inner
+        let (name, c) = inner
             .machines
             .iter_mut()
             .find_map(|(name, m)| {
-                m.files
+                m.channels
                     .iter_mut()
-                    .find(|f| f.id == channel)
-                    .map(|f| (name, f))
+                    .find(|c| c.kind == kind && c.s.id == channel)
+                    .map(|c| (name, c))
             })
             .ok_or(ClaimError::Unknown)?;
         if machine.is_some_and(|want| want != name) {
             return Err(ClaimError::WrongMachine);
         }
-        if Instant::now() > f.deadline {
+        if Instant::now() > c.s.deadline {
             return Err(ClaimError::Expired);
         }
-        let deliver = f.deliver.take().ok_or(ClaimError::AlreadyClaimed)?;
+        let deliver = c.s.deliver.take().ok_or(ClaimError::AlreadyClaimed)?;
         Ok((name.clone(), deliver))
     }
 
-    /// Mark a file channel as joined; returns the agent's current state.
-    pub fn activate_files(&self, machine: &str, channel: &str) -> AgentState {
+    /// Mark a side channel as joined; returns the agent's current state.
+    pub fn activate_channel(&self, machine: &str, channel: &str) -> AgentState {
         let mut inner = self.inner.lock();
         let Some(m) = inner.machines.get_mut(machine) else {
             return AgentState::default();
         };
-        if let Some(f) = m.files.iter_mut().find(|f| f.id == channel) {
-            f.joined = true;
+        if let Some(c) = m.channels.iter_mut().find(|c| c.s.id == channel) {
+            c.s.joined = true;
         }
         m.info.as_ref().map(|i| i.state).unwrap_or_default()
     }
 
-    /// The viewer task is done with a file channel: free its slot. The agent learns from its
+    /// The viewer task is done with a side channel: free its slot. The agent learns from its
     /// socket closing.
-    pub fn finish_files(&self, machine: &str, channel: &str) {
+    pub fn finish_channel(&self, machine: &str, channel: &str) {
         let mut inner = self.inner.lock();
         if let Some(m) = inner.machines.get_mut(machine) {
-            m.files.retain(|f| f.id != channel);
+            m.channels.retain(|c| c.s.id != channel);
         }
     }
 
@@ -800,6 +885,7 @@ impl Registry {
                 recovery: cfg.map(|c| c.recovery.clone()).unwrap_or_default(),
                 update: m.and_then(|m| m.update.clone()),
                 files: info.is_some_and(|i| i.files),
+                terminal: info.is_some_and(|i| i.terminal),
             }
         };
         let configured = |id: &str| self.configured.iter().any(|c| c.machine == id);
@@ -853,14 +939,16 @@ mod tests {
         let r = Registry::new(vec![]);
         let dial = Duration::from_secs(10);
         assert_eq!(
-            r.start_files("mbp", "a@x", "ip", dial).unwrap_err(),
-            FilesStartError::Offline
+            r.start_channel(ChannelKind::Files, "mbp", "a@x", "ip", dial)
+                .unwrap_err(),
+            ChannelStartError::Offline
         );
         let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
         r.register_agent(reg("mbp"), tx);
         assert_eq!(
-            r.start_files("mbp", "a@x", "ip", dial).unwrap_err(),
-            FilesStartError::Unsupported
+            r.start_channel(ChannelKind::Files, "mbp", "a@x", "ip", dial)
+                .unwrap_err(),
+            ChannelStartError::Unsupported
         );
         assert!(!r.machines(&[])[0].files);
 
@@ -868,11 +956,15 @@ mod tests {
         r.register_agent(reg_files("mbp"), tx);
         assert!(r.machines(&[])[0].files);
         let handles: Vec<_> = (0..MAX_FILE_CHANNELS)
-            .map(|_| r.start_files("mbp", "a@x", "1.2.3.4", dial).unwrap())
+            .map(|_| {
+                r.start_channel(ChannelKind::Files, "mbp", "a@x", "1.2.3.4", dial)
+                    .unwrap()
+            })
             .collect();
         assert_eq!(
-            r.start_files("mbp", "a@x", "ip", dial).unwrap_err(),
-            FilesStartError::Busy
+            r.start_channel(ChannelKind::Files, "mbp", "a@x", "ip", dial)
+                .unwrap_err(),
+            ChannelStartError::Busy
         );
         let msgs: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert_eq!(msgs.len(), MAX_FILE_CHANNELS);
@@ -887,22 +979,33 @@ mod tests {
         // Claiming: the right machine, once; file channel ids are not session ids.
         let id = &handles[1].id;
         assert_eq!(
-            r.claim_files(id, Some("other")).unwrap_err(),
+            r.claim_channel(ChannelKind::Files, id, Some("other"))
+                .unwrap_err(),
             ClaimError::WrongMachine
         );
         assert!(r.claim_pending(id, Some("mbp")).is_err());
-        assert_eq!(r.claim_files(id, Some("mbp")).unwrap().0, "mbp");
         assert_eq!(
-            r.claim_files(id, Some("mbp")).unwrap_err(),
+            r.claim_channel(ChannelKind::Files, id, Some("mbp"))
+                .unwrap()
+                .0,
+            "mbp"
+        );
+        assert_eq!(
+            r.claim_channel(ChannelKind::Files, id, Some("mbp"))
+                .unwrap_err(),
             ClaimError::AlreadyClaimed
         );
         assert_eq!(
-            r.claim_files("nope", None).unwrap_err(),
+            r.claim_channel(ChannelKind::Files, "nope", None)
+                .unwrap_err(),
             ClaimError::Unknown
         );
         // A finished channel frees its slot.
-        r.finish_files("mbp", &handles[0].id);
-        assert!(r.start_files("mbp", "a@x", "ip", dial).is_ok());
+        r.finish_channel("mbp", &handles[0].id);
+        assert!(
+            r.start_channel(ChannelKind::Files, "mbp", "a@x", "ip", dial)
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -913,7 +1016,9 @@ mod tests {
         r.register_agent(reg_files("mbp"), tx);
         let session = r.start_session("mbp", "a@x", "ip", dial).unwrap();
         let mut session_end = session.end;
-        let files = r.start_files("mbp", "b@x", "ip", dial).unwrap();
+        let files = r
+            .start_channel(ChannelKind::Files, "mbp", "b@x", "ip", dial)
+            .unwrap();
         let mut files_end = files.end;
         assert!(
             session_end.try_recv().is_err(),
@@ -925,7 +1030,7 @@ mod tests {
             files_end.try_recv().is_err(),
             "a session ended a file channel"
         );
-        r.finish_files("mbp", &files.id);
+        r.finish_channel("mbp", &files.id);
         assert!(r.machines(&[])[0].viewer.is_some());
     }
 
@@ -935,11 +1040,16 @@ mod tests {
         let dial = Duration::from_secs(10);
         let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
         let (id, _kick) = r.register_agent(reg_files("mbp"), tx);
-        let joined = r.start_files("mbp", "a@x", "ip", dial).unwrap();
+        let joined = r
+            .start_channel(ChannelKind::Files, "mbp", "a@x", "ip", dial)
+            .unwrap();
         let mut joined_end = joined.end;
-        r.claim_files(&joined.id, Some("mbp")).unwrap();
-        r.activate_files("mbp", &joined.id);
-        let pending = r.start_files("mbp", "a@x", "ip", dial).unwrap();
+        r.claim_channel(ChannelKind::Files, &joined.id, Some("mbp"))
+            .unwrap();
+        r.activate_channel("mbp", &joined.id);
+        let pending = r
+            .start_channel(ChannelKind::Files, "mbp", "a@x", "ip", dial)
+            .unwrap();
         let mut pending_end = pending.end;
         assert!(r.unregister_agent("mbp", id));
         assert_eq!(pending_end.try_recv().unwrap(), EndReason::AgentOffline);
@@ -960,11 +1070,18 @@ mod tests {
         let (tx, _rx) = mpsc::channel(CONTROL_QUEUE);
         r.register_agent(reg_files("mbp"), tx);
         let h = r
-            .start_files("mbp", "a@x", "ip", Duration::from_millis(0))
+            .start_channel(
+                ChannelKind::Files,
+                "mbp",
+                "a@x",
+                "ip",
+                Duration::from_millis(0),
+            )
             .unwrap();
         tokio::time::sleep(Duration::from_millis(5)).await;
         assert_eq!(
-            r.claim_files(&h.id, Some("mbp")).unwrap_err(),
+            r.claim_channel(ChannelKind::Files, &h.id, Some("mbp"))
+                .unwrap_err(),
             ClaimError::Expired
         );
     }
