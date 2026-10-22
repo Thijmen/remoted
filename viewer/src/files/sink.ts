@@ -19,6 +19,11 @@ export interface DownloadSink {
   truncate(): Promise<void>;
   /** Hand the finished file to the browser's download as `name`. */
   save(name: string): Promise<void>;
+  /**
+   * The finished file, typed `type`, to show in the page (a preview). It stays readable until
+   * `discard()`, which the caller must call once done with it.
+   */
+  open(type: string): Promise<Blob>;
   discard(): Promise<void>;
 }
 
@@ -142,7 +147,14 @@ class OpfsSink implements DownloadSink {
     }, KEEP_AFTER_SAVE_MS);
   }
 
+  async open(type: string): Promise<Blob> {
+    await this.writable.close();
+    // A Blob made from a File points at the same bytes on disk: no copy.
+    return new Blob([await this.handle.getFile()], { type });
+  }
+
   async discard(): Promise<void> {
+    // Already closed by `open`: aborting then fails, which is fine.
     await this.writable.abort().catch(() => undefined);
     await this.dir.removeEntry(this.name).catch(() => undefined);
     this.unlock();
@@ -173,6 +185,12 @@ class MemorySink implements DownloadSink {
     saveBlob(new Blob(this.parts as Uint8Array<ArrayBuffer>[]), name);
     this.parts = [];
     return Promise.resolve();
+  }
+
+  open(type: string): Promise<Blob> {
+    const blob = new Blob(this.parts as Uint8Array<ArrayBuffer>[], { type });
+    this.parts = [];
+    return Promise.resolve(blob);
   }
 
   discard(): Promise<void> {

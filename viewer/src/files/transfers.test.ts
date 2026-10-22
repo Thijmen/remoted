@@ -42,6 +42,7 @@ class FakeAgent {
   frames = 0;
   writes: Array<Extract<FilesViewerMsg, { t: 'write' }>> = [];
   saved = new Map<string, Uint8Array>();
+  discarded = 0;
   manager!: TransferManager;
   private nextId = 1;
   private seq = 1;
@@ -210,7 +211,10 @@ class FakeAgent {
       save: async (name: string) => {
         this.saved.set(name, new Uint8Array(parts));
       },
-      discard: async () => undefined,
+      open: async (type: string) => new Blob([new Uint8Array(parts)], { type }),
+      discard: async () => {
+        this.discarded++;
+      },
     };
     return sink;
   };
@@ -393,6 +397,58 @@ describe('TransferManager downloads', () => {
     m.download(['/src/none'], { zip: false, name: 'none', folder: false });
     const [v] = await settle(m);
     expect(v).toMatchObject({ state: 'failed', error: 'Not found' });
+  });
+});
+
+describe('TransferManager previews', () => {
+  it('hands the file to the page, typed, without listing it', async () => {
+    const { agent, m } = setup();
+    agent.files.set('/src/p.png', bytes(4200, 8));
+    const seen: Array<number | null> = [];
+    const req = m.preview('/src/p.png', 'image/png', (p) => seen.push(p.total));
+    expect(m.views()).toEqual([]);
+    expect(m.working).toBe(false);
+    const file = await req.result;
+    expect(file.blob.type).toBe('image/png');
+    expect(new Uint8Array(await file.blob.arrayBuffer())).toEqual(bytes(4200, 8));
+    expect(seen.at(-1)).toBe(4200);
+    expect(agent.discarded).toBe(0);
+    file.release();
+    expect(agent.discarded).toBe(1);
+    expect(m.views()).toEqual([]);
+  });
+
+  it('goes before a running download, which then continues where it was', async () => {
+    const { agent, m } = setup();
+    agent.files.set('/src/big.bin', bytes(30_000, 2));
+    agent.files.set('/src/v.mp4', bytes(5000, 3));
+    m.download(['/src/big.bin'], { zip: false, name: 'big.bin', folder: false });
+    await settle(m, (v) => v[0]!.bytesDone >= 3000);
+    const file = await m.preview('/src/v.mp4', 'video/mp4', () => undefined).result;
+    expect(new Uint8Array(await file.blob.arrayBuffer())).toEqual(bytes(5000, 3));
+    // Not finished yet: it stepped aside for the preview.
+    expect(agent.saved.has('big.bin')).toBe(false);
+    const [v] = await settle(m);
+    expect(v).toMatchObject({ state: 'done', bytesDone: 30_000 });
+    expect(agent.saved.get('big.bin')).toEqual(bytes(30_000, 2));
+  });
+
+  it('rejects when cancelled or when the file is missing', async () => {
+    const { agent, m } = setup();
+    agent.files.set('/src/a.mp3', bytes(20_000, 1));
+    const req = m.preview('/src/a.mp3', 'audio/mpeg', () => undefined);
+    await new Promise((r) => setTimeout(r, 3));
+    req.cancel();
+    await expect(req.result).rejects.toMatchObject({ code: 'cancelled' });
+    await expect(m.preview('/src/none.jpg', 'image/jpeg', () => undefined).result).rejects.toMatchObject({
+      code: 'io',
+      message: 'Not found',
+    });
+    // The channel still works for what comes next.
+    agent.files.set('/src/b.bin', bytes(100, 9));
+    m.download(['/src/b.bin'], { zip: false, name: 'b.bin', folder: false });
+    await settle(m);
+    expect(agent.saved.get('b.bin')).toEqual(bytes(100, 9));
   });
 });
 
