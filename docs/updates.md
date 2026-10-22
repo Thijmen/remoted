@@ -216,16 +216,27 @@ install in a temporary folder, with its own LaunchAgent label, never touches the
 ## Beta builds
 
 For testing a pull request on a real machine, a maintainer comments `/beta` on it. The Beta
-workflow (`.github/workflows/beta.yml`) builds the Windows agent from that PR's head and
-publishes it as a prerelease, `agent-vX.Y.Z-beta.<run>`:
+workflow (`.github/workflows/beta.yml`) builds the agent from that PR's head for Windows and
+macOS and publishes it as a prerelease, `agent-vX.Y.Z-beta.<run>`. `/beta windows` or
+`/beta mac` builds only one of them.
 
 - maintainers only (`OWNER`, `MEMBER` or `COLLABORATOR`), and pull requests from this
   repository (not forks);
-- Windows x64 only, unsigned: the build has no signing secret, so the PR's code cannot take
-  it, and SmartScreen asks once;
+- the jobs that build the PR's code get no secrets, so the PR cannot take them;
+- Windows x64, unsigned: SmartScreen asks once. Download
+  `rd-agent-<version>-windows-x64-setup.exe` from the prerelease and run it; run the previous
+  installer to go back;
+- macOS universal: built ad hoc, then signed with the project's certificate by a separate job
+  that runs nothing from the PR (it only calls `codesign` on the built app), so Screen
+  Recording and Accessibility stay granted, as with an update. Unzip
+  `rd-agent-<version>-macos-universal.zip`, replace `/Applications/RD Agent.app` with it, clear
+  the download mark (`xattr -dr com.apple.quarantine "/Applications/RD Agent.app"`) and run
+  `"/Applications/RD Agent.app/Contents/MacOS/rd-agent" setup` (Enter keeps the configuration).
+  Do the same with the previous release's zip to go back;
 - the stable `agent.json` manifest is not updated, so installed agents never offer a beta.
-  Download `rd-agent-<version>-windows-x64-setup.exe` from the prerelease and run it by hand;
-  run the previous installer to go back.
+
+The comment runs the workflow as it is on `main`: a change to `beta.yml` takes effect once it
+is merged.
 
 Beta builds have no `CHANGELOG.md` section: the release notes name the pull request and
 commit.
