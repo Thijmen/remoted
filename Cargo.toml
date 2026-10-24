@@ -30,10 +30,10 @@ thiserror = "2"
 bytes = "1.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
+base64 = "0.23"
 hex = "0.4"
-rand = "0.9"
-parking_lot = "0.12"
+rand = "0.10"
+parking_lot = "0.13"
 crossbeam-channel = "0.5"
 libc = "0.2"
 socket2 = { version = "0.6", features = ["all"] }
@@ -46,7 +46,7 @@ url = "2"
 
 tokio = { version = "1.53", features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal", "io-util"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 # rd-agent's updater: a small blocking HTTP client (rustls + ring, webpki roots; no aws-lc) and
 # minisign verification as tauri-plugin-updater does it.
@@ -54,9 +54,9 @@ ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 minisign-verify = "0.3"
 
 axum = { version = "0.8.9", features = ["ws", "macros"] }
-tower-http = { version = "0.6", features = ["set-header", "trace"] }
+tower-http = { version = "0.7", features = ["set-header", "trace"] }
 rust-embed = { version = "8.13", features = ["mime-guess"] }
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2.6"
 governor = "0.10"
 
