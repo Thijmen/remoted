@@ -44,6 +44,8 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
    `caps` (optional, added after gw_proto 1 shipped; older gateways ignore it): what the agent
    supports beyond screen sessions. `files`: file channels. `terminal`: terminal channels
    ([terminal.md](terminal.md); only while the terminal is enabled in the agent's config).
+   `text`: Unicode text input (`TEXT`, see Keys); without it the viewer does not offer its
+   soft-keyboard button.
 2. Gateway → `{"t":"registered","gw_proto":1}`. A newer registration for the same machine replaces the old
    socket (old one closed with code 4009).
 3. Agent → `{"t":"state", ...AgentState}` whenever lock/perms/in_session/secure/disconnected
@@ -122,7 +124,10 @@ Compatibility: both messages are additive and `gw_proto` stays 1. Older gateways
 2. Gateway sends `session_request` to the agent; waits ≤ 10 s for the data WS (else close viewer **4004**).
 3. Gateway joins the sockets and sends the viewer `{"t":"session","machine":"mbp","session":"…","agent":{AgentState}}`.
 4. Viewer → agent `{"t":"hello","proto":1,"min_proto":1,"viewer":{"ua":"…","dpr":2,"viewport":[1536,750],"decoders":{"avc":true,"hevc":false}}}`
-5. Agent → viewer `{"t":"hello","proto":1,"agent":{"os":"macos","version":"1.5.0","displays":[{"id":0,"w_pt":1728,"h_pt":1117,"scale":2.0}]},"caps":["audio","refine"]}`
+5. Agent → viewer `{"t":"hello","proto":1,"agent":{"os":"macos","version":"1.5.0","displays":[{"id":0,"w_pt":1728,"h_pt":1117,"scale":2.0}]},"caps":["text"]}`
+   `caps`: what this agent supports in the session; `text` means the viewer may send `TEXT`
+   (Unicode text from an IME). Older agents send an empty list, and the viewer then hides its
+   soft-keyboard button.
    (`proto = min(maxes)`; if incompatible agent sends `{"t":"error","code":"proto_mismatch"}` and closes 4005.)
 6. Viewer → `{"t":"start","width":1728,"height":1118,"fps":60,"codec":"avc","start_kbps":8000,"min_kbps":1000,"max_kbps":20000,"adaptive":true,"audio":false,"display":0}`
    `width`×`height` is a bounding box: the agent always streams the display's own aspect ratio,
@@ -316,3 +321,10 @@ Viewer: `KeyboardEvent.code` → HID. macOS: HID → kVK. Windows: HID → scanc
 injected with `SendInput`. The table follows the low-level keyboard hook's convention, which differs
 from injection for Num Lock (table `E0 45`, injected as `45`) and Pause (table `45`, injected as
 `VK_PAUSE`).
+
+**TEXT (`0x16`, viewer → agent, `[0x16][0]` then UTF-8).** Text committed by an IME or a phone
+soft keyboard. The agent types it as Unicode (`CGEventKeyboardSetUnicodeString` on macOS,
+`SendInput` with `KEYEVENTF_UNICODE` on Windows), so it is independent of the host's keyboard
+layout and works for accents, emoji and CJK. Shortcuts and named keys (`Enter`, arrows, …) stay
+on the KEY path: TEXT only carries what an IME committed. Agents advertise the `text` cap; old
+agents ignore the message, so the viewer does not send it to them.

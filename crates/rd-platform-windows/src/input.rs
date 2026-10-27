@@ -36,11 +36,11 @@ use tracing::{debug, warn};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSE_EVENT_FLAGS,
-    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
-    MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_CAPITAL, VK_PAUSE,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE,
+    MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
+    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_CAPITAL, VK_PAUSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -130,6 +130,8 @@ enum Synth {
 trait EventSink {
     /// Injects `events` together (one `SendInput` call).
     fn post(&mut self, events: &[Synth]);
+    /// Type `text` as Unicode: one `SendInput` call, no key table, layout or shortcuts involved.
+    fn text(&mut self, text: &str);
     /// Whether Caps Lock is on, if known.
     fn caps_lock(&self) -> Option<bool>;
     /// The pointer position, virtual-screen pixels.
@@ -172,6 +174,8 @@ impl InputState {
 
     fn apply(&mut self, ev: InputEvent, sink: &mut dyn EventSink) {
         match ev {
+            // Committed IME/soft-keyboard text: Unicode input, not scan codes.
+            InputEvent::Text(text) => sink.text(&text),
             // `buttons` mirrors the viewer's view; drags follow the buttons pressed here.
             InputEvent::MouseAbs { x, y, .. } => {
                 self.relative = false;
@@ -426,14 +430,14 @@ impl SendInputSink {
     }
 }
 
-impl EventSink for SendInputSink {
-    fn post(&mut self, events: &[Synth]) {
-        let inputs: Vec<INPUT> = events.iter().flat_map(|e| self.input(e)).collect();
+impl SendInputSink {
+    /// One `SendInput` call for `inputs`; counts the calls a secure desktop or elevated window blocked.
+    fn send(&mut self, inputs: &[INPUT]) {
         if inputs.is_empty() {
             return;
         }
         // SAFETY: a slice of fully initialised INPUTs of the size given.
-        let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+        let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
         if sent as usize != inputs.len() {
             self.blocked += 1;
             if self.blocked.is_power_of_two() {
@@ -446,6 +450,40 @@ impl EventSink for SendInputSink {
                 );
             }
         }
+    }
+}
+
+impl EventSink for SendInputSink {
+    fn post(&mut self, events: &[Synth]) {
+        let inputs: Vec<INPUT> = events.iter().flat_map(|e| self.input(e)).collect();
+        self.send(&inputs);
+    }
+
+    fn text(&mut self, text: &str) {
+        // Each UTF-16 unit (a surrogate pair included) as a down/up pair; the system combines them.
+        let mut inputs = Vec::with_capacity(text.len() * 2);
+        for unit in text.encode_utf16() {
+            for up in [false, true] {
+                inputs.push(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(0),
+                            wScan: unit,
+                            dwFlags: KEYEVENTF_UNICODE
+                                | if up {
+                                    KEYEVENTF_KEYUP
+                                } else {
+                                    KEYBD_EVENT_FLAGS(0)
+                                },
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                });
+            }
+        }
+        self.send(&inputs);
     }
 
     fn caps_lock(&self) -> Option<bool> {
@@ -560,6 +598,7 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         posted: Vec<Vec<Synth>>,
+        texts: Vec<String>,
         caps: bool,
         cursor: Option<(i32, i32)>,
     }
@@ -576,6 +615,9 @@ mod tests {
                 }
             }
             self.posted.push(events.to_vec());
+        }
+        fn text(&mut self, text: &str) {
+            self.texts.push(text.to_owned());
         }
         fn caps_lock(&self) -> Option<bool> {
             Some(self.caps)
@@ -604,6 +646,15 @@ mod tests {
             repeat: false,
             hid: hid_for_code(code).unwrap(),
         }
+    }
+
+    #[test]
+    fn text_goes_to_the_sink_and_not_the_key_path() {
+        let mut state = InputState::new(PRIMARY);
+        let mut r = Recorder::default();
+        state.apply(InputEvent::Text("héllo 👋".into()), &mut r);
+        assert_eq!(r.texts, vec!["héllo 👋".to_string()]);
+        assert!(r.posted.is_empty());
     }
 
     #[test]

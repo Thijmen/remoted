@@ -2562,3 +2562,19 @@ body.with-terminal .transfer-indicator {
     width: 44px;
   }
 }
+
+/* The hidden textarea that gives the phone's soft keyboard something to edit (ime.ts). It must
+   stay focusable and above the page for Android to show the keyboard, but invisible. */
+.ime-input {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  z-index: -1;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  font-size: 16px;
+  resize: none;
+}

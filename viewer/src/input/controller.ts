@@ -8,11 +8,13 @@ import {
   encodeMouseBtn,
   encodeMouseRel,
   encodeReleaseAll,
+  encodeText,
   encodeWheel,
 } from '../proto/bin';
 import type { ChordAction } from './chords';
 import { type Rect, normalizePoint } from './coords';
 import { DesktopBridge } from './desktop-bridge';
+import { ImeInput } from './ime';
 import { KeyboardForwarder } from './keyboard';
 import { type ModifierMapping, isMacViewer, isWindowsViewer } from './modifiers';
 import { NativeKeys } from './native-keys';
@@ -35,6 +37,8 @@ export interface InputCallbacks {
   pointerLockChanged(locked: boolean): void;
   /** The desktop app accepted or refused a keyboard grab (see `keyboardGrab`). */
   grabChanged?(): void;
+  /** The phone's soft keyboard opened or closed (the key bar shows its state). */
+  softKeyboardChanged?(): void;
 }
 
 /** The desktop app's keyboard grab, for the Troubleshoot screen. */
@@ -95,6 +99,8 @@ export class InputController {
   /** Touch gestures (tap, long press, drag, two-finger scroll) and the long-press timer. */
   private readonly touch = new TouchGestures();
   private touchTimer = 0;
+  /** The soft keyboard (IME) on a touch screen; it sends committed text as TEXT. */
+  private readonly ime: ImeInput;
 
   constructor(
     /** Element covering the video area (the canvas, CSS `object-fit: contain`). */
@@ -119,13 +125,22 @@ export class InputController {
       changed: () => this.cb.grabChanged?.(),
     });
     this.wheel = new WheelNormalizer(window.devicePixelRatio, opts.invertScroll);
+    this.ime = new ImeInput({
+      text: (text) => this.sendText(text),
+      key: (code) => this.sendImeKey(code),
+      changed: () => this.cb.softKeyboardChanged?.(),
+    });
+    document.body.append(this.ime.el);
     new ResizeObserver(() => this.updateRect()).observe(surface);
     this.attach();
   }
 
   /** Forward input only while streaming. Disabling releases everything. */
   setEnabled(on: boolean): void {
-    if (this.enabled && !on) this.releaseAll();
+    if (this.enabled && !on) {
+      this.ime.close();
+      this.releaseAll();
+    }
     const enabling = on && !this.enabled;
     this.enabled = on;
     // A new session's agent starts with Caps Lock off; match the local lock right away.
@@ -205,6 +220,31 @@ export class InputController {
   /** Is that modifier held on the remote side (for the key bar's pressed state)? */
   keyBarHeld(code: string): boolean {
     return this.keys.isPressed(code);
+  }
+
+  /** The phone's soft keyboard is open (it holds the focus in a hidden textarea). */
+  get softKeyboardOpen(): boolean {
+    return this.ime.open;
+  }
+
+  /** Open or close the soft keyboard; returns whether it is open now. */
+  toggleSoftKeyboard(): boolean {
+    if (!this.enabled) return false;
+    if (this.ime.open) this.ime.close();
+    else this.ime.openKeyboard();
+    return this.ime.open;
+  }
+
+  private sendText(text: string): void {
+    if (!this.enabled) return;
+    this.keys.flushPending();
+    this.sink.send(encodeText(text));
+  }
+
+  private sendImeKey(code: string): void {
+    if (!this.enabled) return;
+    this.keys.flushPending();
+    this.keys.tapCode(code);
   }
 
   async togglePointerLock(): Promise<void> {

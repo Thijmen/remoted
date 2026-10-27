@@ -77,6 +77,14 @@
   },
   {
     "fields": {
+      "text": "héllo 👋",
+      "type": "text"
+    },
+    "hex": "160068c3a96c6c6f20f09f918b",
+    "name": "text"
+  },
+  {
+    "fields": {
       "type": "release_all"
     },
     "hex": "1500",

@@ -7,6 +7,8 @@ export interface KeyBarDeps {
   toggle(code: string): boolean;
   /** Is the modifier held on the remote side? */
   held(code: string): boolean;
+  /** Toggle the phone's soft keyboard; returns whether it is open now. */
+  keyboard(): boolean;
 }
 
 interface Key {
@@ -56,9 +58,24 @@ export class KeyBar {
   private readonly buttons = new Map<string, HTMLButtonElement>();
   private readonly modifiers = new Set<string>();
   private readonly metaButton: HTMLButtonElement;
+  /** The soft-keyboard toggle; hidden until the agent advertises `text`. */
+  private readonly keyboardButton: HTMLButtonElement;
 
   constructor(private readonly deps: KeyBarDeps) {
     const row = h('div', { className: 'key-bar-row' });
+    this.keyboardButton = h(
+      'button',
+      { type: 'button', className: 'key-bar-key key-bar-keyboard', tabIndex: -1, title: 'Keyboard', hidden: true },
+      '⌨',
+    );
+    this.keyboardButton.setAttribute('aria-label', 'Keyboard');
+    this.keyboardButton.setAttribute('aria-pressed', 'false');
+    this.keyboardButton.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      this.setKeyboardOpen(this.deps.keyboard());
+    });
+    this.keyboardButton.addEventListener('click', (e) => e.preventDefault());
+    row.append(this.keyboardButton);
     for (const key of [CTRL, ALT, SHIFT, META]) row.append(this.button(key));
     for (const key of MAIN) row.append(this.button(key));
     this.metaButton = this.buttons.get(META.code)!;
@@ -85,6 +102,17 @@ export class KeyBar {
     this.metaButton.setAttribute('aria-label', mac ? 'Command' : 'Windows');
   }
 
+  /** Only an agent that advertises `text` can type committed text; hide the button otherwise. */
+  setTextAvailable(on: boolean): void {
+    this.keyboardButton.hidden = !on;
+    if (!on) this.setKeyboardOpen(false);
+  }
+
+  setKeyboardOpen(on: boolean): void {
+    this.keyboardButton.classList.toggle('on', on);
+    this.keyboardButton.setAttribute('aria-pressed', String(on));
+  }
+
   show(on: boolean): void {
     this.el.hidden = !on;
     if (on) this.sync();
@@ -93,6 +121,7 @@ export class KeyBar {
   /** A new session (or a disconnect): nothing is held, and the Fn row is closed. */
   reset(): void {
     this.sync();
+    this.setKeyboardOpen(false);
     this.fnRow.hidden = true;
     this.el.querySelector('.key-bar-fn-toggle')?.classList.remove('on');
   }

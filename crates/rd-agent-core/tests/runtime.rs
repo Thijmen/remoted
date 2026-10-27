@@ -57,6 +57,7 @@ async fn session_request_dials_and_negotiates_hello() {
         .await;
     let hello = viewer.expect("hello").await;
     assert_eq!(hello["proto"], 1);
+    assert_eq!(hello["caps"], json!(["text"]));
     assert_eq!(hello["agent"]["os"], "fakeos");
     assert_eq!(hello["agent"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(
@@ -326,7 +327,7 @@ async fn input_keeps_its_order_and_is_released_when_the_session_ends() {
                 phase: ScrollPhase::Changed,
             },
         };
-        sent.push(ev);
+        sent.push(ev.clone());
         send_bin(&mut viewer.ws, ev.to_message()).await;
     }
     send_bin(&mut viewer.ws, InputEvent::ReleaseAll.to_message()).await;

@@ -4,10 +4,11 @@ rd Desktop also builds for Android: the same crate and setup page as the desktop
 system WebView. It is a **client** — a phone or tablet that controls your Mac or PC. It is not
 an rd agent for Android.
 
-**Status: spike.** The app builds, installs, shows the setup page and loads the gateway. The
-touch layer, soft-keyboard input, the phone layout, immersive mode, the back button and APK
-updates are not in yet, and nothing is released: this is only enough to check that the WebView
-decodes the stream, that Authentik works inside it, and how the soft keyboard behaves.
+**Status: in progress.** The app builds, installs, shows the setup page and loads the gateway.
+The viewer already has a touch layer (tap, long-press right click, drag, two-finger scroll), an
+on-screen key bar (sticky modifiers, arrows, F1–F12) and soft-keyboard text via the `TEXT` wire
+message. Immersive mode, the back button, changing the gateway in-app and APK updates are not in
+yet, and nothing is released.
 
 ## Build
 

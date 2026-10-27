@@ -118,6 +118,7 @@ export class ViewerApp {
     tap: (code) => this.input.keyBarTap(code),
     toggle: (code) => this.input.keyBarToggle(code),
     held: (code) => this.input.keyBarHeld(code),
+    keyboard: () => this.input.toggleSoftKeyboard(),
   });
   private readonly latency: LatencyTest;
   private audio: AudioPlayer | null = null;
@@ -167,6 +168,8 @@ export class ViewerApp {
           // "auto" modifier mapping depends on the agent's OS.
           this.input.setOptions(this.inputOptions(this.settings));
           this.keyBar.setMeta(m.agent.os);
+          // Old agents cannot type committed text; the viewer hides the keyboard button then.
+          this.keyBar.setTextAvailable(m.caps.includes('text'));
           this.refreshToolbar();
         },
         control: (m) => this.onControl(m),
@@ -197,6 +200,7 @@ export class ViewerApp {
             locked ? { level: 'info', text: 'Pointer locked — press Esc to release.' } : null,
           ),
         grabChanged: () => this.onGrabChanged(),
+        softKeyboardChanged: () => this.keyBar.setKeyboardOpen(this.input.softKeyboardOpen),
       },
       this.inputOptions(this.settings),
     );

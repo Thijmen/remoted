@@ -362,6 +362,9 @@ pub mod agent_caps {
     /// Terminal channels (`terminal_request`, docs/terminal.md). Not listed when the terminal
     /// is turned off in the agent's config or the OS has no pseudo console.
     pub const TERMINAL: &str = "terminal";
+    /// Unicode text input (`InputEvent::Text`): the viewer may send committed IME/soft-keyboard
+    /// text. Old agents do not list it, and the viewer hides its keyboard button then.
+    pub const TEXT: &str = "text";
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
