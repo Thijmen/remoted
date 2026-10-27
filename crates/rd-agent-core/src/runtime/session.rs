@@ -22,6 +22,7 @@ use parking_lot::Mutex;
 use rd_proto::bin::{self, BinMsg, Ping};
 use rd_proto::control::{
     AgentInfo, AgentMsg, AgentStats, StreamParams, StreamParamsPatch, ViewerInfo, ViewerMsg,
+    agent_caps,
 };
 use rd_proto::{MIN_PROTO_VERSION, PROTO_VERSION, close};
 use tokio::sync::mpsc::error::TrySendError;
@@ -487,7 +488,10 @@ impl Session {
                 version: self.ctx.version.clone(),
                 displays: platform.displays(),
             },
-            caps: Vec::new(),
+            // What the viewer can use in this session: `text` for the phone keyboard. Old
+            // viewers ignore unknown caps, and old agents send none, so the viewer hides its
+            // keyboard button instead of sending TEXT that would be dropped.
+            caps: vec![agent_caps::TEXT.to_owned()],
         });
         self.out.json(&AgentMsg::State(*self.ctx.state.borrow()));
         if let Some(e) = &self.input_error {

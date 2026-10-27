@@ -236,6 +236,8 @@ enum Synth {
 /// Where synthesized events go.
 trait EventSink: Send {
     fn post(&mut self, event: &Synth);
+    /// Type `text` as Unicode (an IME or soft keyboard committed it). Not logged by content.
+    fn text(&mut self, text: &str);
     /// The current global cursor position, if this sink can tell.
     fn cursor_location(&self) -> Option<CGPoint>;
 }
@@ -290,6 +292,8 @@ impl InputState {
 
     fn apply(&mut self, ev: InputEvent, now: Instant, sink: &mut dyn EventSink) {
         match ev {
+            // Unicode text bypasses the key table and the layout, like an IME would.
+            InputEvent::Text(text) => sink.text(&text),
             // `buttons` mirrors the viewer's view. Drags follow the buttons actually pressed
             // here, so the host never sees a drag without its mouse-down.
             InputEvent::MouseAbs { x, y, .. } => {
@@ -639,6 +643,28 @@ impl EventSink for CgSink {
         }
     }
 
+    fn text(&mut self, text: &str) {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        if units.is_empty() {
+            return;
+        }
+        for down in [true, false] {
+            let Some(event) = CGEvent::new_keyboard_event(Some(&self.source.0), 0, down) else {
+                warn!("could not create a Unicode key event");
+                return;
+            };
+            // SAFETY: `units` outlives the call and its length is passed with it.
+            unsafe {
+                CGEvent::keyboard_set_unicode_string(
+                    Some(&event),
+                    units.len() as _,
+                    units.as_ptr(),
+                );
+            }
+            CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
+        }
+    }
+
     fn cursor_location(&self) -> Option<CGPoint> {
         CGEvent::new(None).map(|event| CGEvent::location(Some(&event)))
     }
@@ -650,6 +676,11 @@ struct LogSink;
 impl EventSink for LogSink {
     fn post(&mut self, synth: &Synth) {
         debug!(event = ?synth, "input (dry run)");
+    }
+
+    fn text(&mut self, text: &str) {
+        // Never log what was typed.
+        debug!(chars = text.chars().count(), "text (dry run)");
     }
 
     fn cursor_location(&self) -> Option<CGPoint> {
@@ -884,6 +915,7 @@ mod tests {
     struct RecordingSink {
         events: Arc<Mutex<Vec<Synth>>>,
         cursor: Arc<Mutex<Option<CGPoint>>>,
+        texts: Arc<Mutex<Vec<String>>>,
     }
 
     impl RecordingSink {
@@ -898,6 +930,9 @@ mod tests {
     impl EventSink for RecordingSink {
         fn post(&mut self, event: &Synth) {
             self.events.lock().push(*event);
+        }
+        fn text(&mut self, text: &str) {
+            self.texts.lock().push(text.to_owned());
         }
         fn cursor_location(&self) -> Option<CGPoint> {
             *self.cursor.lock()
@@ -925,8 +960,13 @@ mod tests {
             self.state.apply(ev, self.now, &mut self.sink);
             self.sink.take()
         }
+        fn type_text(&mut self, text: &str) -> Vec<String> {
+            self.state
+                .apply(InputEvent::Text(text.into()), self.now, &mut self.sink);
+            std::mem::take(&mut *self.sink.texts.lock())
+        }
         fn one(&mut self, ev: InputEvent) -> Synth {
-            let events = self.send(ev);
+            let events = self.send(ev.clone());
             assert_eq!(events.len(), 1, "{ev:?} -> {events:?}");
             events[0]
         }
@@ -1075,6 +1115,14 @@ mod tests {
     }
 
     #[test]
+    fn text_is_typed_as_unicode_not_as_key_events() {
+        let mut h = Harness::new();
+        assert_eq!(h.type_text("héllo 👋"), vec!["héllo 👋".to_string()]);
+        // Nothing went through the key path (no synth event posted).
+        assert!(h.sink.take().is_empty());
+    }
+
+    #[test]
     fn injector_follows_the_published_capture_layout() {
         let sink = RecordingSink::default();
         let geometry = Arc::new(CaptureGeometry::default());
@@ -1114,7 +1162,7 @@ mod tests {
             x: 100,
             y: 100,
         };
-        assert_eq!(mouse(h.one(mv)).ty, CGEventType::MouseMoved);
+        assert_eq!(mouse(h.one(mv.clone())).ty, CGEventType::MouseMoved);
 
         let cases = [
             (MouseButton::Left, CGEventType::LeftMouseDragged, 0),
@@ -1125,20 +1173,20 @@ mod tests {
         ];
         for (button, dragged, number) in cases {
             h.button(button, true, 100, 100);
-            let m = mouse(h.one(mv));
+            let m = mouse(h.one(mv.clone()));
             assert_eq!(
                 (m.ty, m.button),
                 (dragged, CGMouseButton(number)),
                 "{button:?}"
             );
             h.button(button, false, 100, 100);
-            assert_eq!(mouse(h.one(mv)).ty, CGEventType::MouseMoved);
+            assert_eq!(mouse(h.one(mv.clone())).ty, CGEventType::MouseMoved);
         }
 
         // Left wins over right when both are held.
         h.button(MouseButton::Right, true, 100, 100);
         h.button(MouseButton::Left, true, 100, 100);
-        assert_eq!(mouse(h.one(mv)).ty, CGEventType::LeftMouseDragged);
+        assert_eq!(mouse(h.one(mv.clone())).ty, CGEventType::LeftMouseDragged);
     }
 
     #[test]

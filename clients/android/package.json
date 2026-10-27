@@ -1,0 +1,6 @@
+{
+  "name": "rd-android",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Android app's version. It is built from clients/desktop and released on its own android-v* channel (docs/android.md)."
+}

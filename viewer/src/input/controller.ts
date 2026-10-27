@@ -1,20 +1,24 @@
 import {
   type Bytes,
   MouseButton,
+  WheelMode,
   clampI16,
   encodeKey,
   encodeMouseAbs,
   encodeMouseBtn,
   encodeMouseRel,
   encodeReleaseAll,
+  encodeText,
   encodeWheel,
 } from '../proto/bin';
 import type { ChordAction } from './chords';
 import { type Rect, normalizePoint } from './coords';
 import { DesktopBridge } from './desktop-bridge';
+import { ImeInput } from './ime';
 import { KeyboardForwarder } from './keyboard';
 import { type ModifierMapping, isMacViewer, isWindowsViewer } from './modifiers';
 import { NativeKeys } from './native-keys';
+import { LONG_PRESS_MS, TouchGestures, type TouchAction } from './touch';
 import { WheelNormalizer } from './wheel';
 
 export interface InputSink {
@@ -33,6 +37,8 @@ export interface InputCallbacks {
   pointerLockChanged(locked: boolean): void;
   /** The desktop app accepted or refused a keyboard grab (see `keyboardGrab`). */
   grabChanged?(): void;
+  /** The phone's soft keyboard opened or closed (the key bar shows its state). */
+  softKeyboardChanged?(): void;
 }
 
 /** The desktop app's keyboard grab, for the Troubleshoot screen. */
@@ -90,6 +96,11 @@ export class InputController {
   private locked = false;
   private readonly wheel: WheelNormalizer;
   private wheelRaf = 0;
+  /** Touch gestures (tap, long press, drag, two-finger scroll) and the long-press timer. */
+  private readonly touch = new TouchGestures();
+  private touchTimer = 0;
+  /** The soft keyboard (IME) on a touch screen; it sends committed text as TEXT. */
+  private readonly ime: ImeInput;
 
   constructor(
     /** Element covering the video area (the canvas, CSS `object-fit: contain`). */
@@ -114,13 +125,22 @@ export class InputController {
       changed: () => this.cb.grabChanged?.(),
     });
     this.wheel = new WheelNormalizer(window.devicePixelRatio, opts.invertScroll);
+    this.ime = new ImeInput({
+      text: (text) => this.sendText(text),
+      key: (code) => this.sendImeKey(code),
+      changed: () => this.cb.softKeyboardChanged?.(),
+    });
+    document.body.append(this.ime.el);
     new ResizeObserver(() => this.updateRect()).observe(surface);
     this.attach();
   }
 
   /** Forward input only while streaming. Disabling releases everything. */
   setEnabled(on: boolean): void {
-    if (this.enabled && !on) this.releaseAll();
+    if (this.enabled && !on) {
+      this.ime.close();
+      this.releaseAll();
+    }
     const enabling = on && !this.enabled;
     this.enabled = on;
     // A new session's agent starts with Caps Lock off; match the local lock right away.
@@ -170,12 +190,61 @@ export class InputController {
     this.pendingMove = null;
     this.relX = this.relY = 0;
     this.wheel.reset();
+    clearTimeout(this.touchTimer);
+    this.touchTimer = 0;
+    // The agent already released everything (disconnect) or is about to (RELEASE_ALL).
+    this.touch.cancel();
   }
 
   /** Send a key press+release (used by the latency test). */
   tapKey(hid: number): void {
     this.sink.send(encodeKey(true, false, hid));
     this.sink.send(encodeKey(false, false, hid));
+  }
+
+  /** On-screen key bar: tap a key by its physical code (same mapping as a physical keyboard). */
+  keyBarTap(code: string): void {
+    if (!this.enabled) return;
+    this.keys.flushPending();
+    this.keys.tapCode(code);
+  }
+
+  /** On-screen key bar: toggle a sticky modifier; returns whether it is held now. */
+  keyBarToggle(code: string): boolean {
+    if (!this.enabled) return this.keys.isPressed(code);
+    this.keys.flushPending();
+    this.keys.toggleCode(code);
+    return this.keys.isPressed(code);
+  }
+
+  /** Is that modifier held on the remote side (for the key bar's pressed state)? */
+  keyBarHeld(code: string): boolean {
+    return this.keys.isPressed(code);
+  }
+
+  /** The phone's soft keyboard is open (it holds the focus in a hidden textarea). */
+  get softKeyboardOpen(): boolean {
+    return this.ime.open;
+  }
+
+  /** Open or close the soft keyboard; returns whether it is open now. */
+  toggleSoftKeyboard(): boolean {
+    if (!this.enabled) return false;
+    if (this.ime.open) this.ime.close();
+    else this.ime.openKeyboard();
+    return this.ime.open;
+  }
+
+  private sendText(text: string): void {
+    if (!this.enabled) return;
+    this.keys.flushPending();
+    this.sink.send(encodeText(text));
+  }
+
+  private sendImeKey(code: string): void {
+    if (!this.enabled) return;
+    this.keys.flushPending();
+    this.keys.tapCode(code);
   }
 
   async togglePointerLock(): Promise<void> {
@@ -205,7 +274,7 @@ export class InputController {
     s.addEventListener(moveEvent, (e) => this.onPointerMove(e as PointerEvent));
     s.addEventListener('pointerdown', (e) => this.onPointerButton(e));
     s.addEventListener('pointerup', (e) => this.onPointerButton(e));
-    s.addEventListener('pointercancel', () => this.releaseButtons());
+    s.addEventListener('pointercancel', (e) => this.onPointerCancel(e));
     s.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     // Browser default actions that would interfere: context menu, back/forward, middle-click scroll.
     for (const type of ['contextmenu', 'auxclick', 'mousedown', 'mouseup'] as const) {
@@ -271,12 +340,20 @@ export class InputController {
   // mouse
 
   private normalize(e: PointerEvent): { x: number; y: number } {
+    return this.normalizeAt(e.clientX, e.clientY);
+  }
+
+  private normalizeAt(clientX: number, clientY: number): { x: number; y: number } {
     if (this.videoW === 0) return this.pos;
-    return normalizePoint(e.clientX, e.clientY, this.rect, this.videoW, this.videoH);
+    return normalizePoint(clientX, clientY, this.rect, this.videoW, this.videoH);
   }
 
   private onPointerMove(e: PointerEvent): void {
     if (!this.enabled) return;
+    if (e.pointerType === 'touch') {
+      this.runTouch(this.touch.move({ id: e.pointerId, x: e.clientX, y: e.clientY }));
+      return;
+    }
     if (this.locked) {
       this.relX += e.movementX;
       this.relY += e.movementY;
@@ -296,6 +373,10 @@ export class InputController {
 
   private onPointerButton(e: PointerEvent): void {
     if (!this.enabled) return;
+    if (e.pointerType === 'touch') {
+      this.onTouchButton(e);
+      return;
+    }
     if (e.type === 'pointerdown') {
       e.preventDefault();
       this.surface.focus({ preventScroll: true });
@@ -329,6 +410,87 @@ export class InputController {
       this.sink.send(encodeMouseBtn(button, down, this.pos.x, this.pos.y));
     }
     this.domButtons = dom;
+  }
+
+  // -------------------------------------------------------------------------
+  // touch
+
+  /**
+   * A finger's pointer events go to `TouchGestures` instead of the mouse path: the browser's
+   * compatibility mouse events are suppressed (and would be duplicates), and multi-touch needs
+   * per-pointer tracking. The desktop mouse path is untouched.
+   */
+  private onTouchButton(e: PointerEvent): void {
+    e.preventDefault();
+    this.surface.focus({ preventScroll: true });
+    if (e.type === 'pointerdown') {
+      this.surface.setPointerCapture(e.pointerId);
+      this.bridge.retry();
+      this.armLongPress();
+      this.runTouch(this.touch.down({ id: e.pointerId, x: e.clientX, y: e.clientY }, performance.now()));
+    } else {
+      clearTimeout(this.touchTimer);
+      this.touchTimer = 0;
+      this.runTouch(this.touch.up({ id: e.pointerId, x: e.clientX, y: e.clientY }));
+    }
+  }
+
+  private onPointerCancel(e: PointerEvent): void {
+    if (e.pointerType === 'touch') {
+      clearTimeout(this.touchTimer);
+      this.touchTimer = 0;
+      this.runTouch(this.touch.cancel());
+      return;
+    }
+    this.releaseButtons();
+  }
+
+  /** A finger held still long enough becomes a right click (see `TouchGestures.tick`). */
+  private armLongPress(): void {
+    clearTimeout(this.touchTimer);
+    this.touchTimer = window.setTimeout(() => {
+      this.touchTimer = 0;
+      this.runTouch(this.touch.tick(performance.now()));
+    }, LONG_PRESS_MS);
+  }
+
+  private runTouch(actions: readonly TouchAction[]): void {
+    for (const a of actions) {
+      switch (a.type) {
+        case 'tap': {
+          const button = a.button === 'right' ? MouseButton.Right : MouseButton.Left;
+          this.pos = this.normalizeAt(a.x, a.y);
+          this.flushMove();
+          this.keys.flushPending();
+          this.sink.send(encodeMouseBtn(button, true, this.pos.x, this.pos.y));
+          this.sink.send(encodeMouseBtn(button, false, this.pos.x, this.pos.y));
+          break;
+        }
+        case 'press':
+          this.keys.flushPending();
+          this.pos = this.normalizeAt(a.x, a.y);
+          this.flushMove();
+          this.buttons |= 1 << MouseButton.Left;
+          this.sink.send(encodeMouseBtn(MouseButton.Left, true, this.pos.x, this.pos.y));
+          break;
+        case 'move':
+          this.pos = this.normalizeAt(a.x, a.y);
+          this.pendingMove = this.pos;
+          this.scheduleMove();
+          break;
+        case 'release':
+          this.flushMove();
+          this.buttons &= ~(1 << MouseButton.Left);
+          this.sink.send(encodeMouseBtn(MouseButton.Left, false, this.pos.x, this.pos.y));
+          break;
+        case 'scroll': {
+          this.keys.flushPending();
+          const sign = this.opts.invertScroll ? -1 : 1;
+          this.sink.send(encodeWheel(WheelMode.Pixel, a.dx * sign, a.dy * sign, a.phase));
+          break;
+        }
+      }
+    }
   }
 
   private releaseButtons(): void {

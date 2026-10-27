@@ -14,6 +14,8 @@ export const MsgType = {
   WHEEL: 0x13,
   KEY: 0x14,
   RELEASE_ALL: 0x15,
+  /** Typed Unicode text (viewer IME / soft keyboard, docs/android.md). */
+  TEXT: 0x16,
   VIDEO_ACK: 0x20,
   PING: 0x30,
   PONG: 0x31,
@@ -123,6 +125,11 @@ export interface KeyMsg {
 export interface ReleaseAllMsg {
   type: 'release_all';
 }
+export interface TextMsg {
+  type: 'text';
+  /** UTF-8 text committed by an IME or soft keyboard. */
+  text: string;
+}
 export interface VideoAckMsg {
   type: 'video_ack';
   flags: number;
@@ -182,7 +189,7 @@ export interface UnknownMsg {
   ty: number;
 }
 
-export type InputMsg = MouseAbsMsg | MouseRelMsg | MouseBtnMsg | WheelMsg | KeyMsg | ReleaseAllMsg;
+export type InputMsg = MouseAbsMsg | MouseRelMsg | MouseBtnMsg | WheelMsg | KeyMsg | TextMsg | ReleaseAllMsg;
 
 export type BinMsg =
   | VideoMsg
@@ -286,6 +293,14 @@ export function parse(data: ArrayBuffer | Uint8Array): BinMsg {
       };
     case MsgType.RELEASE_ALL:
       return { type: 'release_all' };
+    case MsgType.TEXT: {
+      need(b, t, 2);
+      try {
+        return { type: 'text', text: new TextDecoder('utf-8', { fatal: true }).decode(b.subarray(2)) };
+      } catch {
+        throw new ProtoError('text is not valid UTF-8');
+      }
+    }
     case MsgType.VIDEO_ACK:
       need(b, t, VIDEO_ACK_LEN);
       return {
@@ -388,6 +403,8 @@ export function encode(m: EncodableMsg): Bytes {
       return encodeKey(m.down, m.repeat, m.hid);
     case 'release_all':
       return encodeReleaseAll();
+    case 'text':
+      return encodeText(m.text);
     case 'video_ack':
       return encodeVideoAck(m.flags, m.epoch, m.seq, m.decodeUs, m.queueUs);
     case 'ping':
@@ -490,6 +507,14 @@ export function encodeKey(down: boolean, repeat: boolean, hid: number): Bytes {
 
 export function encodeReleaseAll(): Bytes {
   return frame(MsgType.RELEASE_ALL, 0, RELEASE_ALL_LEN)[0];
+}
+
+/** Unicode text (IME / soft keyboard): typed as text by the agent, not as key events. */
+export function encodeText(text: string): Bytes {
+  const payload = new TextEncoder().encode(text);
+  const [b] = frame(MsgType.TEXT, 0, 2 + payload.byteLength);
+  b.set(payload, 2);
+  return b;
 }
 
 export function encodeVideoAck(flags: number, epoch: number, seq: number, decodeUs: number, queueUs: number): Bytes {

@@ -228,9 +228,9 @@ async fn hello_lists_places_and_caps() {
     let mut setup = setup().await;
     // The fake platform has a pseudo terminal on Unix (tests/terminal.rs).
     let caps = if cfg!(unix) {
-        json!(["files", "terminal"])
+        json!(["files", "text", "terminal"])
     } else {
-        json!(["files"])
+        json!(["files", "text"])
     };
     assert_eq!(setup.control.register["caps"], caps);
     let mut f = Files::open(&mut setup, CHANNEL_A).await;

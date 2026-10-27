@@ -59,4 +59,6 @@ pub enum ProtoError {
     TooShort { ty: u8, len: usize, need: usize },
     #[error("invalid value for {field}: {value}")]
     InvalidValue { field: &'static str, value: u32 },
+    #[error("text is not valid UTF-8")]
+    InvalidUtf8,
 }

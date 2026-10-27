@@ -918,6 +918,62 @@ body.viewer {
   background: var(--border-strong);
 }
 
+/* The on-screen keys for touch screens (key-bar.ts): sticky modifiers, navigation, Fn row. */
+.key-bar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 24;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+  backdrop-filter: blur(14px) saturate(140%);
+  touch-action: none;
+}
+
+.key-bar[hidden] {
+  display: none;
+}
+
+.key-bar-row {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.key-bar-row::-webkit-scrollbar {
+  display: none;
+}
+
+.key-bar-key {
+  flex: 0 0 auto;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.key-bar-key:active {
+  transform: scale(0.96);
+}
+
+.key-bar-key.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
 .toolbar button {
   height: 34px;
   padding: 0 12px;
@@ -2480,4 +2536,45 @@ body.with-terminal .transfer-indicator {
   .term-panel {
     animation: none;
   }
+}
+
+/* Touch screens (docs/android.md): the menu handle and the toolbar are the only UI, and a finger
+   needs a 44 px target. Safe areas keep both clear of the notch and the home indicator. */
+@media (pointer: coarse) {
+  .toolbar-handle {
+    top: env(safe-area-inset-top, 0px);
+    height: 24px;
+    opacity: 0.7;
+  }
+
+  .toolbar {
+    top: calc(10px + env(safe-area-inset-top, 0px));
+  }
+
+  .toolbar button,
+  .toolbar input,
+  .toolbar select,
+  .connect button {
+    min-height: 44px;
+  }
+
+  .toolbar button.tool {
+    width: 44px;
+  }
+}
+
+/* The hidden textarea that gives the phone's soft keyboard something to edit (ime.ts). It must
+   stay focusable and above the page for Android to show the keyboard, but invisible. */
+.ime-input {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  z-index: -1;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  font-size: 16px;
+  resize: none;
 }

@@ -72,6 +72,11 @@ fn vectors() -> Vec<Value> {
             json!({"type":"key","down":true,"repeat":true,"hid":458756}),
         ),
         (
+            "text",
+            InputEvent::Text("héllo 👋".into()),
+            json!({"type":"text","text":"héllo 👋"}),
+        ),
+        (
             "release_all",
             InputEvent::ReleaseAll,
             json!({"type":"release_all"}),

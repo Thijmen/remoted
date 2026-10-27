@@ -11,6 +11,7 @@
 //! | 0x13 | WHEEL       | V→A | (flags=mode) dx i16, dy i16, phase u8, pad u8                     | 8   |
 //! | 0x14 | KEY         | V→A | (flags=down) key_flags u8, pad u8, hid u32                        | 8   |
 //! | 0x15 | RELEASE_ALL | V→A | –                                                                 | 2   |
+//! | 0x16 | TEXT        | V→A | then UTF-8 text (typed as Unicode, no key events)                 | 2+  |
 //! | 0x20 | VIDEO_ACK   | V→A | epoch u16, seq u32, decode_us u16, queue_us u16                   | 12  |
 //! | 0x30 | PING        | both| pad u16, id u32, t_origin_us u64, pad u64                         | 24  |
 //! | 0x31 | PONG        | both| pad u16, id u32, t_origin_us u64, t_reply_us u64                  | 24  |
@@ -39,6 +40,8 @@ pub mod ty {
     pub const WHEEL: u8 = 0x13;
     pub const KEY: u8 = 0x14;
     pub const RELEASE_ALL: u8 = 0x15;
+    /// Typed Unicode text (viewer IME / soft keyboard, docs/android.md).
+    pub const TEXT: u8 = 0x16;
     pub const VIDEO_ACK: u8 = 0x20;
     pub const PING: u8 = 0x30;
     pub const PONG: u8 = 0x31;
@@ -52,7 +55,7 @@ pub mod ty {
 
     /// True for viewer->agent input messages (used by the gateway for idle tracking).
     pub fn is_input(t: u8) -> bool {
-        (MOUSE_ABS..=RELEASE_ALL).contains(&t)
+        (MOUSE_ABS..=TEXT).contains(&t)
     }
 }
 
@@ -323,7 +326,7 @@ impl ScrollPhase {
 
 /// Viewer -> agent input event. Coordinates are normalised 0..=65535 over the video frame.
 /// Keys are USB HID usages: `(page << 16) | usage`, e.g. KeyA = 0x0007_0004 (see [`crate::keymap`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
     MouseAbs {
         buttons: u8,
@@ -351,14 +354,16 @@ pub enum InputEvent {
         repeat: bool,
         hid: u32,
     },
+    /// Text committed by an IME or soft keyboard (UTF-8), typed as Unicode: shortcuts stay on KEY.
+    Text(String),
     ReleaseAll,
 }
 
 impl InputEvent {
     pub fn write(&self, out: &mut Vec<u8>) {
-        match *self {
+        match self {
             InputEvent::MouseAbs { buttons, x, y } => {
-                out.extend_from_slice(&[ty::MOUSE_ABS, buttons]);
+                out.extend_from_slice(&[ty::MOUSE_ABS, *buttons]);
                 out.extend_from_slice(&x.to_le_bytes());
                 out.extend_from_slice(&y.to_le_bytes());
             }
@@ -368,7 +373,7 @@ impl InputEvent {
                 out.extend_from_slice(&dy.to_le_bytes());
             }
             InputEvent::MouseButton { button, down, x, y } => {
-                out.extend_from_slice(&[ty::MOUSE_BTN, button as u8, down as u8, 0]);
+                out.extend_from_slice(&[ty::MOUSE_BTN, *button as u8, *down as u8, 0]);
                 out.extend_from_slice(&x.to_le_bytes());
                 out.extend_from_slice(&y.to_le_bytes());
             }
@@ -378,17 +383,21 @@ impl InputEvent {
                 dy,
                 phase,
             } => {
-                out.extend_from_slice(&[ty::WHEEL, mode as u8]);
+                out.extend_from_slice(&[ty::WHEEL, *mode as u8]);
                 out.extend_from_slice(&dx.to_le_bytes());
                 out.extend_from_slice(&dy.to_le_bytes());
-                out.extend_from_slice(&[phase as u8, 0]);
+                out.extend_from_slice(&[*phase as u8, 0]);
             }
             InputEvent::Key { down, repeat, hid } => {
-                let kf = if repeat { key_flags::REPEAT } else { 0 };
-                out.extend_from_slice(&[ty::KEY, down as u8, kf, 0]);
+                let kf = if *repeat { key_flags::REPEAT } else { 0 };
+                out.extend_from_slice(&[ty::KEY, *down as u8, kf, 0]);
                 out.extend_from_slice(&hid.to_le_bytes());
             }
             InputEvent::ReleaseAll => out.extend_from_slice(&[ty::RELEASE_ALL, 0]),
+            InputEvent::Text(text) => {
+                out.extend_from_slice(&[ty::TEXT, 0]);
+                out.extend_from_slice(text.as_bytes());
+            }
         }
     }
 
@@ -443,6 +452,14 @@ impl InputEvent {
                 }
             }
             ty::RELEASE_ALL => InputEvent::ReleaseAll,
+            ty::TEXT => {
+                need(b, t, 2)?;
+                InputEvent::Text(
+                    std::str::from_utf8(&b[2..])
+                        .map_err(|_| ProtoError::InvalidUtf8)?
+                        .to_owned(),
+                )
+            }
             _ => unreachable!("parse_body called with non-input type"),
         })
     }
@@ -701,7 +718,7 @@ pub fn term_in_message(payload: &[u8]) -> Vec<u8> {
 // top-level parse
 
 /// A parsed binary message. Payloads borrow from the input buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinMsg<'a> {
     Video(VideoHeader, &'a [u8]),
     Audio(AudioHeader, &'a [u8]),
@@ -733,7 +750,7 @@ pub fn parse(b: &[u8]) -> Result<BinMsg<'_>, ProtoError> {
             let (h, p) = AudioHeader::parse_body(b)?;
             BinMsg::Audio(h, p)
         }
-        ty::MOUSE_ABS | ty::MOUSE_REL | ty::MOUSE_BTN | ty::WHEEL | ty::KEY => {
+        ty::MOUSE_ABS | ty::MOUSE_REL | ty::MOUSE_BTN | ty::WHEEL | ty::KEY | ty::TEXT => {
             BinMsg::Input(InputEvent::parse_body(b)?)
         }
         ty::RELEASE_ALL => BinMsg::Input(InputEvent::ReleaseAll),
@@ -818,6 +835,7 @@ mod tests {
                 repeat: true,
                 hid: 0x0007_0004,
             },
+            InputEvent::Text("héllo 👋".into()),
             InputEvent::ReleaseAll,
         ];
         for e in evs {
@@ -825,6 +843,28 @@ mod tests {
             assert!(ty::is_input(m[0]));
             assert_eq!(parse(&m).unwrap(), BinMsg::Input(e));
         }
+    }
+
+    #[test]
+    fn text_is_utf8_and_only_typed_text() {
+        let m = InputEvent::Text("héllo 👋".into()).to_message();
+        assert_eq!(m[0], ty::TEXT);
+        assert!(ty::is_input(ty::TEXT));
+        assert_eq!(
+            parse(&m).unwrap(),
+            BinMsg::Input(InputEvent::Text("héllo 👋".into()))
+        );
+        // Empty text is valid; the text starts after the two-byte header.
+        assert_eq!(
+            parse(&[ty::TEXT, 0]).unwrap(),
+            BinMsg::Input(InputEvent::Text(String::new()))
+        );
+        // Invalid UTF-8 is rejected, not silently replaced.
+        assert_eq!(parse(&[ty::TEXT, 0, 0xff]), Err(ProtoError::InvalidUtf8));
+        assert!(matches!(
+            parse(&[ty::TEXT]),
+            Err(ProtoError::TooShort { .. })
+        ));
     }
 
     #[test]

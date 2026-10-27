@@ -190,7 +190,7 @@ impl Term {
 async fn shell_survives_a_reconnect_and_exits() {
     let mut setup = setup().await;
     let caps = &setup.control.register["caps"];
-    assert_eq!(*caps, json!(["files", "terminal"]));
+    assert_eq!(*caps, json!(["files", "text", "terminal"]));
 
     let mut a = Term::open(&mut setup, CHANNEL_A).await;
     let hello = a.hello(None).await;
@@ -439,7 +439,7 @@ async fn terminal_can_be_turned_off() {
         cfg.terminal.enabled = false;
     })
     .await;
-    assert_eq!(setup.control.register["caps"], json!(["files"]));
+    assert_eq!(setup.control.register["caps"], json!(["files", "text"]));
     send_json(
         &mut setup.control.ws,
         json!({"t": "terminal_request", "channel": CHANNEL_A, "user": "me@test", "client_ip": "127.0.0.1"}),

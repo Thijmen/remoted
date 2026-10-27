@@ -59,6 +59,8 @@ function expected(f: Record<string, unknown>): EncodableMsg {
       return { type: 'key', down: f.down as boolean, repeat: f.repeat as boolean, hid: n('hid') };
     case 'release_all':
       return { type: 'release_all' };
+    case 'text':
+      return { type: 'text', text: f.text as string };
     case 'video_ack':
       return {
         type: 'video_ack',
@@ -115,6 +117,7 @@ describe('golden vectors (crates/rd-proto/testvectors/binary.json)', () => {
       'wheel',
       'key',
       'release_all',
+      'text',
       'video_ack',
       'ping',
       'pong',

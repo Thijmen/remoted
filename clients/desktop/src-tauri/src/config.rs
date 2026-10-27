@@ -175,6 +175,7 @@ pub fn save(path: &Path, settings: &Settings) -> Result<(), String> {
 }
 
 /// Automatic update checks: on unless the settings file says `"update_check": false`.
+#[cfg(desktop)]
 pub fn load_update_check(path: &Path) -> bool {
     read_object(path)
         .and_then(|file| file.get("update_check").and_then(|v| v.as_bool()))
@@ -183,6 +184,7 @@ pub fn load_update_check(path: &Path) -> bool {
 
 /// Saves the tray menu's "Check for updates automatically". Other keys (the gateway) are kept;
 /// on is the default and is not written.
+#[cfg(desktop)]
 pub fn save_update_check(path: &Path, on: bool) -> Result<(), String> {
     edit(path, |file| {
         if on {
@@ -261,6 +263,7 @@ pub fn allowed_in_window(settings: Option<&Settings>, url: &Url) -> bool {
 /// A download the window may save (to the Downloads folder): the viewer's file transfers hand
 /// the browser a `blob:` URL of the gateway page; plain links on the gateway work too. Anything
 /// else (a sign-in page, another site) is refused.
+#[cfg(desktop)]
 pub fn download_allowed(settings: Option<&Settings>, url: &Url) -> bool {
     let Some(settings) = settings else {
         return false;
@@ -282,6 +285,7 @@ fn is_under(host: &str, domain: &str) -> bool {
 
 /// Is `url` a session page of the gateway (`/m/<machine>`, or the terminal page `/t/<machine>`)?
 /// The update window does not open over one: it waits until the page is left.
+#[cfg(desktop)]
 pub fn is_session_page(settings: Option<&Settings>, url: &Url) -> bool {
     settings.is_some_and(|s| url.origin() == s.gateway_url.origin())
         && (url.path().starts_with("/m/") || url.path().starts_with("/t/"))
@@ -292,7 +296,7 @@ pub fn openable_externally(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "mailto")
 }
 
-#[cfg(test)]
+#[cfg(all(test, desktop))]
 mod tests {
     use super::*;
 

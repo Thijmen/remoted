@@ -565,3 +565,28 @@ describe('Alt+Tab → Cmd+Tab (windows-to-mac)', () => {
     }
   });
 });
+
+describe('on-screen key bar', () => {
+  it('taps a key: down and up, by physical code', () => {
+    const { kb, take } = setup();
+    kb.tapCode('Tab');
+    expect(take()).toEqual([down(HID.Tab), up(HID.Tab)]);
+  });
+
+  it('keeps a sticky modifier held across a tapped key until it is toggled off', () => {
+    const { kb, take } = setup();
+    kb.toggleCode('ControlLeft');
+    expect(kb.isPressed('ControlLeft')).toBe(true);
+    kb.tapCode('KeyC');
+    expect(take()).toEqual([down(HID.ControlLeft), down(HID.KeyC), up(HID.KeyC)]);
+    kb.toggleCode('ControlLeft');
+    expect(take()).toEqual([up(HID.ControlLeft)]);
+    expect(kb.isPressed('ControlLeft')).toBe(false);
+  });
+
+  it('maps sticky modifiers like a physical keyboard (Ctrl → Cmd on a Mac agent)', () => {
+    const { kb, take } = setup({}, 'windows-to-mac');
+    kb.tapCode('ControlLeft');
+    expect(take()).toEqual([down(HID.MetaLeft), up(HID.MetaLeft)]);
+  });
+});

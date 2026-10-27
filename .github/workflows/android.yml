@@ -1,0 +1,166 @@
+name: Android
+
+# The Android APK (docs/android.md). Pull requests and main build a debug APK (debug-signed, so
+# installable) as a workflow artifact; an android-v* tag builds the release APK signed with the
+# keystore secrets and publishes it as a GitHub Release. The version comes from
+# clients/android/package.json, its own channel separate from rd Desktop; Tauri derives the
+# versionCode from it (major * 1_000_000 + minor * 1_000 + patch).
+#
+# Secrets (android-v* only): ANDROID_KEY_BASE64 (base64 of the .jks), ANDROID_KEY_ALIAS,
+# ANDROID_KEY_PASSWORD, ANDROID_STORE_PASSWORD. Without them a tag build fails instead of
+# publishing an APK that cannot install or update.
+on:
+  push:
+    branches: [main]
+    tags: ["android-v*"]
+    paths:
+      - "clients/desktop/**"
+      - "clients/android/**"
+      - "crates/rd-proto/**"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "clients/desktop/**"
+      - "clients/android/**"
+      - "crates/rd-proto/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # What src-tauri/gen/android/app/build.gradle.kts builds against.
+  NDK_VERSION: 27.1.12297006
+  ANDROID_PLATFORM: "36"
+  ANDROID_BUILD_TOOLS: 36.0.0
+  RUST: "1.99.1"
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        run: |
+          set -euo pipefail
+          v="$(node -p "require('./clients/android/package.json').version")"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          release=false
+          if [[ "$GITHUB_REF" == refs/tags/android-v* ]]; then
+            if [[ "${GITHUB_REF_NAME#android-v}" != "$v" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the rd-android version $v"
+              exit 1
+            fi
+            release=true
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+  apk:
+    name: APK
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # the android-v* release
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Android SDK
+        run: |
+          set -euo pipefail
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platforms;android-$ANDROID_PLATFORM" \
+            "build-tools;$ANDROID_BUILD_TOOLS" \
+            "ndk;$NDK_VERSION"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST }}
+          targets: aarch64-linux-android,armv7-linux-androideabi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/desktop/src-tauri -> target
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Tauri CLI (version pinned in clients/desktop/package.json)
+        working-directory: clients/desktop
+        run: bun install --frozen-lockfile
+
+      - name: Keystore
+        if: needs.version.outputs.release == 'true'
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ANDROID_KEY_BASE64" || -z "$ANDROID_KEY_ALIAS" || -z "$ANDROID_KEY_PASSWORD" || -z "$ANDROID_STORE_PASSWORD" ]]; then
+            echo "::error::an android-v* release needs ANDROID_KEY_BASE64, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD and ANDROID_STORE_PASSWORD (docs/android.md)"
+            exit 1
+          fi
+          printf '%s' "$ANDROID_KEY_BASE64" | base64 -d > "$RUNNER_TEMP/rd-android.keystore"
+          cat > clients/desktop/src-tauri/gen/android/keystore.properties <<EOF
+          storeFile=$RUNNER_TEMP/rd-android.keystore
+          storePassword=$ANDROID_STORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+
+      - name: Build
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          RELEASE: ${{ needs.version.outputs.release }}
+        run: |
+          set -euo pipefail
+          # Tauri finds the NDK through this; the step above installed the same version.
+          export NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          cd clients/desktop
+          config="$(printf '{"version":"%s"}' "$VERSION")"
+          if [[ "$RELEASE" == "true" ]]; then
+            bun run tauri android build --apk --target aarch64 armv7 --config "$config"
+          else
+            bun run tauri android build --apk --debug --target aarch64 armv7 --config "$config"
+          fi
+          apk="$(find src-tauri/gen/android/app/build/outputs/apk/universal -name 'app-universal-*.apk' -print -quit)"
+          name="rd-desktop-$VERSION-android-arm64-armv7.apk"
+          cp "$apk" "../../$name"
+          cd ../..
+          sha256sum "$name" > SHA256SUMS-android.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rd-android-apk
+          path: |
+            rd-desktop-*.apk
+            SHA256SUMS-android.txt
+
+      - name: Release
+        if: needs.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            "rd-desktop-$VERSION-android-arm64-armv7.apk" \
+            "SHA256SUMS-android.txt" \
+            --title "rd Android $VERSION" \
+            --notes "The rd Desktop Android app, $VERSION (arm64 + armv7). Sideload it on a phone; see docs/android.md."

@@ -493,10 +493,10 @@ impl Control<'_> {
         false
     }
 
-    /// `register.caps`: files always; the terminal when it is enabled and the platform has
-    /// pseudo terminals.
+    /// `register.caps`: files and Unicode text always; the terminal when it is enabled and the
+    /// platform has pseudo terminals.
     fn caps(&self) -> Vec<String> {
-        let mut caps = vec![agent_caps::FILES.to_owned()];
+        let mut caps = vec![agent_caps::FILES.to_owned(), agent_caps::TEXT.to_owned()];
         if self.ctx.terminal {
             caps.push(agent_caps::TERMINAL.to_owned());
         }
