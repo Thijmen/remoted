@@ -13,6 +13,10 @@ GitHub releases ([Updates](#updates)). Design and the page ⇄ app bridge:
 [docs/desktop-client.md](../../docs/desktop-client.md); updates:
 [docs/updates.md](../../docs/updates.md).
 
+The same crate also builds an Android phone app (system WebView, no keyboard grab, no in-app
+viewer copy). It is in progress — a spike that shows the setup page and the gateway — and not
+part of the releases yet: [docs/android.md](../../docs/android.md).
+
 ## Install
 
 Download from the [GitHub Releases](https://github.com/Thijmen/remoted/releases) (tags
@@ -239,14 +243,19 @@ A manual `bun run version` (from the root) does step 2's edits locally. Pushing 
 `desktop-v*` tag by hand still works too.
 
 Icons: `icon.svg` is the source; `bun run tauri icon icon.svg -o src-tauri/icons`, then delete
-the generated `android/`, `ios/`, `Square*`, `StoreLogo.png` and `64x64.png`. The macOS menu bar
+the generated `ios/`, `Square*`, `StoreLogo.png` and `64x64.png` (the Android launcher icons are
+written straight into `src-tauri/gen/android/app/src/main/res` and stay there). The macOS menu bar
 icon is a template image from `tray-icon.svg`: `rsvg-convert -w 36 -h 36 tray-icon.svg -o
 src-tauri/icons/tray-template.png`.
 
 ## How it works
 
-- `src/main.rs`: the window (title "rd", 1280×800, remembers nothing), navigation policy, the
-  `rd_set_grab` command and the setup commands. They are app commands with ACL permissions
+- `src/lib.rs`: `run()` builds the app: the window (title "rd", 1280×800, remembers nothing),
+  navigation policy, the `rd_set_grab` command and the setup commands. `src/main.rs` is the
+  desktop binary that calls it (mobile builds are libraries, so the code has to live in `lib.rs`).
+  Desktop-only modules are behind `#[cfg(desktop)]` (grab, tray `menus`, `update`, `notice`,
+  `installable`, `notes`); Android gets the window and the setup commands only.
+  They are app commands with ACL permissions
   (`build.rs`: `AppManifest`). `rd_set_grab` and `rd_whats_new` are granted only by a
   capability added at runtime for the gateway origin in use (saved, or `--url`), window
   `main`. The setup page (`dist/index.html`, bundled) gets only `rd_setup_info`,

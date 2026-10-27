@@ -7,6 +7,7 @@
 //! own: after it stops grabbing for its own reasons (focus lost, desktop switch, navigation,
 //! closing) it calls `rdNative.release()` and waits for the page to ask again.
 
+#[cfg(desktop)]
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 
@@ -65,6 +66,7 @@ pub fn open_keyboard_settings() -> Result<(), String> {
 }
 
 /// Hook/tap thread -> forwarder thread.
+#[cfg(desktop)]
 pub enum Event {
     Key {
         code: &'static str,
@@ -75,6 +77,7 @@ pub enum Event {
 }
 
 /// Starts the thread that runs the page calls on the webview, in order.
+#[cfg(desktop)]
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub fn spawn_forwarder(window: &WebviewWindow) -> Result<Sender<Event>, String> {
     let (tx, rx) = mpsc::channel();
@@ -87,6 +90,7 @@ pub fn spawn_forwarder(window: &WebviewWindow) -> Result<Sender<Event>, String> 
 }
 
 /// Never logs the script (it names keys).
+#[cfg(desktop)]
 fn forward(window: WebviewWindow, rx: Receiver<Event>) {
     let mut chord = FullscreenChord::default();
     for event in rx {
@@ -121,6 +125,7 @@ fn forward(window: WebviewWindow, rx: Receiver<Event>) {
 /// arrives through `rdNative.key` carries no user gesture, so WebView2 refuses
 /// `requestFullscreen` and nothing happens. The app toggles the window instead and keeps the
 /// F press from the page (the page swallows its chords too, so the remote side sees the same).
+#[cfg(desktop)]
 #[derive(Default)]
 struct FullscreenChord {
     /// Held modifiers, one bit per physical key (see `modifier_bit`).
@@ -129,6 +134,7 @@ struct FullscreenChord {
     swallowing: bool,
 }
 
+#[cfg(desktop)]
 #[derive(Debug, PartialEq)]
 enum ChordKey {
     Forward,
@@ -136,10 +142,14 @@ enum ChordKey {
     Toggle,
 }
 
+#[cfg(desktop)]
 const CTRL: u8 = 0b0000_0011;
+#[cfg(desktop)]
 const ALT: u8 = 0b0000_1100;
+#[cfg(desktop)]
 const SHIFT: u8 = 0b0011_0000;
 
+#[cfg(desktop)]
 fn modifier_bit(code: &str) -> u8 {
     match code {
         "ControlLeft" => 0b0000_0001,
@@ -152,6 +162,7 @@ fn modifier_bit(code: &str) -> u8 {
     }
 }
 
+#[cfg(desktop)]
 impl FullscreenChord {
     fn key(&mut self, code: &str, down: bool, repeat: bool) -> ChordKey {
         let bit = modifier_bit(code);
@@ -189,6 +200,7 @@ impl FullscreenChord {
     }
 }
 
+#[cfg(desktop)]
 fn toggle_fullscreen(window: &WebviewWindow) {
     let on = !window.is_fullscreen().unwrap_or(false);
     if !on {
@@ -217,6 +229,7 @@ impl Order {
     /// are applied (on Windows: queued to the hook thread) in sequence order. Calls without a
     /// number (older pages, the selftest) are always applied. A repeated number is applied
     /// again: that is the latest state, and applying it twice is harmless.
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn admit<T>(
         &self,
         seq: Option<u64>,
@@ -355,7 +368,7 @@ impl Grab {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, desktop))]
 mod tests {
     use super::{ChordKey, FullscreenChord};
 

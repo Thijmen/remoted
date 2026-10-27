@@ -6,25 +6,34 @@ rust-version = "1.90"
 publish = false
 description = "rd Desktop: the rd web viewer in a window, with a keyboard grab on Windows and macOS"
 
+# Mobile builds are libraries (`tauri android build` links the cdylib); the desktop binary is a
+# thin `main` over the same `run()`.
+[lib]
+name = "rd_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2.7.1", features = [] }
 
 [dependencies]
 tauri = { version = "2.12.1", features = ["tray-icon"] }
 tauri-plugin-log = "2.10.0"
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
+semver = "1"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rd-proto = { path = "../../../crates/rd-proto" }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Native TLS (Windows: SChannel, macOS: Security.framework): the system's trust store, so
 # company proxies with their own root certificate work, and no C toolchain is needed.
+# Not available on Android: the app updates itself with an APK there (docs/android.md).
 tauri-plugin-updater = { version = "2.14.0", default-features = false, features = [
   "native-tls",
   "system-proxy",
 ] }
-pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
-semver = "1"
-log = "0.4"
 open = { version = "5.4", features = ["shellexecute-on-windows"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-rd-proto = { path = "../../../crates/rd-proto" }
 
 [target.'cfg(windows)'.dependencies]
 # Same major as tauri's own (tauri 2.12 -> windows 0.62), so `WebviewWindow::hwnd()` types match.
