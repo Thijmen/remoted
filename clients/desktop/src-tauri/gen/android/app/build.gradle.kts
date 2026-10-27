@@ -15,15 +15,32 @@ val tauriProperties = Properties().apply {
 }
 
 android {
-    compileSdk = 37
+    compileSdk = 36
     namespace = "dev.thijmen.rd.desktop"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "dev.thijmen.rd.desktop"
         minSdk = 26
-        targetSdk = 37
+        targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    // Release signing: CI writes gen/android/keystore.properties from secrets (docs/android.md).
+    // Local builds have no keystore and produce an unsigned release APK.
+    val keystore = Properties().apply {
+        val file = rootProject.file("keystore.properties")
+        if (file.exists()) file.inputStream().use { load(it) }
+    }
+    val releaseSigning = keystore.getProperty("storeFile")?.let { store ->
+        signingConfigs {
+            create("release") {
+                storeFile = file(store)
+                storePassword = keystore.getProperty("storePassword")
+                keyAlias = keystore.getProperty("keyAlias")
+                keyPassword = keystore.getProperty("keyPassword")
+            }
+        }
+        signingConfigs.getByName("release")
     }
     buildTypes {
         getByName("debug") {
@@ -39,6 +56,7 @@ android {
             }
         }
         getByName("release") {
+            if (releaseSigning != null) signingConfig = releaseSigning
             optimization {
                enable = true
             }

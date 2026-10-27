@@ -56,5 +56,44 @@ limits it to one ABI, which is what an emulator install needs.
 - The Rust side is a library (`src/lib.rs`, `run()`) with a thin desktop `src/main.rs`; modules
   that only make sense on a desktop are `#[cfg(desktop)]`. Android has no keyboard grab (a phone
   has no system shortcuts to take), no tray, no second window and no updater plugin.
-- Versions come from `tauri.properties` (`versionCode`/`versionName`), generated per build. The
-  separate `android-v*` channel and the APK updater are part of the release work.
+- The version lives in `clients/android/package.json` (`rd-android`), its own channel separate
+  from rd Desktop. Tauri derives `versionCode` from it (`major * 1_000_000 + minor * 1_000 +
+  patch`) and writes both into `tauri.properties` for the build. The APK updater is still to do.
+
+## CI
+
+`.github/workflows/android.yml`:
+
+- **Pull requests and `main`** build a debug APK (debug-signed, so it installs) for arm64 + armv7
+  and upload it as the `rd-android-apk` artifact, with `SHA256SUMS-android.txt`.
+- **An `android-v*` tag** builds the release APK signed with the keystore and publishes it as a
+  GitHub Release. The tag must match the version in `clients/android/package.json`; the workflow
+  checks that. Without the secrets it fails rather than publishing an APK nobody can update.
+
+The workflow installs the Android SDK packages the Gradle project builds against (see the `env`
+at the top of `android.yml` and `compileSdk`/`targetSdk` in
+`src-tauri/gen/android/app/build.gradle.kts`); keep those in step.
+
+Release signing needs four repository secrets. Generate the key once and keep it — Android
+refuses to update an app when the signing key changes:
+
+```sh
+keytool -genkeypair -keystore rd-android.jks -alias rd -keyalg RSA -keysize 2048 -validity 10000
+base64 -i rd-android.jks | pbcopy   # macOS; Linux: base64 -w0 rd-android.jks
+```
+
+| Secret | |
+|---|---|
+| `ANDROID_KEY_BASE64` | the base64 above |
+| `ANDROID_KEY_ALIAS` | `rd` (or the alias you chose) |
+| `ANDROID_KEY_PASSWORD` | the key password |
+| `ANDROID_STORE_PASSWORD` | the keystore password |
+
+Then bump `clients/android/package.json`, commit and tag:
+
+```sh
+git tag android-v0.1.0 && git push origin android-v0.1.0
+```
+
+`tauri android build` with no keystore (a local release build) produces an unsigned APK; local
+debug builds are unaffected.
