@@ -99,3 +99,14 @@ describe('displays', () => {
     expect(displaySize(list[0]!)).toBe('2880×1620');
   });
 });
+
+describe('touch defaults', () => {
+  it('starts a phone session at 30 fps and 10 Mbps', () => {
+    const d = defaultSettings(win, true);
+    expect(d.fps).toBe(30);
+    expect(d.maxKbps).toBe(10_000);
+    // The desktop default is unchanged.
+    expect(defaultSettings(win).fps).toBe(60);
+    expect(defaultSettings(win).maxKbps).toBe(20_000);
+  });
+});

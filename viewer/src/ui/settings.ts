@@ -32,11 +32,15 @@ export const MIN_KBPS = 1000;
 export const START_KBPS = 8000;
 export const MAX_KBPS_LIMIT = 100_000;
 
-export function defaultSettings(_nav: PlatformHint): Settings {
+/**
+ * Defaults for a new session. A touch screen (a phone or tablet) starts at 30 fps and 10 Mbps:
+ * it has a smaller screen, and the decode and battery cost of 60 fps is not worth it there.
+ */
+export function defaultSettings(_nav: PlatformHint, coarse = false): Settings {
   return {
     preset: '1728x1118',
-    fps: 60,
-    maxKbps: 20_000,
+    fps: coarse ? 30 : 60,
+    maxKbps: coarse ? 10_000 : 20_000,
     adaptive: true,
     audio: true,
     volume: 1,
@@ -80,8 +84,8 @@ export function sanitizeSettings(raw: unknown, defaults: Settings): Settings {
   };
 }
 
-export function loadSettings(machine: string, nav: PlatformHint = navigator): Settings {
-  const defaults = defaultSettings(nav);
+export function loadSettings(machine: string, nav: PlatformHint = navigator, coarse = false): Settings {
+  const defaults = defaultSettings(nav, coarse);
   try {
     const raw = localStorage.getItem(storageKey(machine));
     return sanitizeSettings(raw ? JSON.parse(raw) : null, defaults);

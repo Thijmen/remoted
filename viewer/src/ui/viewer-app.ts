@@ -28,6 +28,7 @@ import { FilesBrowser, type FilesLayout } from './files-browser';
 import { TransferIndicator } from './files-transfers';
 import { Hud, type HudSnapshot } from './hud';
 import { type IconName, icon } from './icons';
+import { KeyBar } from './key-bar';
 import {
   type Settings,
   displaySize,
@@ -85,6 +86,9 @@ export function machineFromLocation(loc: Location = location): string | null {
 }
 
 /** The viewer page: connect screen, session, video, audio, input, HUD, banners. */
+/** Phones and tablets: a coarse pointer has no Ctrl/Alt/Shift keys or arrows of its own. */
+const isCoarsePointer = () => window.matchMedia?.('(pointer: coarse)').matches ?? false;
+
 export class ViewerApp {
   private settings: Settings;
   private info: MachineInfo | null = null;
@@ -109,6 +113,12 @@ export class ViewerApp {
   private readonly session: Session;
   private readonly video: VideoPipeline;
   private readonly input: InputController;
+  /** On-screen keys for touch screens (coarse pointer). */
+  private readonly keyBar = new KeyBar({
+    tap: (code) => this.input.keyBarTap(code),
+    toggle: (code) => this.input.keyBarToggle(code),
+    held: (code) => this.input.keyBarHeld(code),
+  });
   private readonly latency: LatencyTest;
   private audio: AudioPlayer | null = null;
   private agentHello: AgentHello | null = null;
@@ -141,7 +151,7 @@ export class ViewerApp {
     root: HTMLElement,
     private readonly machine: string,
   ) {
-    this.settings = loadSettings(machine);
+    this.settings = loadSettings(machine, navigator, isCoarsePointer());
     document.title = `${machine} · rd`;
     this.session = new Session(
       {
@@ -156,6 +166,7 @@ export class ViewerApp {
           this.agentHello = m;
           // "auto" modifier mapping depends on the agent's OS.
           this.input.setOptions(this.inputOptions(this.settings));
+          this.keyBar.setMeta(m.agent.os);
           this.refreshToolbar();
         },
         control: (m) => this.onControl(m),
@@ -227,7 +238,7 @@ export class ViewerApp {
     this.files.subscribe(() => this.indicator.render(!this.browser.isOpen));
     // The transfer indicator's numbers (speed, percent) move without events.
     window.setInterval(() => this.indicator.render(!this.browser.isOpen), 1000);
-    this.stage.append(handle, this.toolbar, this.hud.el, this.stageDrop);
+    this.stage.append(handle, this.toolbar, this.keyBar.el, this.hud.el, this.stageDrop);
     root.append(this.connectView, this.stage, this.filesPage, this.filesResizer, this.indicator.el, this.banners.el);
     this.wireStageDrop();
     this.wireFilesResizer();
@@ -343,6 +354,7 @@ export class ViewerApp {
     this.active = true;
     this.connectView.hidden = true;
     this.stage.hidden = false;
+    this.keyBar.show(isCoarsePointer());
     this.canvas.focus();
     this.goLive();
     void this.decoders.then((caps) => {
@@ -405,6 +417,8 @@ export class ViewerApp {
     this.toolbar.hidden = true;
     this.toolbarSettings = false;
     this.toolbarView = 'settings';
+    this.keyBar.show(false);
+    this.keyBar.reset();
     this.stage.hidden = true;
     this.connectView.hidden = false;
     this.banners.clear();
@@ -448,6 +462,8 @@ export class ViewerApp {
 
   private onStatus(s: SessionStatus): void {
     this.input.setEnabled(s.kind === 'streaming');
+    // Disabling released every key on the remote side; the bar must not show a stale modifier.
+    if (s.kind !== 'streaming') this.keyBar.reset();
     const name = this.info?.name ?? this.machine;
     const reconnectNow: BannerAction = { label: 'Reconnect now', run: () => this.session.start() };
     const leave: BannerAction = { label: 'Disconnect', run: () => this.disconnect() };

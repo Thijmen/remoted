@@ -107,6 +107,18 @@ export class KeyboardForwarder {
     return this.pressed.has(code);
   }
 
+  /** The on-screen key bar: tap a key (down and up), through the same mapping as a physical one. */
+  tapCode(code: string): void {
+    this.press(code, false);
+    this.release(code);
+  }
+
+  /** The on-screen key bar: a modifier toggles, and stays down on the remote side until toggled again. */
+  toggleCode(code: string): void {
+    if (this.pressed.has(code)) this.release(code);
+    else this.press(code, false);
+  }
+
   /** Send a held-back Ctrl now (before mouse buttons and wheel, so Ctrl+click works). */
   flushPending(): void {
     const p = this.pendingCtrl;
