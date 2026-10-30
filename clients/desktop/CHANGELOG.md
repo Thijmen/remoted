@@ -1,5 +1,13 @@
 # rd-desktop
 
+## 1.7.2
+
+### Patch Changes
+
+- 941449d: Update Rust dependencies (non-major)
+- 88523f9: Update JS dependencies (non-major)
+- 34062ce: Update dependency androidx.activity:activity-ktx to v1.13.0
+
 ## 1.7.1
 
 ### Patch Changes

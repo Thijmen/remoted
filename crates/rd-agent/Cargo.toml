@@ -1,6 +1,6 @@
 [package]
 name = "rd-agent"
-version = "1.9.0"
+version = "1.9.1"
 edition.workspace = true
 publish.workspace = true
 description = "rd host agent binary"
