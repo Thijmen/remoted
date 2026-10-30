@@ -55,7 +55,7 @@ jobs:
           fetch-depth: 0
       - name: Generate version
         id: version
-        uses: paulhatch/semantic-version@v6.0.4
+        uses: paulhatch/semantic-version@v6.0.5
         with:
           tag_prefix: "gateway-v"
           version_format: "${major}.${minor}.${patch}"
