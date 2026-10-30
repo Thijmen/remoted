@@ -13,7 +13,6 @@ use axum::extract::{Extension, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
-use rand::RngCore;
 use rd_flow::{BitrateConfig, BitrateController, FlowConfig, FlowGate};
 use rd_proto::bin::{self, BinMsg, Ping, VIDEO_HEADER_LEN, VideoHeader};
 use rd_proto::control::{ProbeCtl, ProbeEvt, ProbeTest};
@@ -220,7 +219,7 @@ fn video_frame(seq: u32, capture_us: u64, payload_len: usize) -> Vec<u8> {
     let mut msg = Vec::with_capacity(VIDEO_HEADER_LEN + payload_len);
     header.write(&mut msg);
     msg.resize(VIDEO_HEADER_LEN + payload_len, 0);
-    rand::rng().fill_bytes(&mut msg[VIDEO_HEADER_LEN..]);
+    rand::fill(&mut msg[VIDEO_HEADER_LEN..]);
     msg
 }
 
@@ -539,7 +538,7 @@ fn down_chunk(server_us: u64, seq: u32, len: usize) -> Vec<u8> {
     let mut chunk = vec![0u8; len];
     chunk[..8].copy_from_slice(&server_us.to_le_bytes());
     chunk[8..CHUNK_HEADER_LEN].copy_from_slice(&seq.to_le_bytes());
-    rand::rng().fill_bytes(&mut chunk[CHUNK_HEADER_LEN..]);
+    rand::fill(&mut chunk[CHUNK_HEADER_LEN..]);
     chunk
 }
 

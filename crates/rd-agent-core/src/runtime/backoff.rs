@@ -2,8 +2,6 @@
 
 use std::time::Duration;
 
-use rand::Rng as _;
-
 const JITTER: f64 = 0.2;
 
 #[derive(Debug, Clone)]
@@ -49,7 +47,7 @@ impl Backoff {
 }
 
 fn jitter(d: Duration) -> Duration {
-    d.mul_f64(rand::rng().random_range(1.0 - JITTER..=1.0 + JITTER))
+    d.mul_f64(rand::random_range(1.0 - JITTER..=1.0 + JITTER))
 }
 
 #[cfg(test)]
