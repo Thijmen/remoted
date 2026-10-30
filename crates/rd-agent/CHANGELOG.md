@@ -1,5 +1,13 @@
 # rd-agent
 
+## 1.9.1
+
+### Patch Changes
+
+- 941449d: Update Rust dependencies (non-major)
+- 0cfdc33: Update Rust crate toml to v1
+- c7b983e: Update Rust dependencies (non-major)
+
 ## 1.9.0
 
 ### Minor Changes
