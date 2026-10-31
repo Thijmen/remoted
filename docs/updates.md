@@ -1,12 +1,13 @@
 # Updates
 
-rd Desktop and the rd agent find new versions on GitHub, show what changed, and install
-themselves when you say so. The gateway (and with it the viewer) is not covered: it is
+rd Desktop (on Windows, macOS and Android) and the rd agent find new versions on GitHub, show
+what changed, and install themselves when you say so. The gateway (and with it the viewer) is not covered: it is
 deployed with your own tooling (`gateway-v*` images).
 
 | | Checks | Asks | Installs |
 |---|---|---|---|
 | rd Desktop (Windows installer, macOS app) | at launch and every 6 h | its own small window, never during a session | Restart & update |
+| rd Desktop for Android | at launch (release builds) | a banner on the portal, never during a session | Android's installer |
 | rd agent (Windows, macOS) | at start and every 6 h | the portal's device card | the portal's **Update** button; rolls back if the new version does not come back |
 
 ## Versions and releases
@@ -18,9 +19,12 @@ rd Desktop and the rd agent are released separately, each through
 |---|---|---|---|
 | `rd-desktop` | `clients/desktop` | `desktop-vX.Y.Z` | Windows setup + portable exe, macOS .dmg, updater files |
 | `rd-agent` | `crates/rd-agent` | `agent-vX.Y.Z` | Windows setup + zip, macOS zip (`RD Agent.app`), updater signatures |
+| `rd-android` | `clients/android` | `android-vX.Y.Z` | the APK (arm64 + armv7) |
 
 Each has its own `CHANGELOG.md` and version. `tools/release/sync-versions.ts` copies the
 version from the package's `package.json` into its `Cargo.toml` and the matching `Cargo.lock`.
+`rd-android` is only a version holder: the app is built from `clients/desktop`, and CI passes the
+version with `--config '{"version":"…"}'`.
 Both continued from the shared 1.4.2, so no version ever goes down for anyone who installed one.
 
 Merging the **Version packages** PR makes `.github/workflows/release.yml` tag every package
@@ -36,6 +40,7 @@ workflows overwrite (it is never marked latest):
 
 - `https://github.com/Thijmen/remoted/releases/download/updates/desktop.json`
 - `https://github.com/Thijmen/remoted/releases/download/updates/agent.json`
+- `https://github.com/Thijmen/remoted/releases/download/updates/android.json` (Android, below)
 
 `tools/release/manifest.ts` writes them from the package's `CHANGELOG.md` and the signatures.
 The format is Tauri's static update JSON plus the release notes of every version:
@@ -142,6 +147,44 @@ one. `tauri build` writes it into the `.sig` files it makes; a file signed by ha
 `plugins.updater.dangerousInsecureTransportProtocol`; never in a release). Debug builds check
 automatically only with it. [clients/desktop/README.md](../clients/desktop/README.md#local-testing)
 has an end-to-end recipe.
+
+## rd Desktop for Android
+
+**When.** Once, at launch, in release builds only (debug APKs come from CI and would check on
+every install). There is no periodical check and no manual "check now".
+
+**What happens.** A newer `version_code` in `android.json` shows a banner on whatever page is
+loaded — the portal, a machine's connect page, the setup page — but never on a session page
+(`/m/…`, `/t/…`), so an update never interrupts a session. **Update** downloads the APK,
+checks the SHA-256 in the manifest, and hands it to Android's installer; **Later** hides the
+banner until the next launch. A failure is shown in the banner and can be retried.
+
+**Trust.** Android refuses to install an APK signed with a different key than the running app,
+so the signing key (not the manifest) is the trust anchor; the SHA-256 catches a broken
+download. `android.json` is not minisign-signed, unlike the other manifests.
+
+**Manifest.** `tools/release/android-manifest.ts` writes it from the APK and
+`clients/android/CHANGELOG.md`; it keeps Tauri's `version`/`platforms`/`releases` shape so the
+same publishing script works:
+
+```json
+{
+  "version": "0.2.0",
+  "version_code": 2000,
+  "notes": "- …",
+  "pub_date": "2026-10-31T12:00:00Z",
+  "platforms": {
+    "android-universal": {
+      "url": "https://github.com/…/android-v0.2.0/rd-desktop-0.2.0-android-arm64-armv7.apk",
+      "sha256": "…"
+    }
+  },
+  "releases": [{ "version": "0.2.0", "notes": "- …", "url": "…/releases/tag/android-v0.2.0" }]
+}
+```
+
+`version_code` is what Tauri derives from `X.Y.Z` (`major * 1_000_000 + minor * 1_000 + patch`);
+the app compares it with its own. Distribution and the key: [android.md](android.md).
 
 ## rd agent
 

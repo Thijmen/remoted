@@ -6,9 +6,10 @@ We also have a quick list of common questions to get you started engaging with t
 
 ## This repository
 
-Two packages are released this way: rd Desktop (`clients/desktop`, package `rd-desktop`, tags
-`desktop-vX.Y.Z`) and the rd agent (`crates/rd-agent`, package `rd-agent`, tags
-`agent-vX.Y.Z`). Changesets finds them through `lerna.json` at the root: that file only lists
+Three packages are released this way: rd Desktop (`clients/desktop`, package `rd-desktop`, tags
+`desktop-vX.Y.Z`), the rd agent (`crates/rd-agent`, package `rd-agent`, tags
+`agent-vX.Y.Z`) and the Android app (`clients/android`, package `rd-android`, tags
+`android-vX.Y.Z`; only a version holder, the app is built from `clients/desktop`). Changesets finds them through `lerna.json` at the root: that file only lists
 the packages for changesets, so the viewer and the desktop app keep their own `bun.lock` instead
 of becoming one bun workspace. `tools/release/sync-versions.ts` copies the versions into the
 Rust crates. Which package a changeset names: [AGENTS.md](../AGENTS.md). Releasing:

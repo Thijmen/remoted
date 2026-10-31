@@ -21,14 +21,17 @@ every push to `main` that touches the gateway, protocol, flow control or viewer.
   One or two sentences for the changelog, written for the people who use rd.
   ```
 
-- Changesets knows two packages (`lerna.json`); name the one whose users notice the change:
+- Changesets knows three packages (`lerna.json`); name the one whose users notice the change:
   - `rd-desktop` (`clients/desktop`): the desktop app. Its users see these notes in the app's
     update window.
   - `rd-agent` (`crates/rd-agent`): the agent on the machines you connect to (also for changes
     in `rd-agent-core`, `rd-platform-*`). Its notes show in the portal's **What's new**.
-  - A change to both names both. A change only to the gateway or the viewer ships with the
-    gateway image, not with an install: give it an empty changeset (`bun changeset --empty`),
-    so nobody is asked to update an app or agent that did not change.
+  - `rd-android` (`clients/android`): the Android app, released on `android-v*` and updated
+    through Android's installer. It is built from `clients/desktop`; the crate there carries
+    the mobile `cfg` code, and `clients/android/package.json` only holds the version.
+  - A change to several names all of them. A change only to the gateway or the viewer ships
+    with the gateway image, not with an install: give it an empty changeset
+    (`bun changeset --empty`), so nobody is asked to update an app or agent that did not change.
 - Bump: `patch` for fixes, `minor` for new features, `major` for incompatible changes.
 - Never edit the versions by hand: `bun run version` (what the Version packages PR runs) bumps
   `package.json` and `tools/release/sync-versions.ts` copies it into the Rust crates; CI checks

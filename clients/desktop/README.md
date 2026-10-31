@@ -13,9 +13,9 @@ GitHub releases ([Updates](#updates)). Design and the page ⇄ app bridge:
 [docs/desktop-client.md](../../docs/desktop-client.md); updates:
 [docs/updates.md](../../docs/updates.md).
 
-The same crate also builds an Android phone app (system WebView, no keyboard grab, no in-app
-viewer copy). It is in progress — a spike that shows the setup page and the gateway — and not
-part of the releases yet: [docs/android.md](../../docs/android.md).
+The same crate also builds an Android phone app (system WebView, touch gestures and a key bar,
+no keyboard grab, no in-app viewer copy). It is released separately, on `android-v*` tags, and
+updates itself through Android's installer: [docs/android.md](../../docs/android.md).
 
 ## Install
 

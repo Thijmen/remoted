@@ -15,6 +15,13 @@ viewer changes. It updates itself from the GitHub releases: [updates.md](updates
 Targets: Windows 10/11 (WebView2, preinstalled; per-user, no admin rights) and macOS 12+
 (WKWebView; universal app; the grab needs the Accessibility permission).
 
+On **Android** the app is just the viewer in the system WebView: it loads the same gateway and
+setup page, but refuses `rd_set_grab` (a phone has no system shortcuts to take) and has no
+tray, updater plugin or second window. Its Troubleshoot screen shows **Android**, explains that
+shortcuts stay on the phone, and offers **Change gateway** (`rd_open_setup`). Updates are a
+banner on the portal (`rd_android_update`), installed by Android rather than by the app. See
+[android.md](android.md).
+
 The app: [clients/desktop](../clients/desktop/README.md) (install, options, build, release).
 
 ## Bridge contract, version 1

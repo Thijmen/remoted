@@ -11,6 +11,8 @@ fn main() {
             "rd_open_keyboard_settings",
             "rd_setup_info",
             "rd_save_gateway",
+            "rd_open_setup",
+            "rd_android_update",
             "rd_update_state",
             "rd_update_check",
             "rd_update_install",

@@ -6,6 +6,8 @@
 //!
 //! Bridge contract: docs/desktop-client.md; updates: docs/updates.md.
 
+#[cfg(target_os = "android")]
+mod android;
 mod config;
 mod grab;
 #[cfg(target_os = "macos")]
@@ -17,8 +19,12 @@ mod grab_windows;
 mod installable;
 mod keys;
 mod keys_mac;
+// The APK updater's manifest, version code and banner text. Only the Android shell uses them,
+// but they are compiled everywhere so the tests run in normal CI.
 #[cfg(desktop)]
 mod menus;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod mobile_update;
 #[cfg(desktop)]
 mod notes;
 #[cfg(desktop)]
@@ -82,6 +88,10 @@ impl Current {
             // The update notice only exists on the desktop (see update.rs).
             #[cfg(desktop)]
             let capability = capability.permission("allow-rd-whats-new");
+            #[cfg(target_os = "android")]
+            let capability = capability
+                .permission("allow-rd-open-setup")
+                .permission("allow-rd-android-update");
             app.add_capability(
                 capability
                     .permission("allow-rd-keyboard-status")
@@ -188,6 +198,14 @@ fn rd_save_gateway(
     webview.navigate(url).map_err(|e| e.to_string())
 }
 
+/// Page -> app: show the setup page again, to change the gateway (the viewer's Troubleshoot
+/// screen on Android; the desktop has `--setup`).
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn rd_open_setup(webview: tauri::Webview) -> Result<(), String> {
+    android::open_setup(webview)
+}
+
 fn settings_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
@@ -233,13 +251,19 @@ pub fn run() {
             update::rd_update_install,
             update::rd_whats_new
         ]);
-    #[cfg(mobile)]
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(android::init());
+    // Only Android is built from this crate on the mobile side; the handler names Android-only
+    // commands (rd_open_setup, the APK updater).
+    #[cfg(target_os = "android")]
     let builder = builder.invoke_handler(tauri::generate_handler![
         rd_set_grab,
         rd_keyboard_status,
         rd_open_keyboard_settings,
         rd_setup_info,
-        rd_save_gateway
+        rd_save_gateway,
+        rd_open_setup,
+        android::rd_android_update
     ]);
 
     builder
@@ -304,6 +328,7 @@ fn setup(app: &mut tauri::App, args: config::Args) -> Result<(), Box<dyn std::er
     update::setup(app.handle());
 
     let nav = app.handle().clone();
+    let opener = app.handle().clone();
     let handle = app.handle().clone();
     #[cfg(all(debug_assertions, desktop))]
     let selftest = selftest::Selftest::from_env(&nav);
@@ -316,7 +341,7 @@ fn setup(app: &mut tauri::App, args: config::Args) -> Result<(), Box<dyn std::er
             if config::allowed_in_window(settings.as_ref(), url) {
                 return true;
             }
-            open_externally(url);
+            open_externally(&opener, url);
             false
         })
         .on_page_load(move |_window, payload| {
@@ -327,16 +352,20 @@ fn setup(app: &mut tauri::App, args: config::Args) -> Result<(), Box<dyn std::er
             // The update window waits while a session page is open; the notice after an update.
             #[cfg(desktop)]
             update::main_page(&handle, payload.url(), payload.event());
+            #[cfg(target_os = "android")]
+            android::page(&handle, payload.url(), payload.event());
             #[cfg(all(debug_assertions, desktop))]
             selftest.on_page_load(&_window, &payload);
         });
     // A phone has no window to place, no second window and no file drops.
     #[cfg(desktop)]
+    let opener_new = app.handle().clone();
+    #[cfg(desktop)]
     let builder = builder
         .center()
-        .on_new_window(|url, _features| {
+        .on_new_window(move |url, _features| {
             // window.open / target=_blank: always the system browser.
-            open_externally(&url);
+            open_externally(&opener_new, &url);
             NewWindowResponse::Deny
         })
         // File transfer (docs/files.md): files dropped on the window reach the page as HTML drag
@@ -410,25 +439,20 @@ fn on_download<R: tauri::Runtime>(webview: tauri::Webview<R>, event: DownloadEve
     }
 }
 
-fn open_externally(url: &Url) {
+fn open_externally(app: &tauri::AppHandle, url: &Url) {
     if !config::openable_externally(url) {
         log::warn!("blocked navigation to a {} URL", url.scheme());
         return;
     }
-    // Android has no `open` crate path yet: an update opens links in Chrome (step 3 of the
-    // Android work). Until then the page stays where it is.
+    log::info!("opening {} in the system browser", config::origin(url));
     #[cfg(desktop)]
-    {
-        log::info!("opening {} in the system browser", config::origin(url));
-        if let Err(e) = open::that_detached(url.as_str()) {
-            log::warn!("cannot open the system browser: {e}");
-        }
+    if let Err(e) = open::that_detached(url.as_str()) {
+        log::warn!("cannot open the system browser: {e}");
     }
-    #[cfg(mobile)]
-    log::warn!(
-        "not opening {} in a browser: external links are not wired up on this platform yet",
-        config::origin(url)
-    );
+    #[cfg(target_os = "android")]
+    android::open_url(app, url);
+    #[cfg(not(target_os = "android"))]
+    let _ = app;
 }
 
 /// Debug builds only: `RD_DESKTOP_SELFTEST=1` makes the loaded gateway page call

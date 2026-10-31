@@ -49,7 +49,13 @@ pub fn keyboard_status(version: String) -> KeyboardStatus {
     }
     #[cfg(not(target_os = "macos"))]
     KeyboardStatus {
-        platform: if cfg!(windows) { "windows" } else { "other" },
+        platform: if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "android") {
+            "android"
+        } else {
+            "other"
+        },
         version,
         grab: cfg!(windows),
         accessibility: None,

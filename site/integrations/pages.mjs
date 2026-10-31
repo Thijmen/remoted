@@ -28,6 +28,13 @@ export const syncedPages = [
 		description: 'Install rd-agent on a Windows 10 or 11 PC, set it up, and learn what it cannot reach.',
 	},
 	{
+		source: 'docs/android.md',
+		slug: 'guides/android',
+		title: 'Android app',
+		description:
+			'The rd Desktop phone app: install the APK, touch gestures and the key bar, soft-keyboard text, and how it updates itself.',
+	},
+	{
 		source: 'docs/devices.md',
 		slug: 'guides/devices',
 		title: 'Devices',

@@ -722,6 +722,8 @@ fn open_window(app: &AppHandle, mode: Mode, focus: bool) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let opener_nav = app.clone();
+        let opener_new = app.clone();
         let built = WebviewWindowBuilder::new(&app, WINDOW, WebviewUrl::App("update.html".into()))
             .title(mode.title())
             .inner_size(480.0, 560.0)
@@ -729,15 +731,15 @@ fn open_window(app: &AppHandle, mode: Mode, focus: bool) {
             .maximizable(false)
             .center()
             .focused(focus)
-            .on_navigation(|url| {
+            .on_navigation(move |url| {
                 if config::is_app_page(url) {
                     return true;
                 }
-                crate::open_externally(url);
+                crate::open_externally(&opener_nav, url);
                 false
             })
-            .on_new_window(|url, _features| {
-                crate::open_externally(&url);
+            .on_new_window(move |url, _features| {
+                crate::open_externally(&opener_new, &url);
                 NewWindowResponse::Deny
             })
             .build();
@@ -792,7 +794,7 @@ pub async fn rd_update_install(webview: tauri::Webview) -> Result<(), String> {
                 let page = release_url(&inner.releases, version);
                 drop(inner);
                 if let Ok(url) = Url::parse(&page) {
-                    crate::open_externally(&url);
+                    crate::open_externally(&app, &url);
                 }
                 return Ok(());
             }

@@ -4,6 +4,8 @@
 //
 //   rd-desktop  clients/desktop/package.json -> clients/desktop/src-tauri/Cargo.toml + its Cargo.lock
 //   rd-agent    crates/rd-agent/package.json -> crates/rd-agent/Cargo.toml + the workspace Cargo.lock
+//   rd-android  clients/android/package.json -> nowhere: it only holds the APK version, which CI
+//               passes to `tauri android build --config` (docs/android.md)
 //
 //   bun tools/release/sync-versions.ts           write Cargo.toml and Cargo.lock
 //   bun tools/release/sync-versions.ts --check   fail if they differ from package.json
@@ -18,8 +20,9 @@ const root = join(import.meta.dir, "..", "..");
 interface Package {
   name: string;
   packageJson: string;
-  cargoToml: string;
-  cargoLock: string;
+  /** Where the version is copied to; the Android app is built from the desktop crate instead. */
+  cargoToml?: string;
+  cargoLock?: string;
 }
 
 export const PACKAGES: Package[] = [
@@ -34,6 +37,10 @@ export const PACKAGES: Package[] = [
     packageJson: "crates/rd-agent/package.json",
     cargoToml: "crates/rd-agent/Cargo.toml",
     cargoLock: "Cargo.lock",
+  },
+  {
+    name: "rd-android",
+    packageJson: "clients/android/package.json",
   },
 ];
 
@@ -54,6 +61,7 @@ export function packageVersion(pkg: Package): string {
 /** Returns what is out of date (empty when in sync); with `write`, fixes it. */
 function sync(pkg: Package, write: boolean): string[] {
   const version = packageVersion(pkg);
+  if (!pkg.cargoToml || !pkg.cargoLock) return [];
   const tomlPath = join(root, pkg.cargoToml);
   const lockPath = join(root, pkg.cargoLock);
   // A Windows checkout may have CRLF line endings; the version lines below are matched with
@@ -97,7 +105,8 @@ if (import.meta.main) {
     json.version = version;
     writeFileSync(path, JSON.stringify(json, null, 2) + "\n");
     sync(pkg, true);
-    console.log(`${pkg.name} ${version}: wrote ${pkg.packageJson}, ${pkg.cargoToml} and ${pkg.cargoLock}`);
+    const where = pkg.cargoToml ? `, ${pkg.cargoToml} and ${pkg.cargoLock}` : "";
+    console.log(`${pkg.name} ${version}: wrote ${pkg.packageJson}${where}`);
     process.exit(0);
   }
   const check = args.includes("--check");
@@ -106,7 +115,8 @@ if (import.meta.main) {
     const version = packageVersion(pkg);
     const stale = sync(pkg, !check);
     if (stale.length === 0) {
-      console.log(`${pkg.name} ${version}: package.json, Cargo.toml and Cargo.lock agree`);
+      const what = pkg.cargoToml ? "package.json, Cargo.toml and Cargo.lock agree" : "package.json (no crate)";
+      console.log(`${pkg.name} ${version}: ${what}`);
     } else if (check) {
       console.error(`${pkg.name} version mismatch: package.json has ${version}, ${stale.join(", ")}.`);
       failed = true;

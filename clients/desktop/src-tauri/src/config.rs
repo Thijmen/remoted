@@ -284,8 +284,8 @@ fn is_under(host: &str, domain: &str) -> bool {
 }
 
 /// Is `url` a session page of the gateway (`/m/<machine>`, or the terminal page `/t/<machine>`)?
-/// The update window does not open over one: it waits until the page is left.
-#[cfg(desktop)]
+/// The update window does not open over one: it waits until the page is left. Android uses it
+/// too, for the system bars and the screen timeout.
 pub fn is_session_page(settings: Option<&Settings>, url: &Url) -> bool {
     settings.is_some_and(|s| url.origin() == s.gateway_url.origin())
         && (url.path().starts_with("/m/") || url.path().starts_with("/t/"))

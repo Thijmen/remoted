@@ -64,6 +64,7 @@ export default defineConfig({
 						'guides/windows-agent',
 						'guides/devices',
 						'guides/desktop-app',
+						'guides/android',
 					],
 				},
 				{

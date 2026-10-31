@@ -1,14 +1,16 @@
 name: Release
 
-# Changesets (https://github.com/changesets/changesets) for rd Desktop (rd-desktop) and the rd
-# agent (rd-agent), which are versioned and released separately (docs/updates.md).
+# Changesets (https://github.com/changesets/changesets) for rd Desktop (rd-desktop), the rd
+# agent (rd-agent) and the Android app (rd-android), which are versioned and released
+# separately (docs/updates.md).
 #
 # - A push to main with pending .changeset/*.md files opens or updates the "Version packages"
 #   PR: it bumps the packages' package.json, writes their CHANGELOG.md and copies the versions
 #   into the Rust crates (tools/release/sync-versions.ts).
-# - A push to main without pending changesets (the merged version PR) tags desktop-vX.Y.Z and
-#   agent-vX.Y.Z when those tags do not exist yet, and starts the Desktop / Agent workflow on
-#   each new tag. They build, publish the GitHub Release and update the update manifest.
+# - A push to main without pending changesets (the merged version PR) tags desktop-vX.Y.Z,
+#   agent-vX.Y.Z and android-vX.Y.Z when those tags do not exist yet, and starts the Desktop /
+#   Agent / Android workflow on each new tag. They build, publish the GitHub Release and update
+#   the update manifest.
 #
 # Needs "Allow GitHub Actions to create and approve pull requests" (Settings -> Actions ->
 # General). The version PR is pushed with GITHUB_TOKEN, so CI does not run on it by itself.
@@ -29,9 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # version PR branch, desktop-v* / agent-v* tags
+      contents: write # version PR branch, desktop-v* / agent-v* / android-v* tags
       pull-requests: write # version PR
-      actions: write # gh workflow run desktop.yml / agent.yml
+      actions: write # gh workflow run desktop.yml / agent.yml / android.yml
     steps:
       - uses: actions/checkout@v7
         with:
@@ -73,4 +75,5 @@ jobs:
           done <<'PACKAGES'
           rd-desktop desktop-v desktop.yml rd Desktop
           rd-agent agent-v agent.yml rd agent
+          rd-android android-v android.yml rd Android
           PACKAGES

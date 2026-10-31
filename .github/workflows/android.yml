@@ -17,12 +17,14 @@ on:
       - "clients/desktop/**"
       - "clients/android/**"
       - "crates/rd-proto/**"
+      - "tools/release/**"
       - ".github/workflows/android.yml"
   pull_request:
     paths:
       - "clients/desktop/**"
       - "clients/android/**"
       - "crates/rd-proto/**"
+      - "tools/release/**"
       - ".github/workflows/android.yml"
   workflow_dispatch:
 
@@ -163,4 +165,16 @@ jobs:
             "rd-desktop-$VERSION-android-arm64-armv7.apk" \
             "SHA256SUMS-android.txt" \
             --title "rd Android $VERSION" \
-            --notes "The rd Desktop Android app, $VERSION (arm64 + armv7). Sideload it on a phone; see docs/android.md."
+            --notes "The rd Desktop Android app, $VERSION (arm64 + armv7). Sideload it on a phone; see docs/android.md. It checks android.json for updates from the portal."
+
+      - name: Update manifest
+        if: needs.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bun tools/release/android-manifest.ts --version "$VERSION" \
+            --apk "rd-desktop-$VERSION-android-arm64-armv7.apk" --out android.json
+          cat android.json
+          bash tools/release/publish-manifest.sh android.json

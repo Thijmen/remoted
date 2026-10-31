@@ -19,3 +19,9 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# The Rust side registers this class by name (src/android.rs), and Tauri reads its @Command
+# methods by reflection: keep both when the release build is minified.
+-keep class dev.thijmen.rd.desktop.RdAndroidPlugin { *; }
+-keepclassmembers class dev.thijmen.rd.desktop.RdAndroidPlugin {
+  @app.tauri.annotation.Command <methods>;
+}
