@@ -1,7 +1,8 @@
 name: Agent
 
 # The rd agent (crates/rd-agent), for the machines you connect to: Windows (per-user NSIS
-# installer + zip) and macOS (universal RD Agent.app, zipped), with update signatures
+# installer + zip), macOS (universal RD Agent.app, zipped) and Linux (static musl binaries for
+# x86_64 and aarch64, tar.gz; packaging/linux/install.sh fetches them), with update signatures
 # (docs/updates.md). An agent-v* tag also publishes them as a GitHub Release and then points the
 # update manifest (agent.json on the `updates` release) at it. release.yml (changesets) creates
 # the tags and dispatches this workflow on them. (Path filters do not apply to tag pushes.)
@@ -190,6 +191,80 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  linux:
+    name: Linux (${{ matrix.arch }}, static)
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          targets: ${{ matrix.arch }}-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}-musl
+      # musl-gcc for the C parts (Opus, built with CMake): one static binary that runs on any
+      # distribution, whatever its glibc.
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools cmake
+
+      - name: Build
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: "false"
+          CARGO_PROFILE_RELEASE_STRIP: symbols
+        run: cargo build --release --locked -p rd-agent --target "$TARGET"
+
+      - name: Check
+        run: |
+          bin="target/$TARGET/release/rd-agent"
+          file "$bin"
+          # Static (or static-pie, as `file` calls the x86_64 build): no dynamic loader, no
+          # shared libraries.
+          if readelf -lW "$bin" | grep -q INTERP || readelf -dW "$bin" | grep -q NEEDED; then
+            echo "::error::rd-agent is not static"; exit 1
+          fi
+          "$bin" --version
+
+      - name: Installer
+        run: shellcheck packaging/linux/install.sh
+
+      - name: Collect
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          mkdir -p out pkg
+          # The key tables in rd-agent derive from Chromium (BSD-3-Clause): ship the notice.
+          cp "target/$TARGET/release/rd-agent" THIRD_PARTY_NOTICES.md pkg/
+          tar -C pkg -czf "out/rd-agent-$v-linux-${{ matrix.arch }}.tar.gz" rd-agent THIRD_PARTY_NOTICES.md
+          ls -l out
+
+      - name: Installer smoke test
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          (cd out && sha256sum -- *.tar.gz > SHA256SUMS.txt)
+          home="$(mktemp -d)"
+          HOME="$home" RD_AGENT_VERSION="$v" RD_DOWNLOAD_BASE="file://$PWD/out" \
+            sh packaging/linux/install.sh </dev/null
+          "$home/.local/bin/rd-agent" --version
+          rm out/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rd-agent-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
   macos:
     name: macOS (universal RD Agent.app)
     needs: version
@@ -266,7 +341,7 @@ jobs:
   release:
     name: Release
     if: needs.version.outputs.release == 'true'
-    needs: [version, windows, macos]
+    needs: [version, windows, macos, linux]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -301,6 +376,10 @@ jobs:
 
           macOS 15+ (Apple silicon and Intel); setup: docs/setup-mac.md. Signed with the project's own certificate, not notarized: the first start needs System Settings -> Privacy & Security -> Open Anyway.
           - rd-agent-$V-macos-universal.zip: RD Agent.app; move it to Applications, then run its setup
+
+          Linux (x86_64, aarch64; any distribution): the terminal and files, no screen; setup: docs/setup-linux.md. Install as your user with the setup code from the portal:
+              curl -fsSL https://raw.githubusercontent.com/Thijmen/remoted/main/packaging/linux/install.sh | sh -s -- <setup code>
+          - rd-agent-$V-linux-x86_64.tar.gz, rd-agent-$V-linux-aarch64.tar.gz: the static rd-agent binary; does not update itself (run the installer again)
 
           The .sig and SHA256SUMS.txt files are for the updater and for checking downloads.
           NOTES

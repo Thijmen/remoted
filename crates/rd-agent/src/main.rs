@@ -164,6 +164,11 @@ struct SetupArgs {
     /// Machine id (asked for when missing).
     #[arg(long, value_name = "ID")]
     machine: Option<String>,
+    /// The setup code from the portal's Add device (instead of asking for it), e.g. from
+    /// packaging/linux/install.sh. Also read from RD_SETUP_CODE.
+    #[arg(long, value_name = "CODE", env = "RD_SETUP_CODE", hide_env_values = true,
+          conflicts_with_all = ["gateway", "machine"])]
+    code: Option<String>,
     /// Do not install the login service (LaunchAgent / autostart).
     #[arg(long, alias = "no-autostart")]
     no_launch_agent: bool,
@@ -480,5 +485,19 @@ mod tests {
             panic!("expected run");
         };
         assert!(args.terminal_only);
+    }
+
+    #[test]
+    fn setup_code_flag() {
+        let cli = Cli::try_parse_from(["rd-agent", "setup", "--code", "rds1_x"]).unwrap();
+        let Some(Command::Setup(args)) = cli.command else {
+            panic!("expected setup");
+        };
+        assert_eq!(args.code.as_deref(), Some("rds1_x"));
+        // A code already names the gateway and the machine.
+        assert!(
+            Cli::try_parse_from(["rd-agent", "setup", "--code", "rds1_x", "--machine", "m"])
+                .is_err()
+        );
     }
 }

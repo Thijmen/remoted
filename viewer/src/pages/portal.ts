@@ -403,6 +403,22 @@ function detail(label: string, value: string): HTMLElement {
   return h('div', null, `${label}: `, h('code', { style: 'word-break:break-all' }, value));
 }
 
+/** packaging/linux/install.sh, which installs the agent and sets it up with the code. */
+const LINUX_INSTALL = 'https://raw.githubusercontent.com/Thijmen/remoted/main/packaging/linux/install.sh';
+
+/** A command line in a box, with its own copy button. */
+function commandBox(command: string): HTMLElement {
+  const text = h('code', { className: 'mono', style: 'word-break:break-all;flex:1' }, command);
+  const copy = h('button', { className: 'small', type: 'button' }, 'Copy');
+  copy.addEventListener('click', () => {
+    navigator.clipboard.writeText(command).then(
+      () => (copy.textContent = 'Copied'),
+      () => (copy.textContent = 'Select and copy it'),
+    );
+  });
+  return h('div', { className: 'row', style: 'align-items:flex-start' }, text, copy);
+}
+
 /** The setup code, shown once. */
 function showIssued(d: DeviceIssued, replaced: boolean): void {
   const title = d.name ?? d.machine;
@@ -438,6 +454,21 @@ function showIssued(d: DeviceIssued, replaced: boolean): void {
         { className: 'muted', style: 'margin:0' },
         'It is shown only once and works like a password: anyone who has it can connect as this device.',
         replaced ? ' The old token no longer works.' : '',
+      ),
+      h(
+        'details',
+        null,
+        h('summary', null, 'Linux server: install and set up in one command'),
+        h(
+          'div',
+          { className: 'stack' },
+          h(
+            'p',
+            { className: 'muted', style: 'margin:0' },
+            'Run it as the user whose shell you want in the browser (not root). It installs the agent to ~/.local/bin and starts it as a systemd user service; the server gets the terminal and files, no screen.',
+          ),
+          commandBox(`curl -fsSL ${LINUX_INSTALL} | sh -s -- ${d.setupCode}`),
+        ),
       ),
       h(
         'details',

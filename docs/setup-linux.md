@@ -10,41 +10,45 @@ the user the agent runs as.
 
 ## Requirements
 
-- Any Linux on x86-64 or ARM64. `rd-agent install` needs systemd (a user unit); without it, run
-  `rd-agent run` from your own service manager.
-- To build it: Rust (the version in `rust-toolchain.toml`), a C compiler and CMake (for the
-  Opus dependency).
+- Any Linux on x86-64 or ARM64 (the release builds are static: no particular distribution or
+  glibc). Agent releases from 1.11.0 on include them.
+- `curl`, and systemd for the user unit (without systemd, run `rd-agent run` from your own
+  service manager).
 
-## 1. Build
+## 1. Add the server in the portal
 
-On the server, from a checkout of this repository:
+Click **Add device** in the portal ([devices.md](devices.md)). Use a machine id such as `box`
+or the host name. The dialog shows the setup code, and under **Linux server** the whole install
+command with the code filled in.
 
-```sh
-sudo apt install build-essential cmake      # Debian/Ubuntu; other distributions: the same tools
-cargo build --release -p rd-agent
-install -Dm755 target/release/rd-agent ~/.local/bin/rd-agent
-```
+## 2. Install
 
-There are no Linux release builds and no self-update yet: to update, pull, build and install
-again, then `systemctl --user restart rd-agent`.
-
-## 2. Add the server in the portal
-
-Click **Add device** in the portal and copy the **setup code** ([devices.md](devices.md)). Use a
-machine id such as `box` or the host name.
-
-## 3. Setup
-
-As the user whose shell you want in the browser (not root):
+On the server, as the user whose shell you want in the browser (not root):
 
 ```sh
-rd-agent setup
+curl -fsSL https://raw.githubusercontent.com/Thijmen/remoted/main/packaging/linux/install.sh | sh -s -- <setup code>
 ```
 
-Paste the setup code (or press Enter and type the gateway URL, machine id and token). Setup
-writes `~/.config/rd-agent/config.toml` (mode 0600, with the token), and installs, enables and
-starts a **systemd user unit**, `~/.config/systemd/user/rd-agent.service`. There are no
-permissions to grant.
+[`install.sh`](../packaging/linux/install.sh) downloads the newest agent release for your
+architecture from GitHub, checks it against the release's `SHA256SUMS.txt`, installs it as
+`~/.local/bin/rd-agent` and runs `rd-agent setup --code <setup code>`. Setup writes
+`~/.config/rd-agent/config.toml` (mode 0600, with the token), and installs, enables and starts a
+**systemd user unit**, `~/.config/systemd/user/rd-agent.service`. There are no permissions to
+grant.
+
+Without a setup code the script asks setup's questions instead. `RD_AGENT_VERSION=1.11.0`
+installs a given version; `RD_INSTALL_DIR` puts the binary elsewhere.
+
+**Updating:** the Linux agent does not update itself yet. Run the same command without the
+setup code; it replaces the binary and restarts the agent:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Thijmen/remoted/main/packaging/linux/install.sh | sh
+```
+
+**Building it yourself** instead: Rust (the version in `rust-toolchain.toml`), a C compiler and
+CMake (for Opus), then `cargo build --release -p rd-agent`, copy `target/release/rd-agent` to
+`~/.local/bin` and run `rd-agent setup`.
 
 User services stop when you log out. To keep the agent running without a login, and start it at
 boot:
@@ -53,7 +57,7 @@ boot:
 sudo loginctl enable-linger "$USER"
 ```
 
-## 4. Check
+## 3. Check
 
 ```sh
 rd-agent status

@@ -61,7 +61,14 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
     println!("rd-agent setup (config: {})", path.display());
 
     // A setup code answers all three questions; flags mean a scripted setup without one.
-    let code = if args.gateway.is_none() && args.machine.is_none() {
+    let code = if let Some(code) = args
+        .code
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        Some(SetupCode::decode(code).map_err(|e| anyhow::anyhow!("--code: {e}"))?)
+    } else if args.gateway.is_none() && args.machine.is_none() {
         prompt_setup_code()?
     } else {
         None
