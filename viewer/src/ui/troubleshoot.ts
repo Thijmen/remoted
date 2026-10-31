@@ -60,7 +60,7 @@ export interface TroubleshootInput {
 }
 
 export type CheckLevel = 'ok' | 'warn' | 'bad' | 'info';
-export type CheckAction = 'open-accessibility' | 'recheck';
+export type CheckAction = 'open-accessibility' | 'recheck' | 'change-gateway';
 
 export interface Check {
   id: string;
@@ -89,17 +89,33 @@ export function troubleshootChecks(i: TroubleshootInput): Check[] {
       detail: `A browser tab cannot capture system shortcuts (${keys}): they stay on ${here}. Open ${i.machine} in rd Desktop to send them.`,
     });
   } else {
-    out.push({ id: 'app', level: 'ok', title: status?.version ? `rd Desktop ${status.version}` : 'rd Desktop' });
-    out.push(
-      i.grab.refusal === null
-        ? {
-            id: 'grab',
-            level: 'ok',
-            title: `Shortcuts go to ${i.machine}`,
-            detail: `${keys} and the other system shortcuts are sent while the video has focus.`,
-          }
-        : { id: 'grab', level: 'bad', title: `Shortcuts stay on ${here}`, detail: i.grab.refusal },
-    );
+    // Android has no system shortcuts to take; the phone's key bar is the whole story there.
+    const android = status?.platform === 'android';
+    out.push({
+      id: 'app',
+      level: 'ok',
+      title: status?.version ? `rd Desktop ${status.version}${android ? ' · Android' : ''}` : 'rd Desktop',
+      actions: android ? ['change-gateway'] : undefined,
+    });
+    if (android)
+      out.push({
+        id: 'grab',
+        level: 'info',
+        title: 'Shortcuts stay on this phone',
+        detail:
+          'Android has no system shortcuts to take. The key bar sends Ctrl, Alt, Cmd, Esc, Tab, the arrows and F1–F12 to the remote machine.',
+      });
+    else
+      out.push(
+        i.grab.refusal === null
+          ? {
+              id: 'grab',
+              level: 'ok',
+              title: `Shortcuts go to ${i.machine}`,
+              detail: `${keys} and the other system shortcuts are sent while the video has focus.`,
+            }
+          : { id: 'grab', level: 'bad', title: `Shortcuts stay on ${here}`, detail: i.grab.refusal },
+      );
     if (i.viewer === 'mac' || status?.platform === 'macos') out.push(accessibilityCheck(i, status));
     if (status?.secureInput)
       out.push({
@@ -202,6 +218,7 @@ function mappingCheck(i: TroubleshootInput): Check {
 const ACTION_LABEL: Readonly<Record<CheckAction, string>> = {
   'open-accessibility': 'Open Accessibility settings',
   recheck: 'Check again',
+  'change-gateway': 'Change gateway',
 };
 
 /** The Troubleshoot view of the session menu. */

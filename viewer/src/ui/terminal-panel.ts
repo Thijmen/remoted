@@ -109,7 +109,21 @@ export class TerminalPanel {
   /** The panel is gone: detach (the shell keeps running). */
   hidden(): void {
     this.open = false;
+    this.view.resetSticky();
     this.view.detach();
+  }
+
+  /** On-screen key bar while the terminal has the keyboard: Esc, Tab, arrows, F-keys, Ctrl+C. */
+  sendKey(code: string): void {
+    this.view.sendKey(code);
+  }
+
+  toggleSticky(code: string): boolean {
+    return this.view.toggleSticky(code);
+  }
+
+  stickyHeld(code: string): boolean {
+    return this.view.stickyHeld(code);
   }
 
   focus(): void {

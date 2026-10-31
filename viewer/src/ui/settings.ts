@@ -94,6 +94,15 @@ export function loadSettings(machine: string, nav: PlatformHint = navigator, coa
   }
 }
 
+/** Has this machine been set up on this device before (so the phone quality card is not needed again)? */
+export function hasSavedSettings(machine: string): boolean {
+  try {
+    return localStorage.getItem(storageKey(machine)) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export function saveSettings(machine: string, s: Settings): void {
   try {
     localStorage.setItem(storageKey(machine), JSON.stringify(s));

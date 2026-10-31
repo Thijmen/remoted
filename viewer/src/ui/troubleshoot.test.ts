@@ -158,4 +158,24 @@ describe('troubleshootChecks', () => {
     expect(byId(troubleshootChecks(input({ hostInput: false })), 'host-input')?.level).toBe('bad');
     expect(byId(troubleshootChecks(input({ hostInput: null })), 'host-input')).toBeUndefined();
   });
+
+  it('explains the phone app and offers to change the gateway', () => {
+    const android: KeyboardStatus = {
+      platform: 'android',
+      version: '0.1.0',
+      grab: false,
+      accessibility: null,
+      secureInput: null,
+    };
+    const checks = troubleshootChecks(
+      input({
+        viewer: 'other',
+        status: android,
+        grab: { inApp: true, grabbing: false, refusal: 'keyboard grab not supported on this platform' },
+      }),
+    );
+    expect(byId(checks, 'app')).toMatchObject({ level: 'ok', actions: ['change-gateway'] });
+    expect(byId(checks, 'grab')).toMatchObject({ level: 'info', title: 'Shortcuts stay on this phone' });
+    expect(byId(checks, 'accessibility')).toBeUndefined();
+  });
 });

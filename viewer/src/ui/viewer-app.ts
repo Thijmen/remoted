@@ -32,6 +32,7 @@ import { KeyBar } from './key-bar';
 import {
   type Settings,
   displaySize,
+  hasSavedSettings,
   loadSettings,
   pickDisplay,
   resolveSize,
@@ -115,10 +116,27 @@ export class ViewerApp {
   private readonly input: InputController;
   /** On-screen keys for touch screens (coarse pointer). */
   private readonly keyBar = new KeyBar({
-    tap: (code) => this.input.keyBarTap(code),
-    toggle: (code) => this.input.keyBarToggle(code),
-    held: (code) => this.input.keyBarHeld(code),
-    keyboard: () => this.input.toggleSoftKeyboard(),
+    tap: (code) => {
+      const terminal = this.terminalKeys();
+      if (terminal) terminal.sendKey(code);
+      else this.input.keyBarTap(code);
+    },
+    toggle: (code) => {
+      const terminal = this.terminalKeys();
+      return terminal ? terminal.toggleSticky(code) : this.input.keyBarToggle(code);
+    },
+    held: (code) => {
+      const terminal = this.terminalKeys();
+      return terminal ? terminal.stickyHeld(code) : this.input.keyBarHeld(code);
+    },
+    keyboard: () => {
+      const terminal = this.terminalKeys();
+      if (terminal) {
+        terminal.focus();
+        return true;
+      }
+      return this.input.toggleSoftKeyboard();
+    },
   });
   private readonly latency: LatencyTest;
   private audio: AudioPlayer | null = null;
@@ -297,6 +315,21 @@ export class ViewerApp {
       ? [osLabel(info.os), info.agent_version && `agent ${info.agent_version}`].filter(Boolean).join(' · ')
       : 'Machine status unavailable.';
     const recovery = this.recoveryActions();
+    // The agreed phone flow: the first visit to a machine on a touch screen picks the quality
+    // (a phone has no mouse to change it comfortably mid-session); it is saved on change.
+    const firstOnPhone = isCoarsePointer() && !hasSavedSettings(this.machine);
+    const quality = firstOnPhone
+      ? h(
+          'section',
+          { className: 'first-quality stack' },
+          h(
+            'div',
+            { className: 'notice info' },
+            'First time on this phone: choose the picture quality for this machine. You can change it later in the session menu.',
+          ),
+          settingsPanel(this.settings, (s) => this.applySettings(s), 'first'),
+        )
+      : null;
     setChildren(
       this.connectView,
       h(
@@ -313,6 +346,7 @@ export class ViewerApp {
         badges.length ? h('div', { className: 'row' }, ...badges) : null,
         info?.viewer ? h('div', { className: 'muted' }, 'Connecting takes over the existing session.') : null,
         ...problems.map((p) => h('div', { className: 'notice bad' }, p)),
+        quality,
         connect,
         info?.files
           ? h(
@@ -343,12 +377,14 @@ export class ViewerApp {
               ),
             )
           : null,
-        h(
-          'details',
-          { className: 'disclosure' },
-          h('summary', null, icon('settings', 16), 'Stream settings'),
-          settingsPanel(this.settings, (s) => this.applySettings(s)),
-        ),
+        firstOnPhone
+          ? null
+          : h(
+              'details',
+              { className: 'disclosure' },
+              h('summary', null, icon('settings', 16), 'Stream settings'),
+              settingsPanel(this.settings, (s) => this.applySettings(s)),
+            ),
         shortcutsHint(),
       ),
     );
@@ -795,6 +831,11 @@ export class ViewerApp {
     return this.terminalLoading;
   }
 
+  /** The terminal panel when it has the keyboard: the key bar then types into the shell, not the screen. */
+  private terminalKeys(): TerminalPanel | null {
+    return this.terminal?.isOpen && this.terminal.hasFocus ? this.terminal : null;
+  }
+
   /** Show the terminal panel below the remote screen and give it the keyboard. */
   private async openTerminal(): Promise<void> {
     let panel: TerminalPanel;
@@ -1214,6 +1255,11 @@ export class ViewerApp {
         return;
       case 'recheck':
         void this.refreshKeyboardStatus();
+        return;
+      case 'change-gateway':
+        this.input.callApp('rd_open_setup').catch((e: unknown) => {
+          console.warn('rd: cannot open the setup page', e);
+        });
     }
   }
 

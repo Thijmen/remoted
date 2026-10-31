@@ -9,6 +9,7 @@ import { isMacViewer } from '../input/modifiers';
 import { type TermOutMsg, encodeTermAck, encodeTermIn } from '../proto/bin';
 import { TERMINAL_PROTO_VERSION, type TermHello, type TermViewerMsg, clampSize, describeExit } from '../proto/terminal';
 import { type TermStatus, TerminalChannel, isFinal } from '../terminal/channel';
+import { type TerminalMods, NO_MODS, applyMods, modForCode, terminalKey } from '../terminal/keys';
 import { AckTracker, OutputPosition, ReplayFilter, binaryStringBytes, splitInput, textBytes } from '../terminal/output';
 import { type Child, h, setChildren } from './dom';
 import { icon } from './icons';
@@ -114,6 +115,9 @@ export function loadFontSize(): number {
  * and after a reload of the page (the shell's id is in sessionStorage).
  */
 export class TerminalView {
+  /** Sticky key-bar modifiers for the next typed character (see `stickyText`). */
+  private sticky: TerminalMods = NO_MODS;
+
   readonly el: HTMLElement;
   /** xterm's parent, the box it fits into (the fit addon measures it; padding goes on its wrapper). */
   private readonly host = h('div', { className: 'term-screen' });
@@ -181,7 +185,7 @@ export class TerminalView {
     this.term.unicode.activeVersion = '11';
     this.registerReplayGuards();
     this.term.attachCustomKeyEventHandler((e) => this.onKey(e));
-    this.term.onData((d) => this.input(textBytes(d)));
+    this.term.onData((d) => this.input(textBytes(this.stickyText(d))));
     this.term.onBinary((d) => this.input(binaryStringBytes(d)));
     this.term.onResize(() => this.scheduleResize());
     this.term.onTitleChange((t) => {
@@ -333,6 +337,40 @@ export class TerminalView {
 
   get hasFocus(): boolean {
     return this.el.contains(document.activeElement);
+  }
+
+  /** A key from the on-screen key bar: the phone keyboard has no Esc, Tab, arrows or F-keys. */
+  sendKey(code: string): void {
+    const seq = terminalKey(code);
+    if (seq === null) return;
+    this.term.input(seq, true);
+    this.focus();
+  }
+
+  /** Toggle a sticky Ctrl/Alt/Shift for the next typed character; returns whether it is held. */
+  toggleSticky(code: string): boolean {
+    const mod = modForCode(code);
+    if (mod === null) return false;
+    this.sticky = { ...this.sticky, [mod]: !this.sticky[mod] };
+    return this.sticky[mod];
+  }
+
+  stickyHeld(code: string): boolean {
+    const mod = modForCode(code);
+    return mod !== null && this.sticky[mod];
+  }
+
+  /** The terminal lost the keyboard (or got a new shell): no modifier is left armed. */
+  resetSticky(): void {
+    this.sticky = NO_MODS;
+  }
+
+  /** Ctrl+C and Alt+B: the modifiers apply to the next single character the phone types. */
+  private stickyText(data: string): string {
+    if (data.length !== 1 || (!this.sticky.ctrl && !this.sticky.alt)) return data;
+    const out = applyMods(data, this.sticky);
+    this.sticky = { ...this.sticky, ctrl: false, alt: false };
+    return out;
   }
 
   /** Fit the terminal to its box now (after a layout change). */

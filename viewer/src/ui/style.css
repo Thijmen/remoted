@@ -696,6 +696,11 @@ body.viewer {
   margin-top: 16px;
 }
 
+/* The first visit to a machine on a phone: pick the quality before connecting (viewer-app.ts). */
+.first-quality .notice {
+  margin: 0 0 10px;
+}
+
 .back-link {
   display: inline-flex;
   align-items: center;

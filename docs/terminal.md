@@ -13,6 +13,10 @@ and none has to be reachable.
 - **During a session:** open the session menu (the ▾ tab at the top) and click **Terminal**,
   or press Ctrl+Alt+Shift+`` ` `` (the key left of 1). The terminal opens in a panel next to the remote screen. While
   it has the focus, your keys go to the shell, not to the remote screen.
+- **On a phone:** tap into the terminal to bring up the phone keyboard, and use the on-screen key
+  bar for Escape, Tab, the arrows and F1–F12; a sticky Ctrl or Alt applies to the next character
+  (Ctrl+C, Alt+B). The bar types into the terminal while it has the focus and into the screen
+  otherwise.
 - **Several shells:** every terminal page or panel runs its own shell. **New terminal** in the
   page's header opens another one in a new browser tab (in rd Desktop: in your browser).
 - **Copy and paste:** select text to copy it with Ctrl+Shift+C (Cmd+C on a Mac); paste with
