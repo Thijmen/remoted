@@ -83,6 +83,8 @@ pub struct FakePlatform {
     /// Nothing changes on screen: after its first frame the pipeline only captures when the
     /// gate wants a refresh (like ScreenCaptureKit, which delivers no frame for an idle screen).
     static_screen: Arc<AtomicBool>,
+    /// No screen (`Platform::has_screen` false), like `rd_agent_core::headless`.
+    headless: bool,
 }
 
 impl FakePlatform {
@@ -99,7 +101,15 @@ impl FakePlatform {
             capture_failure: Arc::default(),
             start_failure: Arc::default(),
             static_screen: Arc::default(),
+            headless: false,
         })
+    }
+
+    /// A platform without a screen; the terminal and files work as usual.
+    pub fn headless() -> Arc<Self> {
+        let mut p = Arc::into_inner(FakePlatform::new(30)).expect("fresh Arc");
+        p.headless = true;
+        Arc::new(p)
     }
 
     pub fn set_capture_failure(&self, reason: Option<&str>) {
@@ -155,6 +165,9 @@ impl FakePlatform {
 impl Platform for FakePlatform {
     fn os(&self) -> &'static str {
         "fakeos"
+    }
+    fn has_screen(&self) -> bool {
+        !self.headless
     }
     fn os_description(&self) -> String {
         "FakeOS 1.0".into()

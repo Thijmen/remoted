@@ -365,6 +365,10 @@ pub mod agent_caps {
     /// Unicode text input (`InputEvent::Text`): the viewer may send committed IME/soft-keyboard
     /// text. Old agents do not list it, and the viewer hides its keyboard button then.
     pub const TEXT: &str = "text";
+    /// No screen: the agent serves only the terminal and files (a Linux server, or
+    /// `[terminal] only = true`). The gateway refuses viewer sessions to it (close 4011). Old
+    /// agents do not list it: they all have a screen.
+    pub const HEADLESS: &str = "headless";
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

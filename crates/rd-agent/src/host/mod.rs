@@ -1,13 +1,17 @@
 //! Host-specific pieces of the binary: the [`rd_agent_core::Platform`], token storage,
 //! permissions, the login service (a LaunchAgent on macOS, an autostart entry on Windows) and
-//! the selftest. Other targets compile with an "unsupported platform" error.
+//! the selftest. Linux has no screen: the agent serves the terminal and files, and a systemd
+//! user unit starts it. Other targets compile with an "unsupported platform" error.
 
 use std::path::PathBuf;
 
 /// Replaces the log directory (tests, development).
 const LOG_DIR_ENV: &str = "RD_AGENT_LOG_DIR";
 
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", windows, target_os = "linux")),
+    allow(dead_code)
+)]
 fn log_dir_override() -> Option<PathBuf> {
     std::env::var_os(LOG_DIR_ENV)
         .filter(|d| !d.is_empty())
@@ -24,9 +28,14 @@ mod windows;
 #[cfg(windows)]
 pub use self::windows::*;
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::*;
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 mod unsupported;
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 pub use unsupported::*;
 
 /// State of the login service that starts the agent.

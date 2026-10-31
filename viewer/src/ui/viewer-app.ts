@@ -271,18 +271,29 @@ export class ViewerApp {
   private renderConnect(): void {
     const info = this.info;
     const name = info?.name ?? this.machine;
+    // Agents without a screen serve the terminal and files only.
+    const screen = info?.screen ?? true;
     const problems: string[] = [];
-    if (!window.isSecureContext)
+    if (!screen) {
+      // WebCodecs does not matter then.
+    } else if (!window.isSecureContext)
       problems.push('This page is not a secure context (HTTPS or localhost), so WebCodecs is unavailable.');
     else if (typeof VideoDecoder === 'undefined')
       problems.push('This browser has no WebCodecs VideoDecoder. Use a current Chrome or Edge.');
-    const connect = h(
-      'button',
-      { type: 'button', className: 'primary big block', disabled: problems.length > 0, onclick: () => this.connect() },
-      'Connect',
-    );
+    const connect = screen
+      ? h(
+          'button',
+          {
+            type: 'button',
+            className: 'primary big block',
+            disabled: problems.length > 0,
+            onclick: () => this.connect(),
+          },
+          'Connect',
+        )
+      : h('div', { className: 'muted' }, 'This machine has no screen to connect to: it offers the terminal and files.');
     const badges: HTMLElement[] = [];
-    if (info) {
+    if (info && screen) {
       if (info.state?.locked) badges.push(h('span', { className: 'badge warn' }, 'locked'));
       if (info.state && !info.state.perms.screen)
         badges.push(h('span', { className: 'badge bad' }, 'no screen permission'));
@@ -306,7 +317,7 @@ export class ViewerApp {
         h(
           'header',
           { className: 'machine-head' },
-          h('div', { className: 'machine-avatar' }, icon('monitor', 26)),
+          h('div', { className: 'machine-avatar' }, icon(screen ? 'monitor' : 'terminal', 26)),
           h('div', { className: 'machine-title' }, h('h1', null, name), h('div', { className: 'muted' }, details)),
           info ? statusPill(info.online) : null,
         ),
@@ -328,7 +339,7 @@ export class ViewerApp {
               'Browse files',
             )
           : null,
-        info?.terminal ? this.openTerminalButton(info.online) : null,
+        info?.terminal ? this.openTerminalButton(info.online, !screen) : null,
         recovery.length
           ? h(
               'div',
@@ -775,11 +786,12 @@ export class ViewerApp {
   // terminal
 
   /** "Open terminal" on the connect screen: the terminal page, which leaves the screen alone. */
-  private openTerminalButton(online: boolean): HTMLElement {
+  private openTerminalButton(online: boolean, primary: boolean): HTMLElement {
     const title = 'A shell on this machine, in its own page, without taking over the screen';
     const content = [icon('terminal', 16), 'Open terminal'];
-    if (!online) return h('button', { type: 'button', className: 'block', disabled: true, title }, ...content);
-    return h('a', { className: 'button block', href: terminalUrl(this.machine), title }, ...content);
+    const className = primary ? 'block primary big' : 'block';
+    if (!online) return h('button', { type: 'button', className, disabled: true, title }, ...content);
+    return h('a', { className: `button ${className}`, href: terminalUrl(this.machine), title }, ...content);
   }
 
   private terminalPanel(): Promise<TerminalPanel> {

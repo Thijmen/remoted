@@ -32,9 +32,9 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy -p rd-proto -p rd-flow -p rd-agent-core -p rd-gateway --all-targets -- -D warnings
+        run: cargo clippy -p rd-proto -p rd-flow -p rd-agent-core -p rd-agent -p rd-gateway --all-targets -- -D warnings
       - name: Test
-        run: cargo test -p rd-proto -p rd-flow -p rd-agent-core -p rd-gateway
+        run: cargo test -p rd-proto -p rd-flow -p rd-agent-core -p rd-agent -p rd-gateway
 
   macos:
     name: Rust (macOS agent)

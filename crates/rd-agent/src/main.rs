@@ -148,6 +148,10 @@ struct RunArgs {
     /// No menu bar / notification area icon (also `[tray] enabled = false`).
     #[arg(long)]
     no_tray: bool,
+    /// Serve only the terminal and files, no screen (also `[terminal] only = true`; always
+    /// the case on Linux).
+    #[arg(long)]
+    terminal_only: bool,
 }
 
 #[derive(Args)]
@@ -328,9 +332,14 @@ fn run(args: RunArgs) -> anyhow::Result<()> {
     let mut cfg = config::load_for_run(args.config.config.as_deref(), args.gateway, args.machine)?;
     let (token, token_source) = config::resolve_token(args.token_env.as_deref(), &cfg)?;
     cfg.token = Some(token);
-    let platform = host::platform(args.source)?;
+    cfg.terminal.only |= args.terminal_only;
+    let mut platform = host::platform(args.source)?;
+    if cfg.terminal.only && platform.has_screen() {
+        platform = Arc::new(rd_agent_core::headless::Screenless(platform));
+    }
     info!(
         source = ?args.source,
+        screen = platform.has_screen(),
         token_from = %token_source,
         version = VERSION,
         "rd-agent run"
@@ -463,6 +472,13 @@ mod tests {
         };
         assert_eq!(args.source, Source::Synthetic);
         assert!(!args.no_tray);
+        assert!(!args.terminal_only);
         assert_eq!(args.machine.as_deref(), Some("mbp"));
+
+        let cli = Cli::try_parse_from(["rd-agent", "run", "--terminal-only"]).unwrap();
+        let Some(Command::Run(args)) = cli.command else {
+            panic!("expected run");
+        };
+        assert!(args.terminal_only);
     }
 }

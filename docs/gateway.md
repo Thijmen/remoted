@@ -119,6 +119,9 @@ empty ones left out), kept while offline and dropped when the agent registers ag
 reports anew; `null` for agents that never send one (before 1.5.0).
 `files` is true when the agent listed `files` in `register.caps` (it can open file channels),
 `terminal` when it listed `terminal` (it offers a terminal, [terminal.md](terminal.md)).
+`screen` is false when it listed `headless` (no screen: the portal offers only its terminal and
+files, and `/ws/view/{machine}` closes with 4011); true otherwise, also for machines that never
+registered.
 Devices added in the portal follow the machines file, in the order they were added, and have
 `"managed": true`.
 

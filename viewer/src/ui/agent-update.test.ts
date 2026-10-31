@@ -39,6 +39,7 @@ function machine(over: Partial<MachineInfo> = {}): MachineInfo {
     update: status(),
     files: false,
     terminal: false,
+    screen: true,
     ...over,
   };
 }

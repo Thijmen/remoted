@@ -45,7 +45,9 @@ case-insensitive) and, for WebSocket upgrades, `Origin == RD_PUBLIC_ORIGIN`. Oth
    supports beyond screen sessions. `files`: file channels. `terminal`: terminal channels
    ([terminal.md](terminal.md); only while the terminal is enabled in the agent's config).
    `text`: Unicode text input (`TEXT`, see Keys); without it the viewer does not offer its
-   soft-keyboard button.
+   soft-keyboard button. `headless`: the agent has no screen and serves only its side channels
+   (a Linux agent, or `[terminal] only = true`, [terminal.md](terminal.md#a-machine-without-a-screen));
+   the gateway refuses viewer sessions to it with **4011**, and older agents never list it.
 2. Gateway → `{"t":"registered","gw_proto":1}`. A newer registration for the same machine replaces the old
    socket (old one closed with code 4009).
 3. Agent → `{"t":"state", ...AgentState}` whenever lock/perms/in_session/secure/disconnected
@@ -151,7 +153,8 @@ Compatibility: both messages are additive and `gw_proto` stays 1. Older gateways
     4006 session ended by agent, 4008 idle (no input for `RD_SESSION_IDLE_TIMEOUT`, default 3600 s), 4009 replaced,
     4010 agent updating (it comes back by itself, usually within a minute: keep reconnecting, and treat the 4003
     and 4004 that follow while it restarts as part of the update), 4011 not supported by the agent (a file
-    channel to an agent without the `files` cap, or a terminal to one without `terminal`), 1013 try again later
+    channel to an agent without the `files` cap, a terminal to one without `terminal`, a viewer session to one with
+    `headless`), 1013 try again later
     (a fifth file channel, a ninth terminal).
 
 Agent side: the session socket is the only one carrying media. When it closes the agent stops the

@@ -91,6 +91,10 @@ pub struct TerminalSettings {
     /// [`TerminalSettings::keep`]).
     #[serde(default = "default_keep_minutes")]
     pub keep_minutes: u32,
+    /// Serve only the terminal and files: no screen, no input, no screen permissions needed
+    /// (`headless` in `register.caps`). Agents on Linux always run this way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub only: bool,
 }
 
 impl Default for TerminalSettings {
@@ -99,6 +103,7 @@ impl Default for TerminalSettings {
             enabled: true,
             shell: None,
             keep_minutes: DEFAULT_KEEP_MINUTES,
+            only: false,
         }
     }
 }
@@ -310,5 +315,15 @@ mod tests {
         let t: TerminalSettings = toml::from_str("shell = \"\"\nkeep_minutes = 99999\n").unwrap();
         assert_eq!(t.shell(), None);
         assert_eq!(t.keep(), std::time::Duration::from_secs(1440 * 60));
+        assert!(!t.only);
+
+        let t: TerminalSettings = toml::from_str("only = true\n").unwrap();
+        assert!(t.only && t.enabled);
+        assert!(toml::to_string(&t).unwrap().contains("only = true"));
+        assert!(
+            !toml::to_string(&TerminalSettings::default())
+                .unwrap()
+                .contains("only")
+        );
     }
 }

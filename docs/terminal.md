@@ -59,13 +59,15 @@ button for that machine.
 ## Settings
 
 In the agent's `config.toml` (macOS: `~/Library/Application Support/dev.thijmen.rd.agent/config.toml`,
-Windows: `%LOCALAPPDATA%\rd-agent\config.toml`), all optional:
+Windows: `%LOCALAPPDATA%\rd-agent\config.toml`, Linux: `~/.config/rd-agent/config.toml`), all
+optional:
 
 ```toml
 [terminal]
 enabled = true        # false: this machine offers no terminal
 shell = "/bin/bash"   # what to start instead of the default (Windows: a command line, e.g. "cmd.exe")
 keep_minutes = 15     # how long a shell without a terminal attached keeps running (1-1440)
+only = false          # true: no screen, only the terminal and files (always so on Linux)
 ```
 
 The default shell is the user's login shell on macOS (started as a login shell, like
@@ -81,9 +83,26 @@ runs through the login shell (`-l -c "<line>"`). On Windows it is a command line
 
 Changes take effect when the agent restarts.
 
+### A machine without a screen
+
+An agent can serve **only the terminal and files**: on Linux it always does
+([setup-linux.md](setup-linux.md)), and on macOS or Windows `only = true` (or
+`rd-agent run --terminal-only`) turns its screen off. Such an agent:
+
+- captures nothing and injects no input, so on a Mac it needs no Screen Recording or
+  Accessibility permission (`setup` skips those prompts);
+- lists `headless` in `register.caps`. The portal shows **Terminal** (and **Files**) for it but
+  no **Connect**, and the gateway refuses screen sessions to it (close 4011);
+- runs its shells like any other agent: they survive a dropped connection, and the settings
+  above apply.
+
+On Linux the default shell is the user's login shell (`$SHELL`, else the user database), started
+as a login shell, with `TERM=xterm-256color`.
+
 ### Requirements
 
 - macOS: any version the agent supports.
+- Linux: any distribution with systemd (for `rd-agent install`); the agent runs without it too.
 - Windows 10 version 1809 or later, or Windows 11 (the pseudo console, ConPTY). An agent on an
   older Windows does not offer the terminal.
 - rd-agent and gateway of the same release or later; an older agent does not offer it.

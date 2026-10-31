@@ -448,3 +448,29 @@ async fn terminal_can_be_turned_off() {
     assert!(setup.gw.no_session_within(Duration::from_millis(500)).await);
     setup.agent.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_headless_agent_serves_the_terminal_but_no_screen() {
+    let mut setup = setup_with(FakePlatform::headless(), timings()).await;
+    assert_eq!(
+        setup.control.register["caps"],
+        json!(["files", "headless", "terminal"])
+    );
+
+    // The gateway would not send a viewer, but if one came, the agent shows it nothing.
+    let mut viewer = setup.open_session(SESSION_A).await;
+    viewer.start(1280, 720).await;
+    let err = viewer.expect("error").await;
+    assert_eq!(err["code"], "bad_request");
+    assert!(
+        setup.platform.events().is_empty(),
+        "no capture, no input: {:?}",
+        setup.platform.events()
+    );
+
+    let mut term = Term::open(&mut setup, CHANNEL_A).await;
+    let hello = term.hello(None).await;
+    assert_eq!(hello["t"], "hello");
+    term.input(b"echo headless-$((40+2))\n").await;
+    term.until_output("headless-42").await;
+}

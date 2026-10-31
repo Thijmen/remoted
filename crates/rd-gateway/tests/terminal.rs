@@ -146,3 +146,29 @@ async fn the_terminal_page_is_served() {
     // The test gateway may run without a viewer build; either way the route exists.
     assert!(r.status == 200 || r.status == 503, "status {}", r.status);
 }
+
+#[tokio::test]
+async fn headless_agents_serve_the_terminal_but_no_screen_4011() {
+    let gw = TestGateway::start(dev_config()).await;
+    let mut agent =
+        FakeAgent::connect_with_caps(&gw, "mbp", TOKEN, &["files", "terminal", "headless"])
+            .await
+            .unwrap();
+    let m = machine_json(&gw, "mbp").await;
+    assert_eq!(m["screen"], false);
+    assert_eq!(m["terminal"], true);
+    // No session_request reaches the agent: the gateway refuses the screen itself.
+    let mut viewer = connect(&gw.viewer_url("/ws/view/mbp"), &[]).await.unwrap();
+    assert_eq!(expect_close(&mut viewer).await, close::UNSUPPORTED);
+    // The terminal works as usual.
+    let (_viewer, _data, _channel) = open_terminal(&gw, &mut agent, "mbp", &[]).await;
+}
+
+#[tokio::test]
+async fn agents_have_a_screen_unless_they_say_headless() {
+    let gw = TestGateway::start(dev_config()).await;
+    let _agent = FakeAgent::connect_with_caps(&gw, "mbp", TOKEN, TERMINAL)
+        .await
+        .unwrap();
+    assert_eq!(machine_json(&gw, "mbp").await["screen"], true);
+}

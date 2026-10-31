@@ -137,6 +137,9 @@ describe('parseMachines', () => {
     expect(ms[0]!.viewer).toEqual({ user: 'a@b', since_ms: 2 });
     expect(ms[0]!.managed).toBe(false);
     expect(parseMachines([{ machine: 'pc', managed: true }])[0]!.managed).toBe(true);
+    // A screen unless the gateway says otherwise (older gateways do not say).
+    expect(ms[0]!.screen).toBe(true);
+    expect(parseMachines([{ machine: 'box', screen: false, terminal: true }])[0]!.screen).toBe(false);
   });
   it('decodes the files and terminal capabilities (false when missing)', () => {
     const [a, b] = parseMachines([{ machine: 'mbp', files: true, terminal: true }, { machine: 'pc' }]);

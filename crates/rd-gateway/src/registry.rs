@@ -203,6 +203,9 @@ pub struct SessionHandle {
 pub enum StartError {
     #[error("agent offline")]
     Offline,
+    /// The agent listed `headless` in `register.caps`.
+    #[error("the agent has no screen")]
+    NoScreen,
 }
 
 /// Why a file or terminal channel could not be started.
@@ -333,6 +336,8 @@ struct AgentInfo {
     files: bool,
     /// The agent listed `terminal` in `register.caps`.
     terminal: bool,
+    /// The agent did not list `headless` in `register.caps`.
+    screen: bool,
 }
 
 impl AgentInfo {
@@ -412,6 +417,9 @@ pub struct MachineView {
     pub files: bool,
     /// The agent offers a terminal (`terminal` in `register.caps`; docs/terminal.md).
     pub terminal: bool,
+    /// The agent has a screen to connect to: false when it listed `headless` in
+    /// `register.caps`. True for machines that never registered.
+    pub screen: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -477,6 +485,7 @@ impl Registry {
             state: reg.state,
             files: reg.caps.iter().any(|c| c == ChannelKind::Files.cap()),
             terminal: reg.caps.iter().any(|c| c == ChannelKind::Terminal.cap()),
+            screen: !reg.caps.iter().any(|c| c == agent_caps::HEADLESS),
         });
         m.update = None;
         m.since_ms = Some(unix_ms());
@@ -641,6 +650,9 @@ impl Registry {
         let mut inner = self.inner.lock();
         let m = inner.machines.get_mut(machine).ok_or(StartError::Offline)?;
         let agent = m.agent.as_ref().ok_or(StartError::Offline)?;
+        if m.info.as_ref().is_some_and(|i| !i.screen) {
+            return Err(StartError::NoScreen);
+        }
 
         if let Some(mut old) = m.session.take() {
             old.signal_end(EndReason::Kicked);
@@ -886,6 +898,7 @@ impl Registry {
                 update: m.and_then(|m| m.update.clone()),
                 files: info.is_some_and(|i| i.files),
                 terminal: info.is_some_and(|i| i.terminal),
+                screen: info.is_none_or(|i| i.screen),
             }
         };
         let configured = |id: &str| self.configured.iter().any(|c| c.machine == id);

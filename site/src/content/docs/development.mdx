@@ -50,8 +50,9 @@ bun tools/release/sync-versions.ts --check && bun test tools/release
 bun tools/gen-keymap/gen.ts --check
 ```
 
-CI (`.github/workflows/ci.yml`) runs the platform-independent crates and the viewer on Linux, and
-the agent with its platform crate on macOS and on Windows. rd Desktop is built and tested by
+CI (`.github/workflows/ci.yml`) runs the platform-independent crates, the agent (Linux has no
+platform crate: it serves the terminal and files) and the viewer on Linux, and the agent with its
+platform crate on macOS and on Windows. rd Desktop is built and tested by
 `desktop.yml`, the agent's installers by `agent.yml`, and the gateway image by
 `gateway-image.yml`.
 

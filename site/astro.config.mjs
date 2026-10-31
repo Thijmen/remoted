@@ -62,6 +62,7 @@ export default defineConfig({
 						'guides/gateway',
 						'guides/mac-agent',
 						'guides/windows-agent',
+						'guides/linux-agent',
 						'guides/devices',
 						'guides/desktop-app',
 					],

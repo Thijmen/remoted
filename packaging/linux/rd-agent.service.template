@@ -1,0 +1,17 @@
+# systemd user unit of a Linux rd agent (terminal and files; docs/setup-linux.md).
+# `rd-agent install` writes it to ~/.config/systemd/user/rd-agent.service, with @PROGRAM@
+# replaced by the path of the rd-agent that ran it.
+[Unit]
+Description=rd agent (terminal and files)
+Documentation=https://github.com/Thijmen/remoted/blob/main/docs/setup-linux.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=@PROGRAM@ run
+Restart=always
+RestartSec=5
+# No sandboxing: the shells it starts are your own and must not be restricted.
+
+[Install]
+WantedBy=default.target

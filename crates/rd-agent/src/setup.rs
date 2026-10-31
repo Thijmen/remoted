@@ -1,7 +1,8 @@
 //! `rd-agent setup`: interactive first-time setup, run in person at the host. Asks for the setup
 //! code from the portal's *Add device* (or, without one, the gateway URL, machine id and token),
 //! writes config.toml with the token (readable only by the user), on macOS shows the permission
-//! prompts, and installs the login service (LaunchAgent / autostart).
+//! prompts (not with `[terminal] only = true`), and installs the login service (LaunchAgent /
+//! autostart / systemd user unit).
 //!
 //! On macOS the token is not kept in the Keychain: the app is signed with a self-signed
 //! certificate (no Team ID), so macOS ties a Keychain item to the exact build, and every
@@ -15,7 +16,8 @@ use rd_proto::setup_code::{SetupCode, valid_machine_id};
 
 use crate::{SetupArgs, config, host};
 
-/// The machine id offered when there is no config yet: the computer name on Windows.
+/// The machine id offered when there is no config yet: the computer name on Windows, the host
+/// name on Linux.
 fn default_machine() -> String {
     #[cfg(windows)]
     if let Some(id) = std::env::var("COMPUTERNAME")
@@ -24,11 +26,18 @@ fn default_machine() -> String {
     {
         return id;
     }
+    #[cfg(target_os = "linux")]
+    if let Some(id) = std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .and_then(|n| machine_id(n.split('.').next().unwrap_or_default()))
+    {
+        return id;
+    }
     "mbp".to_owned()
 }
 
 /// `name` as a machine id: lowercase, `[a-z0-9_-]`, at most 64 characters.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 fn machine_id(name: &str) -> Option<String> {
     let id: String = name
         .trim()
@@ -94,7 +103,12 @@ pub fn run(args: &SetupArgs) -> anyhow::Result<()> {
         path.display()
     );
 
-    permissions()?;
+    // Without a screen there is nothing to grant.
+    if cfg!(target_os = "linux") || cfg.terminal.only {
+        println!("no screen (terminal and files only): no permissions to grant");
+    } else {
+        permissions()?;
+    }
 
     if args.no_launch_agent {
         println!("skipping the login service (--no-launch-agent)");
