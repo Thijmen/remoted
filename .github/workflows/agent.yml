@@ -230,7 +230,11 @@ jobs:
         run: |
           bin="target/$TARGET/release/rd-agent"
           file "$bin"
-          file "$bin" | grep -q 'statically linked' || { echo "::error::rd-agent is not static"; exit 1; }
+          # Static (or static-pie, as `file` calls the x86_64 build): no dynamic loader, no
+          # shared libraries.
+          if readelf -lW "$bin" | grep -q INTERP || readelf -dW "$bin" | grep -q NEEDED; then
+            echo "::error::rd-agent is not static"; exit 1
+          fi
           "$bin" --version
 
       - name: Installer
