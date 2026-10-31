@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::warn;
 
+use crate::activity::Activity;
 use crate::assets::Assets;
 use crate::auth::AgentAuth;
 use crate::config::Config;
@@ -24,6 +25,8 @@ pub struct AppState {
     pub agent_auth: AgentAuth,
     pub assets: Assets,
     pub metrics: Metrics,
+    /// Recent events for the portal (`/api/activity`).
+    pub activity: Activity,
     pub clock: Clock,
     tasks: Arc<TaskTracker>,
     shutdown: watch::Receiver<bool>,
@@ -55,6 +58,7 @@ impl AppState {
             agent_url,
             assets: Assets::new(cfg.assets_dir.clone()),
             metrics: Metrics::default(),
+            activity: Activity::default(),
             clock: Clock::new(),
             tasks: Arc::new(TaskTracker::default()),
             shutdown,

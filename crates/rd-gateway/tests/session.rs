@@ -456,3 +456,73 @@ async fn shutdown_closes_sessions_with_1012() {
     assert_eq!((v, d, c), (1012, 1012, 1012));
     shutdown.await.unwrap();
 }
+
+/// Poll `/api/activity` until it lists at least `n` events (newest first).
+async fn activity(gw: &TestGateway, n: usize) -> Vec<serde_json::Value> {
+    for _ in 0..100 {
+        let r = get(gw.viewer, "/api/activity", &[]).await;
+        assert_eq!(r.status, 200);
+        assert_eq!(r.header("cache-control"), Some("no-store"));
+        let list = r.json().as_array().unwrap().clone();
+        if list.len() >= n {
+            return list;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("activity never reached {n} events");
+}
+
+fn names(events: &[serde_json::Value]) -> Vec<&str> {
+    events
+        .iter()
+        .map(|e| e["event"].as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn activity_lists_agents_sessions_and_updates_newest_first() {
+    let gw = TestGateway::start(dev_config()).await;
+    let r = get(gw.viewer, "/api/activity", &[]).await;
+    assert_eq!(r.json(), serde_json::json!([]));
+
+    let mut agent = FakeAgent::connect(&gw, "mbp", TOKEN).await.unwrap();
+    let (mut viewer, _data, _session) = open_session(&gw, &mut agent, "mbp", &[]).await;
+    viewer.close(None).await.unwrap();
+    let events = activity(&gw, 3).await;
+    assert_eq!(
+        names(&events),
+        ["session_end", "session_start", "agent_online"]
+    );
+    assert_eq!(events[0]["user"], "dev@localhost");
+    assert!(events[0]["duration_ms"].is_u64());
+    assert_eq!(events[1]["machine"], "mbp");
+    assert!(events[2].get("user").is_none(), "the agent's own event");
+
+    // Gone, then back with another version: the update went through.
+    drop(agent);
+    wait_online(&gw, "mbp", false).await;
+    let mut again = FakeAgent::connect_unregistered(&gw, TOKEN).await.unwrap();
+    send_json(
+        &mut again.ctl,
+        &AgentToGateway::Register {
+            machine: "mbp".into(),
+            agent_version: "0.2.0".into(),
+            os: "macOS 26.3 (test)".into(),
+            gw_proto: 1,
+            state: rd_proto::control::AgentState::default(),
+            caps: Vec::new(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        again.next_ctl().await,
+        GatewayToAgent::Registered { .. }
+    ));
+    let events = activity(&gw, 6).await;
+    assert_eq!(
+        names(&events[..3]),
+        ["agent_updated", "agent_online", "agent_offline"]
+    );
+    assert_eq!(events[0]["from"], "0.1.0");
+    assert_eq!(events[0]["to"], "0.2.0");
+}

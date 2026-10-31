@@ -10,8 +10,8 @@ session or without one (browsing files never takes over the screen).
 - **During a session:** open the session menu (the ▾ tab at the top) and click **Files**, or
   press Ctrl+Alt+Shift+**E**. The file browser opens on the right; the remote screen stays live
   next to it.
-- **Without a session:** click **Browse files** on the machine's connect screen (or **Files** on
-  its card in the portal).
+- **Without a session:** click **Browse files** on the machine's connect screen (or the files
+  button on its row in the portal, **Files** in its details, or press F with it selected).
 - **Preview:** double-click an image, audio or video file (or select it and press Space, or click
   **Preview**) to see or play it over the file list. ← and → step through the other media in the
   folder; Esc closes. The preview fetches the whole file first (it asks before fetching one over

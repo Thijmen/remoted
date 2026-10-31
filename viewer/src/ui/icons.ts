@@ -35,6 +35,7 @@ const PATHS = {
   ],
   up: ['M12 19.5V5', 'M6 11l6-6 6 6'],
   forward: ['M9 5.5l6.5 6.5L9 18.5'],
+  arrowRight: ['M4.5 12h15', 'M13.5 6l6 6-6 6'],
   home: ['M4 11l8-6.5 8 6.5', 'M6 9.5v10h12v-10', 'M10 19.5v-5h4v5'],
   documents: ['M6.5 3.5h7l4.5 4.5v12.5h-11.5z', 'M13.5 3.5V8h4.5', 'M9 12.5h6', 'M9 16h6'],
   drive: ['M3.5 13.5l2.5-8h12l2.5 8', 'M3.5 13.5h17v5h-17z', 'M16.5 16h.01'],
@@ -48,6 +49,19 @@ const PATHS = {
   transfer: ['M7 4.5v15', 'M3.5 8L7 4.5 10.5 8', 'M17 19.5v-15', 'M13.5 16l3.5 3.5 3.5-3.5'],
   link: ['M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1', 'M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1'],
   copy: ['M8.5 8.5h11v11h-11z', 'M15.5 8.5v-4h-11v11h4'],
+  activity: ['M3 12h4l2.5-6.5 5 13 2.5-6.5h4'],
+  gauge: ['M12 14l3.5-3.5', 'M4.2 18a9 9 0 1 1 15.6 0'],
+  keyboard: ['M3.5 6.5h17v11h-17z', 'M7 10h.01', 'M10.5 10h.01', 'M14 10h.01', 'M17 10h.01', 'M8 14h8'],
+  live: [
+    'M12 13.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z',
+    'M8.3 15.7a5.3 5.3 0 0 1 0-7.4',
+    'M15.7 8.3a5.3 5.3 0 0 1 0 7.4',
+    'M5.4 18.6a9.4 9.4 0 0 1 0-13.2',
+    'M18.6 5.4a9.4 9.4 0 0 1 0 13.2',
+  ],
+  update: ['M12 20.5a8.5 8.5 0 1 0 0-17 8.5 8.5 0 0 0 0 17z', 'M12 16V8', 'M8.5 11.5L12 8l3.5 3.5'],
+  key: ['M8 19.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9z', 'M11.2 11.8l8.3-8.3', 'M16.5 6.5l2.5 2.5', 'M14 9l2 2'],
+  info: ['M12 20.5a8.5 8.5 0 1 0 0-17 8.5 8.5 0 0 0 0 17z', 'M12 11v5', 'M12 8h.01'],
 } as const;
 
 export type IconName = keyof typeof PATHS;
@@ -71,5 +85,28 @@ export function icon(name: IconName, size = 18): SVGSVGElement {
     path.setAttribute('d', d);
     svg.appendChild(path);
   }
+  return svg;
+}
+
+/** Filled marks for the operating systems the agent runs on (24×24). */
+const OS_MARKS = {
+  windows: 'M3 5.6l7.4-1v7H3zM11.4 4.4L21 3v8.6h-9.6zM3 12.4h7.4v7L3 18.4zM11.4 12.4H21V21l-9.6-1.4z',
+  mac: 'M16.4 12.7c0-2.5 2-3.7 2.1-3.8-1.2-1.7-3-1.9-3.6-2-1.5-.2-3 .9-3.8.9-.8 0-2-.9-3.3-.9-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.2 2.6 1.3-.1 1.8-.8 3.3-.8 1.6 0 2 .8 3.4.8 1.4 0 2.3-1.3 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9-.1 0-2.9-1.1-2.9-4.1zM13.9 5.3c.7-.9 1.2-2.1 1.1-3.3-1 0-2.3.7-3 1.6-.7.8-1.2 2-1.1 3.2 1.2.1 2.3-.6 3-1.5z',
+} as const;
+
+/** An operating system's mark; the stroked monitor or terminal icon for the rest. */
+export function osMark(family: 'mac' | 'windows' | 'linux' | 'other', size = 18): SVGSVGElement {
+  if (family === 'linux') return icon('terminal', size);
+  if (family === 'other') return icon('monitor', size);
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', String(size));
+  svg.setAttribute('height', String(size));
+  svg.setAttribute('fill', 'currentColor');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.classList.add('icon');
+  const path = document.createElementNS(SVG_NS, 'path');
+  path.setAttribute('d', OS_MARKS[family]);
+  svg.appendChild(path);
   return svg;
 }

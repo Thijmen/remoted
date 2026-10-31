@@ -33,8 +33,8 @@ logs*) and an entry in Settings → Apps, and offers the setup (step 3) at the e
 in the portal (step 2) first. The installer is not signed, so SmartScreen asks once:
 *More info* → *Run anyway*.
 
-From 1.5.0 on, an agent installed this way updates itself: the portal shows **Update to
-X.Y.Z** on the PC's card, and the agent installs the new version and puts the previous one back
+From 1.5.0 on, an agent installed this way updates itself: the portal lists the PC under
+**Needs update**, and **Update now** in its details installs the new version: the agent installs the new version and puts the previous one back
 if the new one does not reconnect within two minutes ([updates.md](updates.md)). Agents up to
 1.4.2 have no updater: run the 1.5.0 installer once.
 
@@ -135,12 +135,12 @@ dot while someone is connected. `[tray]` `enabled = false` in `config.toml` (or 
 ## Updates
 
 An agent installed with the installer (in a folder with its `uninstall.exe`, started by the
-autostart) updates itself from the portal: the PC's card shows **Update available: X.Y.Z**,
-**What's new** and **Update**. The agent downloads the new installer, checks its signature, ends
+autostart) updates itself from the portal: the PC's details show the new version with **What's new** and
+**Update now**. The agent downloads the new installer, checks its signature, ends
 an open session (the viewer reconnects by itself) and hands over to an update helper, which runs
 the installer silently and waits up to 2 minutes for the new version to connect to the gateway.
 If it does not, the helper puts the previous `rd-agent.exe` and `rd-agentw.exe` back and starts
-them. The card then shows what happened. Details: [updates.md](updates.md).
+them. The portal then shows what happened. Details: [updates.md](updates.md).
 
 At the PC, from a terminal:
 

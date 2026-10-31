@@ -75,11 +75,11 @@ if (wanted.size === 0 || wanted.has('og')) {
 
 console.log(`Screenshots from ${base}:`);
 
-await shot('portal', { width: 1120, height: 470 }, async (page) => {
+await shot('portal', { width: 1280, height: 640 }, async (page) => {
 	await page.goto(base);
 	await removeDevice(page, 'windows-pc');
 	await page.reload();
-	await page.getByText('MacBook Pro').waitFor();
+	await page.locator('.device-row[data-machine="mbp"]').waitFor();
 	await save(page, 'portal');
 });
 

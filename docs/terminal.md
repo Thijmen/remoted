@@ -7,8 +7,9 @@ and none has to be reachable.
 
 ## Using it
 
-- **Without a session:** click **Terminal** on the machine's card in the portal, or **Open
-  terminal** on its connect screen. The terminal opens in its own page (`/t/{machine}`) and
+- **Without a session:** click the terminal button on the machine's row in the portal
+  (**Terminal** in its details, or press T with it selected), or **Open terminal** on its
+  connect screen. The terminal opens in its own page (`/t/{machine}`) and
   does not take over the screen.
 - **During a session:** open the session menu (the ▾ tab at the top) and click **Terminal**,
   or press Ctrl+Alt+Shift+`` ` `` (the key left of 1). The terminal opens in a panel next to the remote screen. While

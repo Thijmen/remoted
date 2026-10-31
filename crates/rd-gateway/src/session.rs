@@ -24,6 +24,7 @@ use rd_proto::control::GatewayToViewer;
 use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until};
 use tracing::{debug, info, warn};
 
+use crate::activity::Event;
 use crate::auth::{AuthRejection, ViewerIdentity};
 use crate::chaos::ChaosStream;
 use crate::config::{Timeouts, valid_machine_name};
@@ -130,12 +131,20 @@ async fn run_viewer(st: Arc<AppState>, viewer: ViewerIdentity, machine: String, 
     };
     st.metrics.sessions_started.inc();
     info!(target: "audit", event = "session_start", user = viewer.user, ip, machine, session = handle.id, "session_start");
+    st.activity
+        .record(Event::new("session_start", &machine).by(&viewer.user));
     let started = Instant::now();
     let id = handle.id.clone();
     let (reason, traffic) = relay(&st, Kind::Session, &machine, handle, socket).await;
     let (up, down) = traffic.totals();
     st.metrics.bytes_up.add(up);
     st.metrics.bytes_down.add(down);
+    let duration_ms = started.elapsed().as_millis() as u64;
+    st.activity.record(
+        Event::new("session_end", &machine)
+            .by(&viewer.user)
+            .lasted(duration_ms),
+    );
     info!(
         target: "audit",
         event = "session_end",
@@ -143,7 +152,7 @@ async fn run_viewer(st: Arc<AppState>, viewer: ViewerIdentity, machine: String, 
         ip,
         machine,
         session = id,
-        duration_ms = started.elapsed().as_millis() as u64,
+        duration_ms,
         bytes_up = up,
         bytes_down = down,
         reason = reason.as_str(),
