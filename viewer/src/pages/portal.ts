@@ -717,7 +717,7 @@ function renderStats(ms: MachineInfo[], s: Summary): void {
       'update',
       ['Agent updates'],
       value(s.updates),
-      detailLine(s.newest ? `Newest release ${s.newest}` : 'No agent reports updates'),
+      detailLine(s.newest ? `Newest version ${s.newest}` : 'No agent seen yet'),
     ),
     statTile(
       null,
@@ -730,7 +730,7 @@ function renderStats(ms: MachineInfo[], s: Summary): void {
       h(
         'div',
         { className: 'stat-legend' },
-        ...versions.map((v) => h('span', { style: `--c:${v.color}` }, `${v.version || 'unknown'} × ${v.count}`)),
+        ...versions.map((v) => h('span', { style: `--c:${v.color}` }, `${v.version || 'not seen'} × ${v.count}`)),
       ),
     ),
   );

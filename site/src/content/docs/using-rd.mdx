@@ -7,6 +7,7 @@ import { Aside } from '@astrojs/starlight/components';
 import Screenshot from '../../components/Screenshot.astro';
 import connect from '../../assets/screenshots/connect.webp';
 import portal from '../../assets/screenshots/portal.webp';
+import portalDetails from '../../assets/screenshots/portal-details.webp';
 import session from '../../assets/screenshots/session.webp';
 import settings from '../../assets/screenshots/settings.webp';
 
@@ -20,7 +21,7 @@ machine the gateway knows, and refreshes by itself.
 
 <Screenshot
 	src={portal}
-	alt="The portal with a MacBook Pro online and a Mac Studio offline, which has a Screen Sharing recovery link"
+	alt="The portal: summary tiles, filters, a MacBook Pro online with Connect, a Mac Studio offline, and the recent activity"
 />
 
 At the top, four tiles count the machines that are online, the sessions open right now, the
@@ -35,7 +36,16 @@ permissions, whether the screen is locked, recovery links (such as Screen Sharin
 Mac, see [Recovery](/guides/recovery/)), the agent's update with **What's new** and **Update
 now** (or how to update by hand when the agent can't install it itself, see
 [Updates](/guides/updates/)), and, for devices added in the portal, **New token** and **Remove
-device**. **Recent activity** below the list shows who connected where, machines coming and
+device**.
+
+<Screenshot
+	src={portalDetails}
+	bare
+	width="24rem"
+	alt="The details of the MacBook Pro: Connect, Terminal and Files, its permissions and lock state, and its agent version"
+/>
+
+**Recent activity** below the list shows who connected where, machines coming and
 going, and updates.
 
 The portal works from the keyboard: <kbd>↑</kbd> <kbd>↓</kbd> select a machine, <kbd>Enter</kbd>

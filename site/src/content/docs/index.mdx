@@ -30,6 +30,7 @@ import Screenshot from '../../components/Screenshot.astro';
 import addDevice from '../../assets/screenshots/add-device.webp';
 import connect from '../../assets/screenshots/connect.webp';
 import portal from '../../assets/screenshots/portal.webp';
+import portalDetails from '../../assets/screenshots/portal-details.webp';
 import session from '../../assets/screenshots/session.webp';
 import settings from '../../assets/screenshots/settings.webp';
 
@@ -100,14 +101,23 @@ fewer frames for a moment, but what you see is current.
 
 ## See it
 
-The portal lists your machines; a click connects. These are the real pages, served by a dev
+The portal lists your machines; a click connects, and the details are one click away. These are the real pages, served by a dev
 gateway with a test-pattern agent.
 
 <Tabs>
 	<TabItem label="Portal">
 		<Screenshot
 			src={portal}
-			alt="The rd portal with two machines: a MacBook Pro that is online and a Mac Studio that is offline with a Screen Sharing recovery link"
+			alt="The rd portal: summary tiles, a MacBook Pro that is online and a Mac Studio that is offline, and the recent activity"
+		/>
+	</TabItem>
+	<TabItem label="Device details">
+		<Screenshot
+			src={portalDetails}
+			bare
+			width="26rem"
+			alt="A machine's details in the portal: Connect, Terminal and Files, its permissions and lock state, and its agent version"
+			caption="Click a machine for its details: the open session, permissions, updates, recovery links and its token."
 		/>
 	</TabItem>
 	<TabItem label="Connect">

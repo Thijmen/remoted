@@ -58,7 +58,7 @@ export interface Summary {
   updates: number;
   /** The newest agent version anyone runs or was offered; empty when none is known. */
   newest: string;
-  /** Running agent versions, newest first; unknown last. */
+  /** Running agent versions, newest first; machines not seen since the gateway started (no version) last. */
   versions: VersionCount[];
 }
 
