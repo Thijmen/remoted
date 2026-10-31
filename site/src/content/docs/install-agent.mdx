@@ -1,0 +1,91 @@
+---
+title: Install an agent
+description: Copy and paste commands to put the rd agent on a Mac, a Windows PC or a Linux server and connect it to your gateway.
+---
+
+import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+
+The agent runs on the machine you want to reach. These commands install the newest agent
+release and set it up with a **setup code** from your portal. Run them at the machine itself.
+The full guides explain each step: [Mac agent](/guides/mac-agent/),
+[Windows agent](/guides/windows-agent/), [Linux agent](/guides/linux-agent/).
+
+<Steps>
+
+1. In your portal (for example `https://rd.example.com`), click **Add device**, give the machine
+   a name and copy the **setup code** (`rds1_…`). It is shown once and works like a password.
+
+2. On the machine, paste the commands for its system:
+
+   <Tabs syncKey="os">
+   <TabItem label="macOS" icon="apple">
+
+   In Terminal (macOS 15 or later, Apple silicon or Intel):
+
+   ```sh
+   v=$(curl -fsSL "https://api.github.com/repos/Thijmen/remoted/releases?per_page=50" \
+     | grep -o '"tag_name": *"agent-v[0-9][^"]*"' | head -n 1 | sed 's/.*agent-v//; s/"$//')
+   curl -fL -o /tmp/rd-agent.zip \
+     "https://github.com/Thijmen/remoted/releases/download/agent-v$v/rd-agent-$v-macos-universal.zip"
+   ditto -x -k /tmp/rd-agent.zip /Applications && rm /tmp/rd-agent.zip
+   "/Applications/RD Agent.app/Contents/MacOS/rd-agent" setup
+   ```
+
+   Setup asks for the setup code, then for **Screen Recording** and **Accessibility**: enable
+   "RD Agent" in System Settings → Privacy & Security and press Enter. Afterwards restart the
+   agent once so it picks up the permissions:
+
+   ```sh
+   launchctl kickstart -k gui/$(id -u)/dev.thijmen.rd.agent
+   ```
+
+   </TabItem>
+   <TabItem label="Windows" icon="seti:windows">
+
+   In PowerShell (Windows 10 1703 or later, or Windows 11; no administrator rights needed):
+
+   ```powershell
+   [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $ProgressPreference = 'SilentlyContinue'
+   $release = Invoke-RestMethod 'https://api.github.com/repos/Thijmen/remoted/releases?per_page=50' |
+     Where-Object tag_name -like 'agent-v*' | Select-Object -First 1
+   $asset = $release.assets | Where-Object name -like '*-windows-x64-setup.exe'
+   Invoke-WebRequest $asset.browser_download_url -OutFile "$env:TEMP\rd-agent-setup.exe"
+   Start-Process "$env:TEMP\rd-agent-setup.exe"
+   ```
+
+   The installer offers the setup on its last page: paste the setup code there. If SmartScreen
+   stops the installer, click **More info** → **Run anyway** (it is not code-signed).
+
+   </TabItem>
+   <TabItem label="Linux" icon="linux">
+
+   In a shell, as the user whose shell you want in the browser (not root), with your setup code
+   in place of `<setup code>`:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/Thijmen/remoted/main/packaging/linux/install.sh | sh -s -- <setup code>
+   ```
+
+   The portal's **Add device** dialog shows this command with the code filled in, under
+   **Linux server**. To keep the agent running when you log out, and start it at boot:
+
+   ```sh
+   sudo loginctl enable-linger "$USER"
+   ```
+
+   On Linux the agent serves the [terminal](/guides/terminal/) and [files](/guides/files/),
+   without a screen.
+
+   </TabItem>
+   </Tabs>
+
+3. Back in the portal, the machine shows **Online** within a few seconds. Click **Connect** (on
+   Linux: **Terminal**).
+
+</Steps>
+
+<Aside title="Updates">
+	Mac and Windows agents update themselves from the portal ([Updates](/guides/updates/)). On
+	Linux, run the install command again without the setup code: it replaces the agent and
+	restarts it.
+</Aside>

@@ -60,6 +60,7 @@ export default defineConfig({
 					label: 'Set up',
 					items: [
 						'guides/gateway',
+						'install-agent',
 						'guides/mac-agent',
 						'guides/windows-agent',
 						'guides/linux-agent',
