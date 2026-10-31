@@ -79,7 +79,8 @@ function errorText(e: unknown): string {
 function stateBadges(m: MachineInfo): HTMLElement[] {
   const out: HTMLElement[] = [];
   const st = m.state;
-  if (m.online && st) {
+  if (!m.screen) out.push(h('span', { className: 'badge' }, 'terminal and files only'));
+  if (m.online && st && m.screen) {
     if (st.locked) out.push(h('span', { className: 'badge warn' }, 'locked'));
     if (!st.perms.screen) out.push(h('span', { className: 'badge bad' }, 'no screen permission'));
     if (!st.perms.input) out.push(h('span', { className: 'badge warn' }, 'no input permission'));
@@ -259,7 +260,7 @@ function machineCard(m: MachineInfo): HTMLElement {
     h(
       'div',
       { className: 'machine-head' },
-      h('div', { className: 'machine-avatar' }, icon('monitor', 24)),
+      h('div', { className: 'machine-avatar' }, icon(m.screen ? 'monitor' : 'terminal', 24)),
       h(
         'div',
         { className: 'machine-title' },
@@ -312,14 +313,19 @@ function machineCard(m: MachineInfo): HTMLElement {
           ? h(
               'a',
               {
-                className: 'button',
+                // The main action of a machine without a screen.
+                className: m.screen ? 'button' : 'button primary',
                 href: terminalUrl(m.machine),
-                title: 'A shell on this machine, in its own page, without taking over the screen',
+                title: m.screen
+                  ? 'A shell on this machine, in its own page, without taking over the screen'
+                  : 'A shell on this machine',
               },
               'Terminal',
             )
           : null,
-        h('a', { className: 'button primary', href: `/m/${encodeURIComponent(m.machine)}` }, 'Connect'),
+        m.screen
+          ? h('a', { className: 'button primary', href: `/m/${encodeURIComponent(m.machine)}` }, 'Connect')
+          : null,
       ),
     ),
   );

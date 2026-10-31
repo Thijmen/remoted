@@ -1,4 +1,4 @@
-//! Placeholder for targets without a platform crate (anything but macOS and Windows).
+//! Placeholder for targets without a platform crate (anything but macOS, Windows and Linux).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use rd_agent_core::{Perms, Platform};
 
 use crate::{SelftestArgs, Source};
 
-const UNSUPPORTED: &str = "unsupported platform: rd-agent runs on macOS and Windows";
+const UNSUPPORTED: &str = "unsupported platform: rd-agent runs on macOS, Windows and Linux";
 
 pub fn config_path() -> anyhow::Result<PathBuf> {
     bail!(UNSUPPORTED)

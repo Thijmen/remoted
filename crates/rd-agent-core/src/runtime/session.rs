@@ -322,16 +322,22 @@ impl Session {
         let writer = TaskGuard::spawn(write_loop(sink, control_rx, video_rx));
         let out = Outbox(control_tx);
 
-        let (input, input_error) = match spawn_input(
-            ctx.platform.clone(),
-            locked_reporter(ctx.clone(), out.clone()),
-        )
-        .await
-        {
-            Ok(input) => (Some(input), None),
-            Err(e) => {
-                error!("input injection unavailable: {e:#}");
-                (None, Some(format!("{e:#}")))
+        // Without a screen there is nothing to inject into (the gateway refuses viewer
+        // sessions to such agents anyway).
+        let (input, input_error) = if !ctx.platform.has_screen() {
+            (None, None)
+        } else {
+            match spawn_input(
+                ctx.platform.clone(),
+                locked_reporter(ctx.clone(), out.clone()),
+            )
+            .await
+            {
+                Ok(input) => (Some(input), None),
+                Err(e) => {
+                    error!("input injection unavailable: {e:#}");
+                    (None, Some(format!("{e:#}")))
+                }
             }
         };
         let shared = Arc::new(Shared::default());
@@ -494,7 +500,9 @@ impl Session {
             caps: vec![agent_caps::TEXT.to_owned()],
         });
         self.out.json(&AgentMsg::State(*self.ctx.state.borrow()));
-        if let Some(e) = &self.input_error {
+        if !platform.has_screen() {
+            // No input to warn about.
+        } else if let Some(e) = &self.input_error {
             self.out
                 .error("internal", format!("input unavailable: {e}"));
         } else if !platform.permissions().input {
@@ -507,6 +515,12 @@ impl Session {
     }
 
     async fn on_start(&mut self, requested: StreamParams) {
+        if !self.ctx.platform.has_screen() {
+            return self.out.error(
+                "bad_request",
+                "this agent has no screen: it serves the terminal and files only",
+            );
+        }
         let params = match effective(&self.ctx, &requested) {
             Ok(params) => params,
             Err(msg) => return self.out.error("bad_request", msg),

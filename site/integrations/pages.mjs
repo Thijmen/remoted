@@ -28,6 +28,12 @@ export const syncedPages = [
 		description: 'Install rd-agent on a Windows 10 or 11 PC, set it up, and learn what it cannot reach.',
 	},
 	{
+		source: 'docs/setup-linux.md',
+		slug: 'guides/linux-agent',
+		title: 'Linux agent',
+		description: 'Run rd-agent on a Linux server: a terminal and the file browser in your browser, no screen and no SSH.',
+	},
+	{
 		source: 'docs/devices.md',
 		slug: 'guides/devices',
 		title: 'Devices',

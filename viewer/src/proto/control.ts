@@ -283,6 +283,11 @@ export interface MachineInfo {
   files: boolean;
   /** The agent offers a terminal (docs/terminal.md); false on older agents and gateways. */
   terminal: boolean;
+  /**
+   * There is a screen to connect to: false for agents that serve only the terminal and files
+   * (Linux servers, `[terminal] only = true`). True on older gateways.
+   */
+  screen: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +548,7 @@ export function parseMachines(v: unknown): MachineInfo[] {
       update: updateStatusFrom(m.update),
       files: bool(m, 'files'),
       terminal: bool(m, 'terminal'),
+      screen: m.screen !== false,
     });
   }
   return out;

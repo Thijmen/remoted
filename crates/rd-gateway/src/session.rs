@@ -19,6 +19,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use rd_proto::close;
 use rd_proto::control::GatewayToViewer;
 use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until};
 use tracing::{debug, info, warn};
@@ -26,7 +27,7 @@ use tracing::{debug, info, warn};
 use crate::auth::{AuthRejection, ViewerIdentity};
 use crate::chaos::ChaosStream;
 use crate::config::{Timeouts, valid_machine_name};
-use crate::registry::{ChannelKind, EndReason, SessionHandle};
+use crate::registry::{ChannelKind, EndReason, SessionHandle, StartError};
 use crate::state::AppState;
 use crate::util::{client_ip, close_split, close_ws};
 
@@ -104,18 +105,28 @@ async fn run_viewer(st: Arc<AppState>, viewer: ViewerIdentity, machine: String, 
     let handle = if valid_machine_name(&machine) {
         st.registry
             .start_session(&machine, &viewer.user, &ip, t.session_request)
-            .ok()
     } else {
-        None
+        Err(StartError::Offline)
     };
-    let Some(handle) = handle else {
-        info!(
-            user = viewer.user,
-            ip, machine, "viewer rejected: agent offline"
-        );
-        let (code, reason) = EndReason::AgentOffline.viewer_close();
-        close_ws(socket, code, reason).await;
-        return;
+    let handle = match handle {
+        Ok(handle) => handle,
+        Err(StartError::NoScreen) => {
+            info!(
+                user = viewer.user,
+                ip, machine, "viewer rejected: the agent has no screen"
+            );
+            close_ws(socket, close::UNSUPPORTED, "the agent has no screen").await;
+            return;
+        }
+        Err(StartError::Offline) => {
+            info!(
+                user = viewer.user,
+                ip, machine, "viewer rejected: agent offline"
+            );
+            let (code, reason) = EndReason::AgentOffline.viewer_close();
+            close_ws(socket, code, reason).await;
+            return;
+        }
     };
     st.metrics.sessions_started.inc();
     info!(target: "audit", event = "session_start", user = viewer.user, ip, machine, session = handle.id, "session_start");

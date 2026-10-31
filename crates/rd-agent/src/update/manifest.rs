@@ -185,7 +185,8 @@ mod tests {
         assert!(m.newer_than(&v("1.7.0")).is_none());
         // A pre-release of the latest version is older than it.
         assert!(m.newer_than(&v("1.6.0-rc.1")).is_some());
-        assert!(m.file().is_ok());
+        // This build's download, where there are release builds (none for Linux yet).
+        assert_eq!(m.file().is_ok(), cfg!(any(target_os = "macos", windows)));
     }
 
     #[test]

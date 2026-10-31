@@ -135,8 +135,13 @@ impl<T: Send> Guard for T {}
 
 /// A host platform.
 pub trait Platform: Send + Sync + 'static {
-    /// "macos" | "windows"
+    /// "macos" | "windows" | "linux"
     fn os(&self) -> &'static str;
+    /// False for agents without a screen ([`crate::headless`]): they list `headless` in
+    /// `register.caps`, create no input injector and refuse `start`.
+    fn has_screen(&self) -> bool {
+        true
+    }
     /// Human description, e.g. "macOS 26.3 (25D125)".
     fn os_description(&self) -> String;
     fn displays(&self) -> Vec<DisplayDesc>;

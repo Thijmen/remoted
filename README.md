@@ -75,7 +75,8 @@ rd has three parts to set up. Each has its own guide:
    `ghcr.io/thijmen/rd-gateway`.
 2. **Install the agent** on the machine you want to reach, at the machine itself:
    [docs/setup-mac.md](docs/setup-mac.md) (macOS asks a person to approve Screen Recording and
-   Accessibility) or [docs/setup-windows.md](docs/setup-windows.md).
+   Accessibility) or [docs/setup-windows.md](docs/setup-windows.md). On a Linux server the
+   agent serves the terminal and files, without a screen: [docs/setup-linux.md](docs/setup-linux.md).
 3. **Connect**: open your gateway (for example `https://rd.example.com`), sign in and pick
    your machine. Or install [rd Desktop](clients/desktop/README.md) from the
    [releases](https://github.com/Thijmen/remoted/releases).
@@ -109,6 +110,7 @@ The guides are published, with search, at **<https://thijmen.github.io/remoted/>
 | [docs/gateway.md](docs/gateway.md) | Gateway configuration and operation |
 | [docs/setup-mac.md](docs/setup-mac.md) | Installing the Mac agent, local development |
 | [docs/setup-windows.md](docs/setup-windows.md) | Installing the Windows agent, local development, limits |
+| [docs/setup-linux.md](docs/setup-linux.md) | A Linux server: terminal and files, no screen (systemd user unit) |
 | [docs/devices.md](docs/devices.md) | Adding, rotating and removing devices (machine ids, tokens) |
 | [docs/files.md](docs/files.md) | File transfer: using it, and the file channel protocol |
 | [docs/updates.md](docs/updates.md) | How rd Desktop and the agents update, releases, signing keys |

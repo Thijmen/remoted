@@ -493,10 +493,15 @@ impl Control<'_> {
         false
     }
 
-    /// `register.caps`: files and Unicode text always; the terminal when it is enabled and the
-    /// platform has pseudo terminals.
+    /// `register.caps`: files always; Unicode text with a screen, else `headless`; the terminal
+    /// when it is enabled and the platform has pseudo terminals.
     fn caps(&self) -> Vec<String> {
-        let mut caps = vec![agent_caps::FILES.to_owned(), agent_caps::TEXT.to_owned()];
+        let mut caps = vec![agent_caps::FILES.to_owned()];
+        if self.ctx.platform.has_screen() {
+            caps.push(agent_caps::TEXT.to_owned());
+        } else {
+            caps.push(agent_caps::HEADLESS.to_owned());
+        }
         if self.ctx.terminal {
             caps.push(agent_caps::TERMINAL.to_owned());
         }

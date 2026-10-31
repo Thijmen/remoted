@@ -50,8 +50,11 @@ pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
 
     // Checked in a fresh instance of the app: from a terminal, this process's own grants would
     // be the terminal's.
+    let terminal_only = cfg.as_ref().is_some_and(|c| c.terminal.only);
     if cfg!(windows) {
         println!("permissions:  none needed on Windows");
+    } else if cfg!(target_os = "linux") || terminal_only {
+        println!("permissions:  none needed (no screen: terminal and files only)");
     } else {
         match host::app_permissions(false) {
             Ok(p) => println!(
@@ -67,6 +70,8 @@ pub fn run(explicit: Option<&Path>) -> anyhow::Result<()> {
     // Windows (enabled at login).
     let (service, loaded_word) = if cfg!(windows) {
         ("autostart:   ", "enabled")
+    } else if cfg!(target_os = "linux") {
+        ("systemd unit:", "loaded")
     } else {
         ("launch agent:", "loaded")
     };
