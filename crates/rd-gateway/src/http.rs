@@ -13,6 +13,7 @@ use rd_proto::setup_code::SetupCode;
 use serde::Deserialize;
 use tracing::info;
 
+use crate::activity::Event;
 use crate::agent::ws_agent;
 use crate::assets::{self, Caching};
 use crate::auth::{ViewerIdentity, viewer_auth};
@@ -45,6 +46,7 @@ pub fn viewer_router(st: Arc<AppState>) -> Router {
         .route("/assets/{*path}", get(hashed_asset))
         .route("/api/me", get(api_me))
         .route("/api/machines", get(api_machines))
+        .route("/api/activity", get(api_activity))
         // JSON bodies only (the Json extractor wants Content-Type: application/json): a
         // cross-site page cannot send those without a CORS preflight, which the gateway never
         // answers. DELETE is preflighted anyway.
@@ -194,6 +196,11 @@ async fn api_machines(State(st): State<Arc<AppState>>) -> Response {
     no_store(Json(st.registry.machines(&st.devices.list())))
 }
 
+/// Recent events, newest first (see `activity.rs`).
+async fn api_activity(State(st): State<Arc<AppState>>) -> Response {
+    no_store(Json(st.activity.recent()))
+}
+
 #[derive(Deserialize)]
 struct AddDevice {
     machine: String,
@@ -218,6 +225,8 @@ async fn api_add_device(
         }) {
         Ok((device, token)) => {
             info!(target: "audit", event = "device_add", user = viewer.user, ip = %viewer.ip, machine, "device_add");
+            st.activity
+                .record(Event::new("device_add", machine).by(&viewer.user));
             issued(StatusCode::CREATED, &device, gateway, token)
         }
         Err(e) => device_error(&e),
@@ -239,6 +248,8 @@ async fn api_replace_token(
         Ok((device, token)) => {
             st.registry.revoke(&machine, "token replaced", false);
             info!(target: "audit", event = "device_token", user = viewer.user, ip = %viewer.ip, machine, "device_token");
+            st.activity
+                .record(Event::new("device_token", &machine).by(&viewer.user));
             issued(StatusCode::OK, &device, gateway, token)
         }
         Err(e) => device_error(&e),
@@ -256,6 +267,8 @@ async fn api_remove_device(
         Ok(_) => {
             st.registry.revoke(&machine, "device removed", true);
             info!(target: "audit", event = "device_remove", user = viewer.user, ip = %viewer.ip, machine, "device_remove");
+            st.activity
+                .record(Event::new("device_remove", &machine).by(&viewer.user));
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => device_error(&e),
@@ -284,6 +297,11 @@ async fn api_update_agent(
         Ok(from) => {
             st.metrics.agent_updates_requested.inc();
             info!(target: "audit", event = "agent_update", user = viewer.user, ip = %viewer.ip, machine, from, to = version, "agent_update");
+            st.activity.record(
+                Event::new("agent_update", &machine)
+                    .by(&viewer.user)
+                    .versions(&from, version),
+            );
             (
                 StatusCode::ACCEPTED,
                 Json(serde_json::json!({ "ok": true })),

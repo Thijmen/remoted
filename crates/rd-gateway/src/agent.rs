@@ -19,6 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
+use crate::activity::Event;
 use crate::auth::AgentIdentity;
 use crate::config::valid_machine_name;
 use crate::registry::{AgentRegistration, CONTROL_QUEUE, Kick};
@@ -89,10 +90,22 @@ async fn run_control(st: Arc<AppState>, ident: AgentIdentity, ip: IpAddr, mut so
 
     let machine = reg.machine.clone();
     info!(%ip, machine, os = reg.os, agent_version = reg.agent_version, caps = ?reg.caps, "agent registered");
+    let previous = st.registry.agent_version(&machine);
+    let version = reg.agent_version.clone();
     // Register before acknowledging, so the machine is online once the agent hears back.
     let (tx, mut outbox) = mpsc::channel(CONTROL_QUEUE);
     let (conn_id, mut kick) = st.registry.register_agent(reg, tx);
     st.metrics.agent_registrations.inc();
+    st.activity.record(Event::new("agent_online", &machine));
+    // Back with another version: an update (or a manual install) went through.
+    if let Some(previous) = previous
+        && !previous.is_empty()
+        && !version.is_empty()
+        && previous != version
+    {
+        st.activity
+            .record(Event::new("agent_updated", &machine).versions(&previous, &version));
+    }
     let registered = serde_json::to_string(&GatewayToAgent::Registered {
         gw_proto: GW_PROTO_VERSION,
     })
@@ -113,6 +126,9 @@ async fn run_control(st: Arc<AppState>, ident: AgentIdentity, ip: IpAddr, mut so
     };
 
     let current = st.registry.unregister_agent(&machine, conn_id);
+    if current {
+        st.activity.record(Event::new("agent_offline", &machine));
+    }
     match exit {
         Exit::Close(code, reason) => {
             info!(%ip, machine, code, reason, "agent control closed by gateway");

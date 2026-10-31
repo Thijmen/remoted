@@ -7,6 +7,7 @@ import { Aside } from '@astrojs/starlight/components';
 import Screenshot from '../../components/Screenshot.astro';
 import connect from '../../assets/screenshots/connect.webp';
 import portal from '../../assets/screenshots/portal.webp';
+import portalDetails from '../../assets/screenshots/portal-details.webp';
 import session from '../../assets/screenshots/session.webp';
 import settings from '../../assets/screenshots/settings.webp';
 
@@ -20,23 +21,45 @@ machine the gateway knows, and refreshes by itself.
 
 <Screenshot
 	src={portal}
-	alt="The portal with a MacBook Pro online and a Mac Studio offline, which has a Screen Sharing recovery link"
+	alt="The portal: summary tiles, filters, a MacBook Pro online with Connect, a Mac Studio offline, and the recent activity"
 />
 
-Each card shows the machine's name (and its id, when that differs), its operating system and
-agent version, and whether it is online (and since when). It also shows who is connected to it
-right now, recovery links (such as Screen Sharing for a locked Mac, see
-[Recovery](/guides/recovery/)), and, when the agent has found a newer version, **Update
-available: X.Y.Z** with **What's new** and **Update**, or how to update by hand when the agent
-can't install it itself (see [Updates](/guides/updates/)).
+At the top, four tiles count the machines that are online, the sessions open right now, the
+agents with an update and the agent versions in use; click one to show only those machines (the
+chips above the list do the same). Each row shows the machine's name and operating system,
+whether it is online (and since when) or who is connected to it, its agent version (with the
+newer one, when the agent found one), buttons for its screen, terminal and files, and its main
+action: **Connect**, or **Terminal** for a machine without a screen.
+
+Click a row for the machine's details on the right: the open session, screen and input
+permissions, whether the screen is locked, recovery links (such as Screen Sharing for a locked
+Mac, see [Recovery](/guides/recovery/)), the agent's update with **What's new** and **Update
+now** (or how to update by hand when the agent can't install it itself, see
+[Updates](/guides/updates/)), and, for devices added in the portal, **New token** and **Remove
+device**.
+
+<Screenshot
+	src={portalDetails}
+	bare
+	width="24rem"
+	alt="The details of the MacBook Pro: Connect, Terminal and Files, its permissions and lock state, and its agent version"
+/>
+
+**Recent activity** below the list shows who connected where, machines coming and
+going, and updates.
+
+The portal works from the keyboard: <kbd>↑</kbd> <kbd>↓</kbd> select a machine, <kbd>Enter</kbd>
+connects (or opens the terminal), <kbd>T</kbd> and <kbd>F</kbd> open its terminal and files,
+<kbd>Esc</kbd> closes the details, and <kbd>Ctrl</kbd>+<kbd>K</kbd> (<kbd>⌘</kbd>+<kbd>K</kbd> on
+a Mac) or <kbd>/</kbd> finds a machine or a command by name.
 
 **Add device** adds a machine and gives you its setup code ([Devices](/guides/devices/)). The
-links at the bottom open the [network probe](#network-probe), the [latency target](#latency-test)
+links in the sidebar open the [network probe](#network-probe), the [latency target](#latency-test)
 and the [key test](#key-test).
 
 ## Connecting
 
-Click **Connect** on a card to open the machine's page (`/m/<machine>`), then **Connect** to start
+Click **Connect** on a machine to open its page (`/m/<machine>`), then **Connect** to start
 the session. **Stream settings** on that page are saved per machine, in this browser:
 
 <Screenshot
@@ -101,8 +124,8 @@ back.
 **Files** in the session menu (or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd>)
 opens a file browser next to the remote screen: preview images, audio and video, download files
 and folders (as a zip), upload by dropping files onto the list or straight onto the remote screen,
-create folders, rename, and move things to the Trash or Recycle Bin. **Browse files** on a machine's page (and **Files** on its
-card in the portal) opens it without starting a session. Transfers keep the remote screen
+create folders, rename, and move things to the Trash or Recycle Bin. **Browse files** on a machine's page (and **Files** for it
+in the portal) opens it without starting a session. Transfers keep the remote screen
 responsive, keep going while the browser is closed, and continue after a dropped connection. See
 [File transfer](/guides/files/).
 
@@ -110,7 +133,7 @@ responsive, keep going while the browser is closed, and continue after a dropped
 
 **Terminal** in the session menu (or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd>)
 opens a shell on the remote machine in a panel next to the screen: zsh (your login shell) on a
-Mac, PowerShell on Windows. **Terminal** on a machine's card in the portal (and **Open
+Mac, PowerShell on Windows. **Terminal** for a machine in the portal (and **Open
 terminal** on its page) opens one in its own tab, without starting a session. It needs no SSH
 server: it runs through the agent over the same connection as the screen. When the connection
 drops, the shell keeps running, and the terminal reconnects and shows what happened meanwhile.
@@ -202,7 +225,7 @@ Measures the whole loop, from your key press to the change appearing on your scr
 
 ## Network probe
 
-`/probe` (in the portal's footer) checks whether the network you are on can carry a session,
+`/probe` (in the portal's sidebar) checks whether the network you are on can carry a session,
 before you rely on it. It needs no machine: it talks to the gateway itself.
 
 - **Quick check** (about 2 minutes) and **Full suite** (about 34 minutes; the soak test's length

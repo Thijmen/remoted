@@ -554,6 +554,40 @@ export function parseMachines(v: unknown): MachineInfo[] {
   return out;
 }
 
+/** A gateway event in `/api/activity` (docs/gateway.md), newest first. */
+export interface ActivityEvent {
+  /** Unix ms, gateway clock. */
+  at_ms: number;
+  /** `agent_online`, `session_start`, `device_add`, …; unknown kinds are skipped when shown. */
+  event: string;
+  machine: string;
+  /** Who did it; empty for the agent's own events (online, offline, updated). */
+  user: string;
+  /** `agent_update`, `agent_updated`: the version before and after. */
+  from: string;
+  to: string;
+  /** `session_end`: how long the session lasted. */
+  duration_ms: number | null;
+}
+
+export function parseActivity(v: unknown): ActivityEvent[] {
+  if (!Array.isArray(v)) return [];
+  const out: ActivityEvent[] = [];
+  for (const e of v) {
+    if (!isObj(e) || typeof e.event !== 'string' || typeof e.machine !== 'string') continue;
+    out.push({
+      at_ms: num(e, 'at_ms'),
+      event: e.event,
+      machine: e.machine,
+      user: str(e, 'user'),
+      from: str(e, 'from'),
+      to: str(e, 'to'),
+      duration_ms: typeof e.duration_ms === 'number' && Number.isFinite(e.duration_ms) ? e.duration_ms : null,
+    });
+  }
+  return out;
+}
+
 export function parseMe(v: unknown): Me | null {
   if (!isObj(v) || typeof v.email !== 'string') return null;
   return { email: v.email, dev: bool(v, 'dev'), devices: bool(v, 'devices') };

@@ -60,7 +60,7 @@ it before you click **Add** if you want a shorter one, because it cannot change 
 The portal then shows the device's **setup code**, a single line starting with `rds1_`. It holds
 the gateway URL agents connect to and the device's token. It is shown **only once** and works
 like a password: copy it and keep it until step 3, but don't store it anywhere else. Lost it?
-Click **New token** on the device's card for a new one.
+Click **New token** in the device's details (click its name in the portal) for a new one.
 
 *Add device* is missing when the gateway has no `RD_STATE_DIR` or no `RD_AGENT_PUBLIC_URL`
 (see [gateway.md](gateway.md#devices)).
@@ -102,7 +102,7 @@ The device should now be online in the portal, and the gateway logs `agent regis
 
 ## Rotate a token
 
-Click **New token** on the device's card. The old token stops working at once: a connected agent
+Click **New token** in the device's details (click its name in the portal). The old token stops working at once: a connected agent
 is disconnected (close 4002) and stays offline. Run `rd-agent setup` on the device again with
 the new setup code.
 
@@ -113,7 +113,7 @@ new id, run `setup` with its code, then remove the old one.
 
 ## Remove a device
 
-1. Click **Remove** on the device's card. Its token stops working, a connected agent is
+1. Click **Remove device** in the device's details. Its token stops working, a connected agent is
    disconnected and the device leaves the portal.
 2. On the device: `packaging/macos/uninstall.sh --purge` on a Mac; on Windows uninstall *rd
    agent* under Settings → Apps ([setup-windows.md](setup-windows.md#uninstall)).
@@ -124,7 +124,7 @@ The portal logs every change in the audit log (`target: audit`) as `device_add`,
 ## Provisioned tokens
 
 For devices whose token you manage outside the gateway, for example in a password manager that
-syncs into a Kubernetes secret. The portal shows these devices without *New token* and *Remove*.
+syncs into a Kubernetes secret. The portal shows these devices without *New token* and *Remove device*.
 
 1. Choose a machine id, for example `studio`. It must be unique on the gateway.
 2. Create the token, on any machine with a checkout of this repo:

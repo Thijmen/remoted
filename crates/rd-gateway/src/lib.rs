@@ -9,6 +9,7 @@
 //!   `/ws/agent/files/{channel}` and `/ws/agent/terminal/{channel}` (data) — bearer tokens.
 //! - metrics (9090): `/healthz`, `/metrics`.
 
+mod activity;
 mod agent;
 mod assets;
 mod auth;

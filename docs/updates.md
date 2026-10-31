@@ -7,7 +7,7 @@ deployed with your own tooling (`gateway-v*` images).
 | | Checks | Asks | Installs |
 |---|---|---|---|
 | rd Desktop (Windows installer, macOS app) | at launch and every 6 h | its own small window, never during a session | Restart & update |
-| rd agent (Windows, macOS) | at start and every 6 h | the portal's device card | the portal's **Update** button; rolls back if the new version does not come back |
+| rd agent (Windows, macOS) | at start and every 6 h | the portal (the device list and its details) | **Update now** in the device's details; rolls back if the new version does not come back |
 
 ## Versions and releases
 
@@ -151,12 +151,13 @@ false` in its `config.toml` turns this off; the portal then has nothing to offer
 update` still works (it reads the manifest itself). `RD_AGENT_UPDATE_URL` replaces the manifest
 URL.
 
-**Portal.** A device with a newer version shows **Update available: X.Y.Z** with **What's
-new** (the notes since its version) and **Update**; one that cannot update itself says to
-update by hand instead. While a session to that machine is open, the portal asks first: the
+**Portal.** A device with a newer version shows `1.8.0 → X.Y.Z` in the device list (and is
+counted under **Needs update**); its details show **What's new** (the notes since its version)
+and **Update now**, or, for one that cannot update itself, to update by hand instead. While a session to that machine is open, the portal asks first: the
 session ends (close code 4010) and the viewer waits, then reconnects by itself when the agent is
 back (about 15 s). The gateway sends the agent `update {version}` and logs `agent_update` in the
-audit log. The card shows the progress, then "Updated to X.Y.Z" or why the update failed.
+audit log. The device's row and details show the progress, then "Updated to X.Y.Z" or why the
+update failed, and the agent's return on the new version appears under **Recent activity**.
 
 **Installing.** The agent reports `downloading`, reads the manifest again (it must still offer
 that version), downloads the file and checks its signature, which must name that version. On
@@ -180,7 +181,7 @@ The helper
    version in Settings > Apps);
 4. records the outcome (`ok`; `rolled_back`; `failed` when the new version was never started),
    which the agent reports with every `update_status` until the next update; the portal shows
-   a failed or rolled-back update on the device card.
+   a failed or rolled-back update in the device's details.
 
 On macOS the swap needs macOS to let RD Agent change `/Applications`: if it refuses (App
 Management), nothing changes and the outcome says to allow RD Agent under System Settings →

@@ -98,7 +98,7 @@ How agents update themselves is in [updates.md](updates.md). Two control message
   - `last`: the last update attempt, kept until the next one: `from`, `to`, `result` (`ok`,
     `rolled_back`: the new version did not come back and the old one was put back, `failed`:
     nothing was installed), `error`, `at_ms`.
-- Gateway → `{"t":"update","version":"1.6.0"}`: the portal's **Update** button. The gateway sends
+- Gateway → `{"t":"update","version":"1.6.0"}`: the portal's **Update now** button. The gateway sends
   it only when the agent's last `update_status` offers exactly that version, with `can_install`
   and no update in progress (`POST /api/machines/{machine}/update`). The agent reads the manifest
   again: the version must still be offered, and its file signed for that version; otherwise it
@@ -243,6 +243,7 @@ pipeline, releases all keys/buttons and drops the keep-awake guard.
 | `GET /assets/*` | hashed Vite assets (`Cache-Control: public, max-age=31536000, immutable`) |
 | `GET /api/me` | `{"email":"…","uid":"…","dev":false,"devices":true}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`; `devices` = *Add device* available) |
 | `GET /api/machines` | `[{"machine":"mbp","name":"MacBook Pro","managed":false,"online":true,"since_ms":1729160000000,"os":"macOS 26.3","agent_version":"1.5.0","state":{AgentState},"viewer":null\|{"user":"…","since_ms":…},"recovery":[{"label":"Screen Sharing (VNC)","url":"https://…"}],"update":null\|{UpdateStatus},"files":true}]` (`update`: the agent's last `update_status`, null when it never sent one; `files`: the agent supports file channels) |
+| `GET /api/activity` | `[{"at_ms":1730386900000,"event":"session_start","machine":"mbp","user":"…"}]`, newest first, at most 100, kept in memory (empty after a restart); optional `user`, `from`, `to`, `duration_ms`; events in [gateway.md](gateway.md#activity) |
 | `POST /api/machines/{machine}/update` | JSON `{"version":"1.6.0"}` → 202 `{"ok":true}` once `update` is queued to the agent; 404 unknown machine; 409 `{"error":"…"}` when the agent is offline, does not report updates, cannot install them, has no or another update available, or is already updating |
 | `POST /api/devices` | JSON `{"machine":"studio","name":"Mac Studio"}` → 201 `{"machine","name","gateway","token","setup_code"}` (no-store) |
 | `POST /api/devices/{machine}/token` | JSON `{}` → 200, same fields; the agent's control socket is closed with 4002 |

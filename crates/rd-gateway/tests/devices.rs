@@ -110,6 +110,35 @@ async fn add_connect_replace_remove() {
     assert_eq!(expect_close(&mut agent.ctl).await, close::FORBIDDEN);
     assert_eq!(agent_refused(&gw, &new_token).await, 401);
     assert!(machines(&get(gw.viewer, "/api/machines", &[VIEWER]).await).is_empty());
+    // The portal's activity list has who did it; a replaced or removed agent is not "offline".
+    let activity = get(gw.viewer, "/api/activity", &[VIEWER]).await.json();
+    let device_events: Vec<(&str, &str)> = activity
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["event"].as_str().unwrap().starts_with("device_"))
+        .map(|e| {
+            (
+                e["event"].as_str().unwrap(),
+                e["user"].as_str().unwrap_or(""),
+            )
+        })
+        .collect();
+    assert_eq!(
+        device_events,
+        [
+            ("device_remove", EMAIL),
+            ("device_token", EMAIL),
+            ("device_add", EMAIL)
+        ]
+    );
+    assert!(
+        !activity
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["event"] == "agent_offline")
+    );
     let r = http(
         gw.viewer,
         "DELETE",

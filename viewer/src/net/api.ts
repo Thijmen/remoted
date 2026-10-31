@@ -1,7 +1,9 @@
 import {
+  type ActivityEvent,
   type DeviceIssued,
   type MachineInfo,
   type Me,
+  parseActivity,
   parseDeviceIssued,
   parseMachines,
   parseMe,
@@ -32,6 +34,16 @@ export async function fetchMachine(machine: string, signal?: AbortSignal): Promi
 
 export async function fetchMe(signal?: AbortSignal): Promise<Me | null> {
   return parseMe(await getJson('/api/me', signal));
+}
+
+/** Recent gateway events, newest first; null when the gateway keeps none (older gateways). */
+export async function fetchActivity(signal?: AbortSignal): Promise<ActivityEvent[] | null> {
+  try {
+    return parseActivity(await getJson('/api/activity', signal));
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 404) return null;
+    throw e;
+  }
 }
 
 /**

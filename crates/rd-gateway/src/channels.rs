@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
+use crate::activity::Event;
 use crate::auth::ViewerIdentity;
 use crate::config::valid_machine_name;
 use crate::registry::{ChannelKind, ChannelStartError};
@@ -193,6 +194,8 @@ async fn run_channel(
         ChannelKind::Terminal => ("terminal_open", "terminal_close"),
     };
     info!(target: "audit", event = open, user = viewer.user, ip, machine, channel, "{open}");
+    st.activity
+        .record(Event::new(open, &machine).by(&viewer.user));
     let begun = Instant::now();
     let (reason, traffic) = relay(&st, Kind::Channel(kind), &machine, handle, socket).await;
     let (up, down) = traffic.totals();

@@ -75,12 +75,25 @@ if (wanted.size === 0 || wanted.has('og')) {
 
 console.log(`Screenshots from ${base}:`);
 
-await shot('portal', { width: 1120, height: 470 }, async (page) => {
+await shot('portal', { width: 1120, height: 620 }, async (page) => {
 	await page.goto(base);
 	await removeDevice(page, 'windows-pc');
 	await page.reload();
-	await page.getByText('MacBook Pro').waitFor();
+	await page.locator('.device-row[data-machine="mbp"]').waitFor();
 	await save(page, 'portal');
+});
+
+// The details panel of the MacBook Pro, cropped to its content.
+await shot('portal-details', { width: 1440, height: 900 }, async (page) => {
+	await page.goto(base);
+	await page.locator('.device-row[data-machine="mbp"] .device-name').click();
+	const panel = page.locator('.console-inspector');
+	await panel.waitFor();
+	const box = await panel.boundingBox();
+	const bottom = await panel.evaluate((el) => Math.max(...[...el.children].map((c) => c.getBoundingClientRect().bottom)));
+	await save(page, 'portal-details', {
+		clip: { x: box.x + 1, y: box.y, width: box.width - 1, height: Math.ceil(bottom - box.y + 24) },
+	});
 });
 
 await shot('add-device', { width: 1120, height: 760 }, async (page) => {
@@ -92,7 +105,7 @@ await shot('add-device', { width: 1120, height: 760 }, async (page) => {
 	await page.getByRole('button', { name: 'Add', exact: true }).click();
 	await page.getByText('Windows PC added').waitFor();
 	await page.locator('textarea').blur();
-	await save(page, 'add-device', { clip: await around(page.locator('dialog'), 40) });
+	await save(page, 'add-device', { clip: await around(page.locator('dialog[open]'), 40) });
 	await removeDevice(page, 'windows-pc');
 });
 

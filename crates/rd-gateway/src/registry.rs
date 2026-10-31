@@ -492,6 +492,13 @@ impl Registry {
         (conn_id, kick_rx)
     }
 
+    /// The agent version `machine` last registered with; kept while it is offline.
+    pub fn agent_version(&self, machine: &str) -> Option<String> {
+        let inner = self.inner.lock();
+        let info = inner.machines.get(machine)?.info.as_ref()?;
+        Some(info.agent_version.clone())
+    }
+
     /// A device's token stopped working: close its control connection (4002 with `reason`) and
     /// end its viewer session. With `forget` (the device was removed) the machine also leaves
     /// the portal listing.

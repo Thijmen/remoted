@@ -101,6 +101,7 @@ Every response on the viewer port carries the CSP, COOP (`same-origin`), COEP
 | other `GET /<file>` | other top-level files of the build (favicon, …), `no-cache`; else 404 |
 | `GET /api/me` | `{"email":"…","uid":"…","dev":false,"devices":true}` (`uid` may be null) (uid = `X-authentik-uid`, for `RD_ALLOWED_UIDS`; `devices`: whether *Add device* is on) |
 | `GET /api/machines` | see below |
+| `GET /api/activity` | the portal's *Recent activity*; see [Activity](#activity) |
 | `POST /api/devices`, `POST /api/devices/{machine}/token`, `DELETE /api/devices/{machine}` | add a device, replace its token, remove it; see [Devices](#devices) |
 | `POST /api/machines/{machine}/update` | tell the agent to install its update; see [Agent updates](#agent-updates) |
 | `GET /ws/view/{machine}` | viewer session |
@@ -124,6 +125,22 @@ files, and `/ws/view/{machine}` closes with 4011); true otherwise, also for mach
 registered.
 Devices added in the portal follow the machines file, in the order they were added, and have
 `"managed": true`.
+
+## Activity
+
+`/api/activity` lists recent events for the portal, newest first:
+`[{"at_ms":1730386900000,"event":"session_start","machine":"mbp","user":"you@example.com"}, …]`.
+The gateway keeps the last 100 in memory only, so the list starts empty after a restart; the
+audit log stays the record. Fields an event does not have are left out.
+
+| `event` | When | Extra fields |
+|---|---|---|
+| `agent_online`, `agent_offline` | an agent registers; its control connection ends (not when it is replaced, revoked or removed) | – |
+| `agent_updated` | an agent registers with another version than last time | `from`, `to` |
+| `session_start`, `session_end` | a viewer session starts and ends | `user`; `duration_ms` on `session_end` |
+| `terminal_open`, `files_open` | a terminal or file channel opens | `user` |
+| `agent_update` | **Update now** was accepted | `user`, `from`, `to` |
+| `device_add`, `device_token`, `device_remove` | *Add device*, *New token*, *Remove device* | `user` |
 
 ## Devices
 
@@ -159,7 +176,7 @@ closed with **4002** (`token replaced` / `device removed`), and a running sessio
 
 Agents 1.5.0 and later check for updates themselves and report what they found with
 `update_status` ([updates.md](updates.md), [protocol.md](protocol.md#updates-rd-agent-150-and-later)).
-The portal shows it from `/api/machines`; its **Update** button calls:
+The portal shows it from `/api/machines`; **Update now** in a device's details calls:
 
 | Route | Body | Answer |
 |---|---|---|

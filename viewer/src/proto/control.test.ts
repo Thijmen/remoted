@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { parseDeviceIssued, parseMachines, parseMe, parseProbeEvt, parseViewerIncoming } from './control';
+import {
+  parseActivity,
+  parseDeviceIssued,
+  parseMachines,
+  parseMe,
+  parseProbeEvt,
+  parseViewerIncoming,
+} from './control';
 
 describe('parseViewerIncoming', () => {
   it('decodes the gateway session message with defaults', () => {
@@ -192,6 +199,35 @@ describe('parseMachines', () => {
     });
     // An available update needs a version.
     expect(parseMachines([{ machine: 'pc', update: { available: { notes: 'x' } } }])[0]!.update?.available).toBeNull();
+  });
+});
+
+describe('parseActivity', () => {
+  it('reads events and fills in what an event does not have', () => {
+    expect(
+      parseActivity([
+        { at_ms: 5, event: 'session_end', machine: 'mbp', user: 'a@b.test', duration_ms: 61_000 },
+        { at_ms: 4, event: 'agent_update', machine: 'pc', user: 'a@b.test', from: '1.8.0', to: '1.9.1' },
+        { at_ms: 3, event: 'agent_online', machine: 'vm' },
+      ]),
+    ).toEqual([
+      { at_ms: 5, event: 'session_end', machine: 'mbp', user: 'a@b.test', from: '', to: '', duration_ms: 61_000 },
+      {
+        at_ms: 4,
+        event: 'agent_update',
+        machine: 'pc',
+        user: 'a@b.test',
+        from: '1.8.0',
+        to: '1.9.1',
+        duration_ms: null,
+      },
+      { at_ms: 3, event: 'agent_online', machine: 'vm', user: '', from: '', to: '', duration_ms: null },
+    ]);
+  });
+
+  it('skips entries without an event or machine', () => {
+    expect(parseActivity([{ event: 'agent_online' }, { machine: 'x' }, 'junk', null])).toEqual([]);
+    expect(parseActivity({ event: 'agent_online', machine: 'x' })).toEqual([]);
   });
 });
 
