@@ -202,3 +202,6 @@ macOS:
 - Modifiers come from `FlagsChanged` events and the device-dependent flag bits (left/right).
   Keys already down when the grab starts pass through until released; their release is
   forwarded.
+- When WebKit ends a page's web process, the page is reloaded at most twice within a minute
+  (at once, then after 2 s); after that the window shows a "This page keeps crashing" page with
+  Try again, instead of reloading in a loop that would hang the app and flood the gateway.

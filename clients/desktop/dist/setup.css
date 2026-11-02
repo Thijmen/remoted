@@ -12,3 +12,7 @@ button:disabled { opacity: .6; cursor: default; }
 .hint { font-size: .85rem; opacity: .75; margin: .2rem 0 0; }
 .error { color: #dc2626; margin: .4rem 0 0; }
 code { font-size: .9em; }
+/* stopped.html */
+.actions { display: flex; gap: .6rem; flex-wrap: wrap; }
+.actions button { margin-top: .4rem; }
+button.secondary { background: transparent; color: inherit; border: 1px solid #8888; }
