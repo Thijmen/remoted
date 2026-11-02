@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rd: page stopped</title>
+<link rel="stylesheet" href="setup.css">
+<script src="stopped.js" defer></script>
+</head>
+<body>
+<main>
+  <h1>This page keeps crashing</h1>
+  <p>macOS ended the web process of this page several times within a minute, so rd Desktop
+    stopped reloading it. Reloading it over and over would freeze this window and flood your
+    gateway with requests.</p>
+  <p>Try again, or quit rd Desktop (⌘Q) and open it again.</p>
+  <div class="actions">
+    <button id="retry" type="button" hidden>Try again</button>
+    <button id="home" type="button" class="secondary" hidden>Open the device list</button>
+  </div>
+  <p class="hint">Details are in the app log:
+    <code>~/Library/Logs/dev.thijmen.rd.desktop/rd-desktop.log</code></p>
+</main>
+</body>
+</html>

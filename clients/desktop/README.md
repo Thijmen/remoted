@@ -281,6 +281,12 @@ src-tauri/icons/tray-template.png`.
   menu items (system menu + window subclass).
 - `src/config.rs`: `--url`/`--setup`, the settings file and its validation, and which URLs may
   load in the window.
+- `src/webprocess.rs` (macOS): when WebKit ends a page's web process (a crash, or macOS ending
+  it), Tauri's default reloads the page at once, every time; a page whose process ends on every
+  load then reloads in a tight loop (the app hangs, and every round hits the gateway again).
+  rd Desktop reloads at once the first time and after 2 s the second; from the third time
+  within a minute the main window shows the bundled `dist/stopped.html` (Try again / Open the
+  device list) instead. Every end is logged (`the web process of … ended`).
 - `src/grab_windows.rs`: a thread with a message loop owning a `WH_KEYBOARD_LL` hook. It is
   installed when the page asks (`rd_set_grab({active: true})`) while the window is the
   foreground window, and the call resolves only after that. It comes off when the page says so,

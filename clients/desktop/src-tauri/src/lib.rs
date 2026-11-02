@@ -27,6 +27,9 @@ mod notice;
 mod sysmenu_windows;
 #[cfg(desktop)]
 mod update;
+/// What happens when WebKit ends a page's web process (Tauri only reports it on macOS).
+#[cfg(any(target_os = "macos", test))]
+mod webprocess;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -215,6 +218,13 @@ pub fn run() {
         .manage(grab::Grab::default())
         .manage(Current::default())
         .setup(move |app| setup(app, args));
+
+    // Tauri reloads a page whose web process ended at once, every time; webprocess.rs stops
+    // after a few tries instead of reloading in a loop.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .manage(webprocess::WebProcesses::default())
+        .on_web_content_process_terminate(webprocess::on_terminate);
 
     // The updater plugin is not available on Android (and the app cannot replace itself there).
     #[cfg(desktop)]
