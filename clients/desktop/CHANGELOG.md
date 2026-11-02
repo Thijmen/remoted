@@ -1,5 +1,13 @@
 # rd-desktop
 
+## 1.7.3
+
+### Patch Changes
+
+- 3d594ec: Update dependency androidx.test.ext:junit to v1.3.0
+- fb6547c: Update Rust crate log to v0.4.35
+- d229752: macOS: when a page's web process keeps crashing, rd Desktop no longer reloads it in an endless loop (which froze the app with a spinning cursor and flooded the gateway with requests). It reloads at most twice a minute, then shows a page with Try again, and notes each crash in its log.
+
 ## 1.7.2
 
 ### Patch Changes
