@@ -39,7 +39,7 @@ jobs:
           fetch-depth: 0 # "last updated" dates come from the history
       - uses: actions/setup-node@v7
         with:
-          node-version: 24 # Astro 7 needs Node 22.22 or later
+          node-version: 26 # Astro 7 needs Node 22.22 or later
       - uses: oven-sh/setup-bun@v2
 
       # The site's origin and base path as GitHub serves it (they change with a custom domain).
