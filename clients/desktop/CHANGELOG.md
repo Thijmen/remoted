@@ -1,5 +1,18 @@
 # rd-desktop
 
+## 1.7.4
+
+### Patch Changes
+
+- a96a046: Update dependency androidx.appcompat:appcompat to v1.8.0
+- 678e905: Update dependency androidx.lifecycle:lifecycle-process to v2.11.0
+- 573f6ed: Update dependency androidx.test.espresso:espresso-core to v3.7.0
+- 99b7ae9: Update dependency androidx.webkit:webkit to v1.18.0
+- 28de9cf: Update dependency com.android.tools.build:gradle to v9.5.0
+- bc800dc: Update dependency com.google.android.material:material to v1.14.0
+- 8d98690: Update dependency org.jetbrains.kotlin:kotlin-gradle-plugin to v2.4.21
+- 425888f: Update Gradle to v9.8.2
+
 ## 1.7.3
 
 ### Patch Changes

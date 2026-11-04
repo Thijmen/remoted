@@ -1,5 +1,11 @@
 # rd-agent
 
+## 1.11.1
+
+### Patch Changes
+
+- c887a49: Update Rust dependencies (non-major)
+
 ## 1.11.0
 
 ### Minor Changes
