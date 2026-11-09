@@ -1,5 +1,11 @@
 # rd-desktop
 
+## 1.7.5
+
+### Patch Changes
+
+- e3fd105: Update Gradle to v9.9.0
+
 ## 1.7.4
 
 ### Patch Changes
